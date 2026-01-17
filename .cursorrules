@@ -1,0 +1,34 @@
+# Church Helper Desktop - Cursor Rules
+
+## Project Type
+Tauri 2.0 desktop app with React frontend and Rust backend
+
+## Code Style
+
+### TypeScript (src/)
+- Strict mode enabled
+- Functional React components
+- Zustand for state
+- Tailwind CSS
+
+### Rust (src-tauri/)
+- 2021 edition
+- thiserror for errors
+- tokio async runtime
+- serde for serialization
+
+## Architecture
+- React UI: Dumb components only
+- Rust: All business logic
+- IPC via Tauri invoke
+
+## Commands
+- Dev: `npm run tauri dev`
+- Build: `npm run tauri build`
+- Rust test: `cargo test`
+
+## Guards
+- No `any` in TypeScript
+- No `unwrap()` in production Rust
+- UI components have no logic
+- Secrets via environment only
