@@ -56,6 +56,7 @@ pub fn run() {
             commands::is_resource_youtube,
             commands::download_resource,
             commands::check_resource_status,
+            commands::get_file_size,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

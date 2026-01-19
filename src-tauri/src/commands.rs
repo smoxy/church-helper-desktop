@@ -289,3 +289,27 @@ pub fn check_resource_status(
         Ok(false)
     }
 }
+
+/// Get the size of a file from its URL without downloading it
+#[tauri::command]
+pub async fn get_file_size(url: String) -> Result<u64, String> {
+    let client = reqwest::Client::new();
+    let response = client
+        .head(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch headers: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Request failed with status: {}", response.status()));
+    }
+
+    let content_length = response
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|val| val.to_str().ok())
+        .and_then(|val| val.parse::<u64>().ok())
+        .ok_or_else(|| "Content-Length header missing or invalid".to_string())?;
+
+    Ok(content_length)
+}

@@ -79,25 +79,26 @@ export default function Settings() {
 
                     <div className="flex flex-col gap-2 pt-4 border-t">
                         <label className="text-sm font-medium">Retention Policy</label>
-                        <div className="flex items-center gap-4">
-                            <div className="flex-1">
+                        <div className="flex flex-wrap items-center gap-4">
+                            <div className="flex-1 min-w-[200px]">
                                 <div className="flex items-center gap-2">
                                     <Input
                                         type="number"
                                         min="0"
                                         placeholder="Days (Empty = Forever)"
+                                        className="flex-1 min-w-[120px]"
                                         value={localRetention === null ? "" : localRetention}
                                         onChange={(e) => {
                                             const val = e.target.value;
                                             setLocalRetention(val === "" ? null : parseInt(val));
                                         }}
                                     />
-                                    <Button size="sm" onClick={handleRetentionChange}>
+                                    <Button size="sm" onClick={handleRetentionChange} className="shrink-0">
                                         <Save className="h-4 w-4" />
                                     </Button>
                                 </div>
                             </div>
-                            <span className="text-sm text-muted-foreground">
+                            <span className="text-sm text-muted-foreground truncate">
                                 days to keep archives (0 = delete immediately, empty = keep forever)
                             </span>
                         </div>
@@ -113,7 +114,7 @@ export default function Settings() {
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-4">
                         <div className="space-y-0.5">
                             <label className="text-base font-medium">Enable Background Polling</label>
                             <p className="text-sm text-muted-foreground">
@@ -128,18 +129,19 @@ export default function Settings() {
 
                     <div className="flex flex-col gap-2 pt-4 border-t">
                         <label className="text-sm font-medium">Polling Interval</label>
-                        <div className="flex items-center gap-4">
-                            <div className="flex items-center gap-2 w-48">
+                        <div className="flex flex-wrap items-center gap-4">
+                            <div className="flex items-center gap-2 w-48 min-w-[140px]">
                                 <Input
                                     type="number"
                                     min="1"
                                     max="1440"
+                                    className="flex-1 min-w-0"
                                     value={localInterval}
                                     onChange={(e) => setLocalInterval(parseInt(e.target.value))}
                                 />
-                                <span className="text-sm">min</span>
+                                <span className="text-sm shrink-0">min</span>
                             </div>
-                            <Button size="sm" variant="outline" onClick={handleIntervalChange}>
+                            <Button size="sm" variant="outline" onClick={handleIntervalChange} className="whitespace-nowrap">
                                 Save Interval
                             </Button>
                         </div>

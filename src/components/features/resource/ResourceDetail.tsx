@@ -7,7 +7,7 @@ interface ResourceDetailProps {
 }
 
 export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
-    const { isDownloaded, isDownloading, isAutoDownloadEnabled, download, toggleAutoDownload } = useResource(resource);
+    const { isDownloaded, isDownloading, isAutoDownloadEnabled, fileSize, download, toggleAutoDownload } = useResource(resource);
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 backdrop-blur-sm" onClick={onClose}>
@@ -29,39 +29,53 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                             </div>
                         )}
 
-                        <div className="flex items-center gap-4 mt-6">
-                            <div className="flex flex-col items-center">
-                                <button
-                                    onClick={download}
-                                    disabled={isDownloaded || isDownloading}
-                                    className={`
-                                        w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg
-                                        ${isDownloaded ? 'bg-success text-success-foreground' :
-                                            isDownloading ? 'bg-muted text-muted-foreground animate-pulse' :
-                                                'bg-warning text-warning-foreground hover:scale-105 active:scale-95'}
-                                    `}
-                                    title={isDownloaded ? "Downloaded" : isDownloading ? "Downloading..." : "Click to Download"}
-                                >
-                                    {isDownloaded ? (
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                                    ) : isDownloading ? (
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
-                                    ) : (
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                        <div className="flex flex-wrap md:flex-nowrap items-start gap-4 mt-6">
+                            <div className="flex-1 min-w-[200px]">
+                                <h3 className="text-lg font-semibold mb-2">Download</h3>
+                                <div className="flex flex-wrap items-center gap-3">
+                                    <button
+                                        onClick={download}
+                                        disabled={isDownloaded || isDownloading}
+                                        className={`
+                                            flex items-center gap-3 px-6 py-3 rounded-lg font-bold transition-all shadow-md active:scale-95 whitespace-nowrap
+                                            ${isDownloaded ? 'bg-success text-success-foreground' :
+                                                isDownloading ? 'bg-muted text-muted-foreground cursor-wait' :
+                                                    'bg-primary text-primary-foreground hover:bg-primary/90'}
+                                        `}
+                                    >
+                                        {isDownloaded ? (
+                                            <>
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                                Downloaded
+                                            </>
+                                        ) : isDownloading ? (
+                                            <>
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
+                                                Downloading...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                                                Download Now
+                                            </>
+                                        )}
+                                    </button>
+
+                                    {fileSize && (
+                                        <div className="text-sm text-muted-foreground font-medium bg-muted/50 px-3 py-1.5 rounded-md whitespace-nowrap">
+                                            {fileSize}
+                                        </div>
                                     )}
-                                </button>
-                                <span className="text-sm font-medium mt-2 text-muted-foreground">
-                                    {isDownloaded ? 'Ready' : isDownloading ? 'Downloading' : 'Download'}
-                                </span>
+                                </div>
                             </div>
 
-                            <div className="flex-1 bg-secondary/20 p-4 rounded-lg">
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="font-medium text-foreground">Auto-download</span>
+                            <div className="w-full md:w-auto md:flex-1 bg-secondary/20 p-4 rounded-lg min-w-[200px]">
+                                <div className="flex items-center justify-between mb-2 gap-4">
+                                    <span className="font-medium text-foreground whitespace-nowrap">Auto-download</span>
                                     <button
                                         onClick={toggleAutoDownload}
                                         className={`
-                                            relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2
+                                            relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2
                                             ${isAutoDownloadEnabled ? 'bg-success' : 'bg-muted'}
                                         `}
                                     >

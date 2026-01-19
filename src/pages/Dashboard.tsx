@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useAppStore } from "../stores/appStore";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
-import { RefreshCw, FileAudio, FileVideo, FileText, MonitorPlay } from "lucide-react";
+import { RefreshCw, FileText } from "lucide-react";
 import { format } from "date-fns";
 import { Resource } from "../types";
 import { ResourceDetail } from "../components/features/resource/ResourceDetail";
+import { ResourceCard } from "../components/features/resource/ResourceCard";
 
 export default function Dashboard() {
     const {
@@ -22,16 +23,6 @@ export default function Dashboard() {
     useEffect(() => {
         fetchInitialData();
     }, [fetchInitialData]);
-
-    const getFileIcon = (type: string | null, isYoutube: boolean) => {
-        if (isYoutube) return <MonitorPlay className="h-5 w-5 text-red-500" />;
-
-        // Simple heuristic based on type or extension if type is generic
-        const t = type?.toLowerCase() || "";
-        if (t.includes("audio") || t.includes("mp3")) return <FileAudio className="h-5 w-5 text-yellow-500" />;
-        if (t.includes("video") || t.includes("mp4")) return <FileVideo className="h-5 w-5 text-blue-500" />;
-        return <FileText className="h-5 w-5 text-gray-500" />;
-    };
 
     if (error) {
         return (
@@ -123,38 +114,11 @@ export default function Dashboard() {
                         </div>
                     ) : (
                         resources.map((resource) => (
-                            <Card
+                            <ResourceCard
                                 key={resource.id}
-                                className="overflow-hidden cursor-pointer hover:border-primary/50 transition-colors group"
+                                resource={resource}
                                 onClick={() => setSelectedResource(resource)}
-                            >
-                                {resource.thumbnail_url && (
-                                    <div className="aspect-video w-full overflow-hidden">
-                                        <img
-                                            src={resource.thumbnail_url}
-                                            alt={resource.title}
-                                            className="w-full h-full object-cover transition-transform group-hover:scale-105"
-                                        />
-                                    </div>
-                                )}
-                                <CardHeader className="pb-3">
-                                    <CardTitle className="text-lg line-clamp-1 group-hover:text-primary transition-colors" title={resource.title}>
-                                        {resource.title}
-                                    </CardTitle>
-                                    <CardDescription className="flex items-center gap-2 text-xs">
-                                        {getFileIcon(
-                                            resource.file_type,
-                                            resource.download_url.includes("youtube.com") || resource.download_url.includes("youtu.be")
-                                        )}
-                                        <span className="uppercase tracking-wider">{resource.category}</span>
-                                    </CardDescription>
-                                </CardHeader>
-                                <CardContent>
-                                    <p className="text-sm text-muted-foreground line-clamp-3">
-                                        {resource.description}
-                                    </p>
-                                </CardContent>
-                            </Card>
+                            />
                         ))
                     )}
                 </div>

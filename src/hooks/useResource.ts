@@ -9,10 +9,13 @@ export function useResource(resource: Resource) {
   const [isAutoDownloadEnabled, setIsAutoDownloadEnabled] =
       useState<boolean>(false);
 
+  const [fileSize, setFileSize] = useState<string|null>(null);
+
   // Initial check for status and config
   useEffect(() => {
     checkStatus();
     checkAutoDownload();
+    fetchFileSize();
   }, [resource]);
 
   const checkStatus = async () => {
@@ -34,14 +37,47 @@ export function useResource(resource: Resource) {
     }
   };
 
+  const fetchFileSize = async () => {
+    // Simple check for YouTube URLs
+    const isYoutube = resource.download_url.includes('youtube.com') ||
+        resource.download_url.includes('youtu.be');
+    if (isYoutube) return;  // Don't fetch size for YouTube links
+    try {
+      const sizeBytes =
+          await invoke<number>('get_file_size', {url: resource.download_url});
+
+      // Format bytes to human readable string
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let size = sizeBytes;
+      let unitIndex = 0;
+      while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex++;
+      }
+      setFileSize(`${size.toFixed(1)} ${units[unitIndex]}`);
+    } catch (error) {
+      console.error('Failed to fetch file size:', error);
+      setFileSize(null);
+    }
+  };
+
   const download = async () => {
     if (isDownloading || isDownloaded) return;
 
     setIsDownloading(true);
     try {
       await invoke('download_resource', {resource});
+
+      // Listen for the download-complete event or just poll/check locally?
+      // Since the command is async and returns path, we can assume success if
+      // no error
       setIsDownloaded(true);
       await checkStatus();  // Verify
+
+      // Also emit a global event so other components know (like the card vs
+      // modal) For now, simpler: we rely on individual components checking
+      // status or re-mounting
+
     } catch (error) {
       console.error('Download failed:', error);
     } finally {
@@ -74,6 +110,7 @@ export function useResource(resource: Resource) {
     isDownloaded,
     isDownloading,
     isAutoDownloadEnabled,
+    fileSize,
     download,
     toggleAutoDownload
   };
