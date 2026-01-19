@@ -100,6 +100,11 @@ church-helper-desktop/
 
 MIT - Vedi [LICENSE](../LICENSE)
 
+## 🗑️ Uninstallation
+
+The app can be removed via standard system tools (Settings > Apps on Windows, or moving to Trash on macOS).
+
+
 ## 🔐 Code Signing Policy
 
 Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).

@@ -34,6 +34,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Update version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "Updating version to $VERSION"
+          jq --arg v "$VERSION" '.version = $v' ./church-helper-desktop/src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./church-helper-desktop/src-tauri/tauri.conf.json
+
       - name: Build Tauri App (Unsigned)
         run: npm run tauri build -- --target x86_64-pc-windows-msvc
 
@@ -109,6 +117,15 @@ jobs:
       - name: Install frontend dependencies
         working-directory: ./church-helper-desktop
         run: npm ci
+
+      - name: Update version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: ./church-helper-desktop
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "Updating version to $VERSION"
+          sudo apt-get install -y jq
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
 
       # Build x64 naturally
       - name: Build Linux Deb (x64)
