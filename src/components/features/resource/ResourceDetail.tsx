@@ -1,5 +1,6 @@
 import { Resource } from '../../../types';
 import { useResource } from '../../../hooks/useResource';
+import { Loader2, Download, Check, Pause, Play, Trash2, AlertTriangle, RotateCcw, X } from "lucide-react";
 
 interface ResourceDetailProps {
     resource: Resource;
@@ -7,7 +8,33 @@ interface ResourceDetailProps {
 }
 
 export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
-    const { isDownloaded, isDownloading, isAutoDownloadEnabled, fileSize, error, progress, download, toggleAutoDownload } = useResource(resource);
+    const {
+        isDownloaded,
+        isDownloading,
+        isPaused,
+        isAutoDownloadEnabled,
+        fileSize,
+        error,
+        progress,
+        integrity,
+        download,
+        pause,
+        resume,
+        cancel,
+        toggleAutoDownload
+    } = useResource(resource);
+
+    const handleMainAction = () => {
+        if (isDownloading) {
+            pause();
+        } else if (isPaused) {
+            resume();
+        } else {
+            download();
+        }
+    };
+
+    const isCorrupted = isDownloaded && integrity === 'mismatch';
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 backdrop-blur-sm" onClick={onClose}>
@@ -15,7 +42,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                 <div className="flex justify-between items-start mb-6">
                     <h2 className="text-2xl font-bold text-primary">{resource.title}</h2>
                     <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                        <X className="h-6 w-6" />
                     </button>
                 </div>
 
@@ -31,60 +58,95 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
 
                         <div className="flex flex-col gap-4 mt-6">
                             <div className="w-full">
-                                <h3 className="text-lg font-semibold mb-2">Download</h3>
-                                <div className="flex flex-wrap items-center gap-3">
-                                    <button
-                                        onClick={download}
-                                        disabled={isDownloaded || isDownloading}
-                                        className={`
-                                            relative flex items-center gap-3 px-6 py-3 rounded-lg font-bold transition-all shadow-md active:scale-95 whitespace-nowrap flex-1 justify-center overflow-hidden
-                                            ${isDownloaded ? 'bg-success text-success-foreground' :
-                                                isDownloading ? 'bg-muted text-muted-foreground cursor-wait' :
-                                                    'bg-primary text-primary-foreground hover:bg-primary/90'}
-                                        `}
-                                    >
-                                        {isDownloading && progress !== null && (
+                                <div className="flex justify-between items-center mb-2">
+                                    <h3 className="text-lg font-semibold">Download</h3>
+                                    {fileSize && !error && (
+                                        <span className="text-sm text-muted-foreground font-medium bg-muted/50 px-2 py-0.5 rounded">
+                                            {fileSize}
+                                        </span>
+                                    )}
+                                </div>
+
+                                <div className="flex flex-col gap-3">
+                                    {/* Progress Bar Area */}
+                                    {(isDownloading || isPaused) && (
+                                        <div className="w-full bg-muted rounded-full h-2.5 overflow-hidden">
                                             <div
-                                                className="absolute left-0 top-0 bottom-0 bg-primary/10 transition-all duration-300 ease-out"
-                                                style={{ width: `${progress}%` }}
+                                                className={`h-full transition-all duration-300 ease-out ${isPaused ? 'bg-yellow-500' : 'bg-primary'}`}
+                                                style={{ width: `${progress || 0}%` }}
                                             />
-                                        )}
-
-                                        {isDownloading ? (
-                                            <>
-                                                {progress !== null ? (
-                                                    <span className="relative z-10 font-mono">{progress}%</span>
-                                                ) : (
-                                                    <>
-                                                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
-                                                        Downloading...
-                                                    </>
-                                                )}
-                                            </>
-                                        ) : isDownloaded ? (
-                                            <>
-                                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                                                Downloaded
-                                            </>
-                                        ) : (
-                                            <>
-                                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                                                Download Now
-                                            </>
-                                        )}
-                                    </button>
-
-                                    {error && (
-                                        <div className="w-full text-xs text-destructive font-medium mt-1 animate-in fade-in slide-in-from-top-1">
-                                            {error === "Work directory not configured"
-                                                ? "Please set a download folder in Settings."
-                                                : error}
                                         </div>
                                     )}
 
-                                    {fileSize && !error && (
-                                        <div className="text-sm text-muted-foreground font-medium bg-muted/50 px-3 py-1.5 rounded-md whitespace-nowrap">
-                                            {fileSize}
+                                    <div className="flex items-center gap-2">
+                                        {/* Main Action Button */}
+                                        <button
+                                            onClick={handleMainAction}
+                                            disabled={isDownloaded && !isCorrupted}
+                                            className={`
+                                                relative flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-bold transition-all shadow-md active:scale-95 flex-1
+                                                ${isCorrupted ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90' :
+                                                    isPaused ? 'bg-yellow-500 text-white hover:bg-yellow-600' :
+                                                        isDownloading ? 'bg-muted text-muted-foreground border-2 border-primary/20' :
+                                                            isDownloaded ? 'bg-success text-success-foreground' :
+                                                                'bg-primary text-primary-foreground hover:bg-primary/90'}
+                                            `}
+                                            title={isCorrupted ? "File corrupted. Click to retry." : ""}
+                                        >
+                                            {isDownloading ? (
+                                                <>
+                                                    <Loader2 className="h-5 w-5 animate-spin" />
+                                                    <span className="font-mono">{progress}%</span>
+                                                    <Pause className="h-4 w-4 opacity-70 ml-1" />
+                                                </>
+                                            ) : isPaused ? (
+                                                <>
+                                                    <Play className="h-5 w-5 fill-current" />
+                                                    Resume ({progress}%)
+                                                </>
+                                            ) : isCorrupted ? (
+                                                <>
+                                                    <RotateCcw className="h-5 w-5" />
+                                                    Retry Download
+                                                </>
+                                            ) : isDownloaded ? (
+                                                <>
+                                                    <Check className="h-5 w-5" />
+                                                    Downloaded
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Download className="h-5 w-5" />
+                                                    Download Now
+                                                </>
+                                            )}
+                                        </button>
+
+                                        {/* Stop/Cancel Button */}
+                                        {(isDownloading || isPaused) && (
+                                            <button
+                                                onClick={cancel}
+                                                className="p-3 bg-muted text-muted-foreground rounded-lg hover:bg-destructive hover:text-destructive-foreground transition-colors shadow-sm"
+                                                title="Stop and Delete"
+                                            >
+                                                <Trash2 className="h-5 w-5" />
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {/* Warnings / Errors */}
+                                    {isCorrupted && (
+                                        <div className="flex items-center gap-2 text-xs text-destructive font-semibold bg-destructive/10 p-2 rounded">
+                                            <AlertTriangle className="h-4 w-4" />
+                                            Hashes do not match source. File may be corrupted.
+                                        </div>
+                                    )}
+
+                                    {error && (
+                                        <div className="w-full text-xs text-destructive font-medium bg-destructive/10 p-2 rounded animate-in fade-in slide-in-from-top-1">
+                                            {error === "Work directory not configured"
+                                                ? "Please set a download folder in Settings."
+                                                : error}
                                         </div>
                                     )}
                                 </div>

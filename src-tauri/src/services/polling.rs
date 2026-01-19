@@ -171,7 +171,7 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
                     tracing::info!("Auto-downloading resource: {}", resource.title);
                     // We spawn the download to not block the polling loop, or we could await it
                     // Since this is already in a background task, awaiting is fine
-                    if let Err(e) = download_service.download_resource(resource, &dest_dir, Some(app)).await {
+                    if let Err(e) = download_service.download_resource(resource, &dest_dir, Some(app), None).await {
                         tracing::error!("Failed to auto-download {}: {}", resource.title, e);
                     } else {
                          let _ = app.emit("download-complete", resource.id);

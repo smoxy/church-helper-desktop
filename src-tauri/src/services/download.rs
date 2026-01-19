@@ -1,12 +1,20 @@
 //! Download service
 //!
-//! Handles downloading resources and creating URL shortcuts for YouTube links.
+//! Handles downloading resources, creating URL shortcuts, and calculating integrity hashes.
 
 use crate::error::DownloadError;
 use crate::models::Resource;
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use tauri::AppHandle;
+
+// Download status constants
+pub const STATUS_RUNNING: u8 = 0;
+pub const STATUS_PAUSED: u8 = 1;
+pub const STATUS_CANCELLED: u8 = 2;
 
 /// Service for downloading resources
 pub struct DownloadService {
@@ -28,45 +36,99 @@ impl DownloadService {
 
     /// Download a resource to the destination directory
     ///
-    /// For YouTube URLs, creates a platform-specific shortcut file instead.
+    /// Returns the path to the downloaded file and its SHA-256 hash.
+    /// For YouTube URLs, creates a shortcut and returns a placeholder hash.
     pub async fn download_resource(
         &self,
         resource: &Resource,
         dest_dir: &Path,
         app: Option<&AppHandle>,
-    ) -> Result<PathBuf, DownloadError> {
+        signal: Option<Arc<AtomicU8>>,
+    ) -> Result<(PathBuf, String), DownloadError> {
         if resource.is_youtube() {
-            self.create_youtube_shortcut(resource, dest_dir)
+            let path = self.create_youtube_shortcut(resource, dest_dir)?;
+            Ok((path, "youtube-shortcut".to_string()))
         } else {
-            self.download_file(resource, dest_dir, app).await
+            self.download_file(resource, dest_dir, app, signal).await
         }
     }
 
-    /// Download a regular file
-    async fn download_file(&self, resource: &Resource, dest_dir: &Path, app: Option<&AppHandle>) -> Result<PathBuf, DownloadError> {
+    /// Download a regular file with resume capability and hash calculation
+    async fn download_file(
+        &self,
+        resource: &Resource,
+        dest_dir: &Path,
+        app: Option<&AppHandle>,
+        signal: Option<Arc<AtomicU8>>,
+    ) -> Result<(PathBuf, String), DownloadError> {
         use futures_util::StreamExt;
         use tauri::Emitter;
 
-        let response = self.client.get(&resource.download_url).send().await?;
-        let total_size = response.content_length();
-        
-        // Extract filename from URL or use resource title
+        // Extract filename
         let filename = extract_filename_from_url(&resource.download_url)
             .unwrap_or_else(|| sanitize_filename(&resource.title));
-        
+
         let dest_path = dest_dir.join(&filename);
-        // Use .part extension for incomplete download
         let part_path = dest_dir.join(format!("{}.part", filename));
 
-        let mut file = std::fs::File::create(&part_path).map_err(|e| DownloadError::WriteError {
-            path: part_path.clone(),
-            source: e,
-        })?;
+        // Check for existing partial download
+        let mut resume_offset = 0;
+        if part_path.exists() {
+            if let Ok(metadata) = std::fs::metadata(&part_path) {
+                resume_offset = metadata.len();
+            }
+        }
+
+        // Build request
+        let mut request = self.client.get(&resource.download_url);
+        if resume_offset > 0 {
+            request = request.header("Range", format!("bytes={}-", resume_offset));
+        }
+
+        let response = request.send().await?;
+        let status = response.status();
+
+        // If server doesn't support range (returns 200 instead of 206), we start over
+        let is_partial = status == reqwest::StatusCode::PARTIAL_CONTENT;
+        if !is_partial && resume_offset > 0 {
+            // Server ignored range, restart download
+            resume_offset = 0;
+            // Truncate file if it existed
+            if let Ok(file) = std::fs::File::create(&part_path) {
+                let _ = file.set_len(0);
+            }
+        }
+
+        let content_length = response.content_length().map(|len| len + resume_offset);
+
+        // Open file
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(resume_offset > 0 && is_partial)
+            .truncate(resume_offset == 0 || !is_partial) // Truncate if new download
+            .open(&part_path)
+            .map_err(|e| DownloadError::WriteError {
+                path: part_path.clone(),
+                source: e,
+            })?;
 
         let mut stream = response.bytes_stream();
-        let mut downloaded: u64 = 0;
+        let mut downloaded = resume_offset;
 
         while let Some(item) = stream.next().await {
+            // Check cancellation signal
+            if let Some(sig) = &signal {
+                let status = sig.load(Ordering::Relaxed);
+                if status != STATUS_RUNNING {
+                    if status == STATUS_CANCELLED {
+                        // Attempt to delete partial file
+                        let _ = std::fs::remove_file(&part_path);
+                    }
+                    return Err(DownloadError::Cancelled);
+                }
+            }
+
             let chunk = item?;
             file.write_all(&chunk).map_err(|e| DownloadError::WriteError {
                 path: part_path.clone(),
@@ -76,49 +138,71 @@ impl DownloadService {
             downloaded += chunk.len() as u64;
 
             if let Some(app) = app {
-                if let Some(total) = total_size {
+                if let Some(total) = content_length {
                     let progress = ((downloaded as f64 / total as f64) * 100.0) as u8;
-                    // Emit progress event: payload = { id: string, progress: number }
-                    let _ = app.emit("download-progress", serde_json::json!({
-                        "id": resource.id,
-                        "progress": progress
-                    }));
+                    let _ = app.emit(
+                        "download-progress",
+                        serde_json::json!({
+                            "id": resource.id,
+                            "progress": progress
+                        }),
+                    );
                 }
             }
         }
 
-        // Rename .part file to final filename on success
+        // Rename .part file upon success
         std::fs::rename(&part_path, &dest_path).map_err(|e| DownloadError::WriteError {
             path: dest_path.clone(),
             source: e,
         })?;
 
-        Ok(dest_path)
+        // Calculate hash of the completed file
+        let hash = calculate_file_hash(&dest_path).map_err(|e| DownloadError::WriteError {
+            path: dest_path.clone(),
+            source: e,
+        })?;
+
+        Ok((dest_path, hash))
     }
 
     /// Create a platform-specific URL shortcut for YouTube links
-    fn create_youtube_shortcut(&self, resource: &Resource, dest_dir: &Path) -> Result<PathBuf, DownloadError> {
+    fn create_youtube_shortcut(
+        &self,
+        resource: &Resource,
+        dest_dir: &Path,
+    ) -> Result<PathBuf, DownloadError> {
         let safe_name = sanitize_filename(&resource.title);
-        
+
         #[cfg(target_os = "windows")]
         let (filename, content) = create_windows_url_shortcut(&safe_name, &resource.download_url);
-        
+
         #[cfg(target_os = "macos")]
         let (filename, content) = create_macos_webloc_shortcut(&safe_name, &resource.download_url);
-        
+
         #[cfg(target_os = "linux")]
-        let (filename, content) = create_linux_desktop_shortcut(&safe_name, &resource.download_url);
+        let (filename, content) =
+            create_linux_desktop_shortcut(&safe_name, &resource.download_url);
 
         let dest_path = dest_dir.join(&filename);
-        
-        let mut file = std::fs::File::create(&dest_path)
-            .map_err(DownloadError::ShortcutCreationFailed)?;
-        
+
+        let mut file =
+            std::fs::File::create(&dest_path).map_err(DownloadError::ShortcutCreationFailed)?;
+
         file.write_all(content.as_bytes())
             .map_err(DownloadError::ShortcutCreationFailed)?;
 
         Ok(dest_path)
     }
+}
+
+/// Calculate SHA-256 hash of a file
+fn calculate_file_hash(path: &Path) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    let hash = hasher.finalize();
+    Ok(format!("{:x}", hash))
 }
 
 impl Default for DownloadService {
@@ -131,10 +215,7 @@ impl Default for DownloadService {
 #[cfg(target_os = "windows")]
 fn create_windows_url_shortcut(name: &str, url: &str) -> (String, String) {
     let filename = format!("{}.url", name);
-    let content = format!(
-        "[InternetShortcut]\r\nURL={}\r\n",
-        url
-    );
+    let content = format!("[InternetShortcut]\r\nURL={}\r\n", url);
     (filename, content)
 }
 
@@ -239,11 +320,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_linux_desktop_shortcut_format() {
-        let (filename, content) = create_linux_desktop_shortcut(
-            "Test Video",
-            "https://youtube.com/watch?v=abc123"
-        );
-        
+        let (filename, content) =
+            create_linux_desktop_shortcut("Test Video", "https://youtube.com/watch?v=abc123");
+
         assert_eq!(filename, "Test Video.desktop");
         assert!(content.contains("[Desktop Entry]"));
         assert!(content.contains("Type=Link"));

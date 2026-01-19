@@ -13,11 +13,16 @@ export function useResource(resource: Resource) {
   // Get download state from global store
   const activeDownloads = useAppStore(state => state.activeDownloads);
   const startDownload = useAppStore(state => state.startDownload);
+  const pauseDownloadAction = useAppStore(state => state.pauseDownload);
+  const resumeDownloadAction = useAppStore(state => state.resumeDownload);
+  const cancelDownloadAction = useAppStore(state => state.cancelDownload);
 
   const downloadState = activeDownloads[resource.id];
   const isDownloading = downloadState?.status === 'downloading';
+  const isPaused = downloadState?.status === 'paused';
   const progress = downloadState?.progress ?? null;
   const error = downloadState?.error ?? null;
+  const integrity = downloadState?.integrity;
 
   // Initial check for status and config
   useEffect(
@@ -74,9 +79,33 @@ export function useResource(resource: Resource) {
   };
 
   const download = async () => {
-    if (isDownloading || isDownloaded) return;
+    // Determine explicitly if we can download.
+    // Allow retrying if error or mismatch.
+    if ((isDownloading || isPaused) && !error && integrity !== 'mismatch')
+      return;
+
+    // If mismatch or error, we might be retrying (which overwrites).
+    // If paused, we should call resume instead, but download() handles
+    // start/resume too if we map it properly. However, store.startDownload
+    // handles resumption if partial file exists.
     await startDownload(resource);
-    // Determine success via effect dependency on downloadState.status
+  };
+
+  const pause = async () => {
+    if (!isDownloading) return;
+    await pauseDownloadAction(resource.id);
+  };
+
+  const resume = async () => {
+    if (!isPaused) return;
+    await resumeDownloadAction(resource);
+  };
+
+  const cancel = async () => {
+    await cancelDownloadAction(resource.id);
+    // Re-check status to verify deletion?
+    // checkStatus();
+    // Actually cancelDownload updates state immediately.
   };
 
   const toggleAutoDownload = async () => {
@@ -103,11 +132,16 @@ export function useResource(resource: Resource) {
   return {
     isDownloaded,
     isDownloading,
+    isPaused,
     isAutoDownloadEnabled,
     fileSize,
     error,
     progress,
+    integrity,
     download,
+    pause,
+    resume,
+    cancel,
     toggleAutoDownload
   };
 }

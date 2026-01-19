@@ -11,6 +11,7 @@ export interface Resource {
   download_url: string;
   thumbnail_url: string|null;
   file_type: string|null;
+  checksum?: string|null;
   is_active: boolean;
   created_at: string;  // ISO date string
 }

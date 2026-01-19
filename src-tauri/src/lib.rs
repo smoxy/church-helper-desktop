@@ -55,6 +55,8 @@ pub fn run() {
             commands::get_archived_weeks,
             commands::is_resource_youtube,
             commands::download_resource,
+            commands::pause_download,
+            commands::cancel_download,
             commands::check_resource_status,
             commands::get_file_size,
         ])

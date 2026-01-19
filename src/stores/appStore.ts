@@ -4,16 +4,20 @@ import {create} from 'zustand';
 
 import {AppConfig, AppStatus, Resource, ResourceListResponse, WeekIdentifier} from '../types';
 
+export interface ActiveDownload {
+  progress: number;
+  status: 'pending'|'downloading'|'paused'|'completed'|'error';
+  error?: string;
+  integrity?: 'verified'|'mismatch'|'unknown';
+  path?: string;
+  hash?: string;
+}
+
 interface AppState {
   config: AppConfig|null;
   status: AppStatus|null;
   resources: Resource[];
-  activeDownloads: Record < number, {
-    progress: number;
-    status: 'pending'|'downloading'|'completed'|'error';
-    error?: string;
-  }
-  > ;
+  activeDownloads: Record<number, ActiveDownload>;
   archivedWeeks: WeekIdentifier[];
   isLoading: boolean;
   error: string|null;
@@ -28,6 +32,9 @@ interface AppState {
   setRetentionDays: (days: number|null) => Promise<void>;
   fetchArchivedWeeks: () => Promise<void>;
   startDownload: (resource: Resource) => Promise<void>;
+  pauseDownload: (resourceId: number) => Promise<void>;
+  resumeDownload: (resource: Resource) => Promise<void>;
+  cancelDownload: (resourceId: number) => Promise<void>;
 }
 
 export const useAppStore = create<AppState>(
@@ -83,6 +90,8 @@ export const useAppStore = create<AppState>(
               'download-progress', (event) => {
                 set(state => {
                   const current = state.activeDownloads[event.payload.id];
+                  // If paused, don't update progress (though backend shouldn't
+                  // emit)
                   if (!current || current.status !== 'downloading')
                     return state;
 
@@ -189,27 +198,81 @@ export const useAppStore = create<AppState>(
 
       startDownload: async (resource: Resource) => {
         const {activeDownloads} = get();
+        // If already downloading, do nothing
         if (activeDownloads[resource.id]?.status === 'downloading') return;
+
+        // Determine initial progress (preserve if resuming)
+        const initialProgress = activeDownloads[resource.id]?.progress || 0;
 
         set(state => ({
               activeDownloads: {
                 ...state.activeDownloads,
-                [resource.id]: {progress: 0, status: 'downloading'}
+                [resource.id]: {
+                  progress: initialProgress,
+                  status: 'downloading',
+                  error: undefined
+                }
               }
             }));
 
         try {
-          await invoke('download_resource', {resource});
+          const result = await invoke<{path: string, hash: string}>(
+              'download_resource', {resource});
+
+          let integrity: ActiveDownload['integrity'] = 'unknown';
+          if (resource.checksum && resource.checksum.trim() !== '') {
+            // Simple check: backend hash is hex string. Check equality.
+            // Assuming case-insensitive comparison might be safer
+            integrity =
+                result.hash.toLowerCase() === resource.checksum.toLowerCase() ?
+                'verified' :
+                'mismatch';
+          } else {
+            // If return hash is "youtube-shortcut", implicit success/verified
+            if (result.hash === 'youtube-shortcut') {
+              integrity = 'verified';
+            }
+          }
+
           set(state => ({
                 activeDownloads: {
                   ...state.activeDownloads,
-                  [resource.id]: {progress: 100, status: 'completed'}
+                  [resource.id]: {
+                    progress: 100,
+                    status: 'completed',
+                    integrity,
+                    path: result.path,
+                    hash: result.hash
+                  }
                 }
               }));
         } catch (error: any) {
           const errorMessage = typeof error === 'string' ?
               error :
               error.message || 'Download failed';
+
+          // Check if error message contains "cancelled"
+          const isCancelled = errorMessage.toLowerCase().includes('cancelled');
+
+          if (isCancelled) {
+            // This branch entered if backend returns error Cancelled.
+            // We need to check if user intended pause or cancel.
+            // Usually pauseDownload() updates state before backend returns.
+            // So if state is PAUSED, keep it.
+            // If state is CANCELLING (removed), this callback might fire?
+            // If removed, activeDownloads[id] is undefined.
+
+            const current = get().activeDownloads[resource.id];
+            if (current && current.status === 'paused') {
+              // Remain paused
+              return;
+            }
+            if (!current) {
+              // It was removed (cancelled), do nothing
+              return;
+            }
+          }
+
           set(state => ({
                 activeDownloads: {
                   ...state.activeDownloads,
@@ -218,5 +281,39 @@ export const useAppStore = create<AppState>(
                 }
               }));
         }
+      },
+
+      pauseDownload: async (resourceId: number) => {
+        set(state => ({
+              activeDownloads: {
+                ...state.activeDownloads,
+                [resourceId]:
+                    {...state.activeDownloads[resourceId], status: 'paused'}
+              }
+            }));
+        try {
+          await invoke('pause_download', {resourceId});
+        } catch (e) {
+          console.error('Failed to pause', e);
+        }
+      },
+
+      resumeDownload: async (resource: Resource) => {
+        // Just call startDownload
+        get().startDownload(resource);
+      },
+
+      cancelDownload: async (resourceId: number) => {
+        // Remove from state immediately to update UI
+        set(state => {
+          const {[resourceId]: deleted, ...rest} = state.activeDownloads;
+          return {activeDownloads: rest};
+        });
+        try {
+          await invoke('cancel_download', {resourceId});
+        } catch (e) {
+          console.error('Failed to cancel', e);
+        }
       }
+
     }));

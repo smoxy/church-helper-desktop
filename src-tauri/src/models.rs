@@ -60,6 +60,7 @@ pub struct Resource {
     pub download_url: String,
     pub thumbnail_url: Option<String>,
     pub file_type: Option<String>,
+    pub checksum: Option<String>,
     pub is_active: bool,
     #[serde(deserialize_with = "deserialize_naive_to_utc")]
     pub created_at: DateTime<Utc>,

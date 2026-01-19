@@ -2,10 +2,13 @@
 //!
 //! These commands implement the "Dumb UI, Smart Backend" architecture.
 
-
 use crate::models::{AppConfig, AppStatus, Resource, ResourceListResponse, WeekIdentifier};
+use crate::services::download::{STATUS_CANCELLED, STATUS_PAUSED, STATUS_RUNNING};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter, State};
 
 /// Application state managed by Tauri
@@ -14,17 +17,24 @@ pub struct AppState {
     pub current_week: RwLock<Option<WeekIdentifier>>,
     pub resources: RwLock<Vec<Resource>>,
     pub status: RwLock<AppStatus>,
+    /// Signals to control active downloads (Pause/Cancel)
+    pub download_signals: RwLock<HashMap<i64, Arc<AtomicU8>>>,
 }
-// ... (skip lines) ...
+
+/// Response for download command
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DownloadResponse {
+    pub path: String,
+    pub hash: String,
+}
+
 /// Open a native folder picker dialog
 #[tauri::command]
 pub async fn select_work_directory(app: AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    
-    let path = app.dialog()
-        .file()
-        .blocking_pick_folder();
-        
+
+    let path = app.dialog().file().blocking_pick_folder();
+
     Ok(path.map(|p| p.to_string()))
 }
 
@@ -35,6 +45,7 @@ impl Default for AppState {
             current_week: RwLock::new(None),
             resources: RwLock::new(Vec::new()),
             status: RwLock::new(AppStatus::default()),
+            download_signals: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -139,21 +150,16 @@ pub async fn force_poll(
     Ok(api_response)
 }
 
-
-
 /// Set the work directory
 #[tauri::command]
-pub fn set_work_directory(
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<(), String> {
+pub fn set_work_directory(state: State<'_, AppState>, path: String) -> Result<(), String> {
     let path_buf = PathBuf::from(&path);
-    
+
     // Verify directory exists
     if !path_buf.exists() {
         return Err(format!("Directory does not exist: {}", path));
     }
-    
+
     if !path_buf.is_dir() {
         return Err(format!("Path is not a directory: {}", path));
     }
@@ -168,10 +174,7 @@ pub fn set_work_directory(
 
 /// Toggle polling on/off
 #[tauri::command]
-pub fn set_polling_enabled(
-    state: State<'_, AppState>,
-    enabled: bool,
-) -> Result<(), String> {
+pub fn set_polling_enabled(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
     let mut config = state
         .config
         .write()
@@ -189,10 +192,7 @@ pub fn set_polling_enabled(
 
 /// Set the polling interval in minutes
 #[tauri::command]
-pub fn set_polling_interval(
-    state: State<'_, AppState>,
-    minutes: u32,
-) -> Result<(), String> {
+pub fn set_polling_interval(state: State<'_, AppState>, minutes: u32) -> Result<(), String> {
     if minutes < 1 || minutes > 1440 {
         return Err("Polling interval must be between 1 and 1440 minutes".to_string());
     }
@@ -207,10 +207,7 @@ pub fn set_polling_interval(
 
 /// Set the retention policy
 #[tauri::command]
-pub fn set_retention_days(
-    state: State<'_, AppState>,
-    days: Option<u32>,
-) -> Result<(), String> {
+pub fn set_retention_days(state: State<'_, AppState>, days: Option<u32>) -> Result<(), String> {
     let mut config = state
         .config
         .write()
@@ -248,41 +245,80 @@ pub async fn download_resource(
     state: State<'_, AppState>,
     app: AppHandle,
     resource: Resource,
-) -> Result<String, String> {
+) -> Result<DownloadResponse, String> {
     let config = state.config.read().map_err(|e| e.to_string())?.clone();
-    
-    let work_dir = config.work_directory.ok_or("Work directory not configured")?;
+
+    let work_dir = config
+        .work_directory
+        .ok_or("Work directory not configured")?;
     let week_dir = resource.week().as_dir_name();
     let dest_dir = work_dir.join(week_dir);
-    
+
     if !dest_dir.exists() {
         std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
     }
 
-    let download_service = crate::services::DownloadService::new();
-    let path = download_service
-        .download_resource(&resource, &dest_dir, Some(&app))
-        .await
-        .map_err(|e| e.to_string())?;
+    // Initialize cancellation signal
+    let signal = Arc::new(AtomicU8::new(STATUS_RUNNING));
+    {
+        state
+            .download_signals
+            .write()
+            .map_err(|e| e.to_string())?
+            .insert(resource.id, signal.clone());
+    }
 
-    Ok(path.to_string_lossy().to_string())
+    let download_service = crate::services::DownloadService::new();
+    let result = download_service
+        .download_resource(&resource, &dest_dir, Some(&app), Some(signal))
+        .await;
+
+    // Cleanup signal
+    {
+        let mut signals = state.download_signals.write().unwrap();
+        signals.remove(&resource.id);
+    }
+
+    let (path, hash) = result.map_err(|e| e.to_string())?;
+
+    Ok(DownloadResponse {
+        path: path.to_string_lossy().to_string(),
+        hash,
+    })
+}
+
+/// Pause an active download
+#[tauri::command]
+pub fn pause_download(state: State<'_, AppState>, resource_id: i64) -> Result<(), String> {
+    let signals = state.download_signals.read().map_err(|e| e.to_string())?;
+    if let Some(signal) = signals.get(&resource_id) {
+        signal.store(STATUS_PAUSED, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Cancel and delete an active download
+#[tauri::command]
+pub fn cancel_download(state: State<'_, AppState>, resource_id: i64) -> Result<(), String> {
+    let signals = state.download_signals.read().map_err(|e| e.to_string())?;
+    if let Some(signal) = signals.get(&resource_id) {
+        signal.store(STATUS_CANCELLED, Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 /// Check if a resource is already downloaded
 #[tauri::command]
-pub fn check_resource_status(
-    state: State<'_, AppState>,
-    resource: Resource,
-) -> Result<bool, String> {
+pub fn check_resource_status(state: State<'_, AppState>, resource: Resource) -> Result<bool, String> {
     let config = state.config.read().map_err(|e| e.to_string())?;
-    
+
     if let Some(work_dir) = &config.work_directory {
         let week_dir = resource.week().as_dir_name();
         let dest_dir = work_dir.join(week_dir);
-        
+
         let filename = crate::services::download::extract_filename_from_url(&resource.download_url)
             .unwrap_or_else(|| crate::services::download::sanitize_filename(&resource.title));
-            
+
         let dest_path = dest_dir.join(filename);
         Ok(dest_path.exists())
     } else {
