@@ -8,6 +8,12 @@ interface AppState {
   config: AppConfig|null;
   status: AppStatus|null;
   resources: Resource[];
+  activeDownloads: Record < number, {
+    progress: number;
+    status: 'pending'|'downloading'|'completed'|'error';
+    error?: string;
+  }
+  > ;
   archivedWeeks: WeekIdentifier[];
   isLoading: boolean;
   error: string|null;
@@ -21,6 +27,7 @@ interface AppState {
   setPollingInterval: (minutes: number) => Promise<void>;
   setRetentionDays: (days: number|null) => Promise<void>;
   fetchArchivedWeeks: () => Promise<void>;
+  startDownload: (resource: Resource) => Promise<void>;
 }
 
 export const useAppStore = create<AppState>(
@@ -31,6 +38,7 @@ export const useAppStore = create<AppState>(
       archivedWeeks: [],
       isLoading: true,
       error: null,
+      activeDownloads: {},
 
       fetchInitialData: async () => {
         try {
@@ -69,6 +77,24 @@ export const useAppStore = create<AppState>(
           await listen('poll-tick', () => {
             invoke<AppStatus>('get_status').then(status => set({status}));
           });
+
+          // Global download progress listener
+          await listen<{id: number, progress: number}>(
+              'download-progress', (event) => {
+                set(state => {
+                  const current = state.activeDownloads[event.payload.id];
+                  if (!current || current.status !== 'downloading')
+                    return state;
+
+                  return {
+                    activeDownloads: {
+                      ...state.activeDownloads,
+                      [event.payload.id]:
+                          {...current, progress: event.payload.progress}
+                    }
+                  };
+                });
+              });
 
         } catch (e) {
           set({error: `Initialization failed: ${e}`, isLoading: false});
@@ -158,6 +184,39 @@ export const useAppStore = create<AppState>(
         } catch (e) {
           // Silently fail if e.g. dir not set
           console.error(e);
+        }
+      },
+
+      startDownload: async (resource: Resource) => {
+        const {activeDownloads} = get();
+        if (activeDownloads[resource.id]?.status === 'downloading') return;
+
+        set(state => ({
+              activeDownloads: {
+                ...state.activeDownloads,
+                [resource.id]: {progress: 0, status: 'downloading'}
+              }
+            }));
+
+        try {
+          await invoke('download_resource', {resource});
+          set(state => ({
+                activeDownloads: {
+                  ...state.activeDownloads,
+                  [resource.id]: {progress: 100, status: 'completed'}
+                }
+              }));
+        } catch (error: any) {
+          const errorMessage = typeof error === 'string' ?
+              error :
+              error.message || 'Download failed';
+          set(state => ({
+                activeDownloads: {
+                  ...state.activeDownloads,
+                  [resource.id]:
+                      {progress: 0, status: 'error', error: errorMessage}
+                }
+              }));
         }
       }
     }));

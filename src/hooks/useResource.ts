@@ -1,34 +1,34 @@
 import {invoke} from '@tauri-apps/api/core';
-import {listen} from '@tauri-apps/api/event';
 import {useEffect, useState} from 'react';
 
+import {useAppStore} from '../stores/appStore';
 import {AppConfig, Resource} from '../types';
 
 export function useResource(resource: Resource) {
   const [isDownloaded, setIsDownloaded] = useState<boolean>(false);
-  const [isDownloading, setIsDownloading] = useState<boolean>(false);
   const [isAutoDownloadEnabled, setIsAutoDownloadEnabled] =
       useState<boolean>(false);
-
   const [fileSize, setFileSize] = useState<string|null>(null);
 
-  const [error, setError] = useState<string|null>(null);
+  // Get download state from global store
+  const activeDownloads = useAppStore(state => state.activeDownloads);
+  const startDownload = useAppStore(state => state.startDownload);
 
-  const [progress, setProgress] = useState<number|null>(null);
+  const downloadState = activeDownloads[resource.id];
+  const isDownloading = downloadState?.status === 'downloading';
+  const progress = downloadState?.progress ?? null;
+  const error = downloadState?.error ?? null;
 
   // Initial check for status and config
-  useEffect(() => {
-    checkStatus();
-    checkAutoDownload();
-    fetchFileSize();
-  }, [resource]);
-
-  // ... (checkStatus, checkAutoDownload, fetchFileSize remain same - omitted
-  // for brevity if possible, but replace_file_content needs contiguity or full
-  // replacement if chunks are complex. I'll replace the full body for safety or
-  // target carefully) To avoid huge replacement, I will replace the state defs
-  // and the download function separately if possible, or just the whole top and
-  // bottom. Actually, I'll do a large chunk replacement to be safe.
+  useEffect(
+      () => {
+        checkStatus();
+        checkAutoDownload();
+        fetchFileSize();
+      },
+      [
+        resource, downloadState?.status
+      ]);  // Re-check when download status completes
 
   const checkStatus = async () => {
     try {
@@ -75,37 +75,8 @@ export function useResource(resource: Resource) {
 
   const download = async () => {
     if (isDownloading || isDownloaded) return;
-
-    setIsDownloading(true);
-    setError(null);
-    setProgress(0);
-
-    let unlisten: (() => void)|undefined;
-
-    try {
-      // Set up listener before starting download
-      unlisten = await listen<{id: number, progress: number}>(
-          'download-progress', (event) => {
-            if (event.payload.id === resource.id) {
-              setProgress(event.payload.progress);
-            }
-          });
-
-      await invoke('download_resource', {resource});
-
-      setIsDownloaded(true);
-      await checkStatus();
-
-    } catch (error: any) {
-      console.error('Download failed:', error);
-      setError(
-          typeof error === 'string' ? error :
-                                      error.message || 'Download failed');
-    } finally {
-      setIsDownloading(false);
-      setProgress(null);
-      if (unlisten) unlisten();
-    }
+    await startDownload(resource);
+    // Determine success via effect dependency on downloadState.status
   };
 
   const toggleAutoDownload = async () => {
