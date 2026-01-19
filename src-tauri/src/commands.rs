@@ -241,3 +241,51 @@ pub fn get_archived_weeks(state: State<'_, AppState>) -> Result<Vec<WeekIdentifi
 pub fn is_resource_youtube(url: String) -> bool {
     crate::models::is_youtube_url(&url)
 }
+
+/// Download a specific resource
+#[tauri::command]
+pub async fn download_resource(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    resource: Resource,
+) -> Result<String, String> {
+    let config = state.config.read().map_err(|e| e.to_string())?.clone();
+    
+    let work_dir = config.work_directory.ok_or("Work directory not configured")?;
+    let week_dir = resource.week().as_dir_name();
+    let dest_dir = work_dir.join(week_dir);
+    
+    if !dest_dir.exists() {
+        std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+    }
+
+    let download_service = crate::services::DownloadService::new();
+    let path = download_service
+        .download_resource(&resource, &dest_dir, Some(&app))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Check if a resource is already downloaded
+#[tauri::command]
+pub fn check_resource_status(
+    state: State<'_, AppState>,
+    resource: Resource,
+) -> Result<bool, String> {
+    let config = state.config.read().map_err(|e| e.to_string())?;
+    
+    if let Some(work_dir) = &config.work_directory {
+        let week_dir = resource.week().as_dir_name();
+        let dest_dir = work_dir.join(week_dir);
+        
+        let filename = crate::services::download::extract_filename_from_url(&resource.download_url)
+            .unwrap_or_else(|| crate::services::download::sanitize_filename(&resource.title));
+            
+        let dest_path = dest_dir.join(filename);
+        Ok(dest_path.exists())
+    } else {
+        Ok(false)
+    }
+}

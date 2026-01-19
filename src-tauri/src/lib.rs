@@ -54,6 +54,8 @@ pub fn run() {
             commands::set_retention_days,
             commands::get_archived_weeks,
             commands::is_resource_youtube,
+            commands::download_resource,
+            commands::check_resource_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

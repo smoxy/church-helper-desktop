@@ -144,7 +144,7 @@ fn create_linux_desktop_shortcut(name: &str, url: &str) -> (String, String) {
 }
 
 /// Extract filename from URL
-fn extract_filename_from_url(url: &str) -> Option<String> {
+pub(crate) fn extract_filename_from_url(url: &str) -> Option<String> {
     url.split('/')
         .last()
         .filter(|s| !s.is_empty() && s.contains('.'))
@@ -155,7 +155,7 @@ fn extract_filename_from_url(url: &str) -> Option<String> {
 }
 
 /// Sanitize a string to be a valid filename
-fn sanitize_filename(name: &str) -> String {
+pub(crate) fn sanitize_filename(name: &str) -> String {
     name.chars()
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
