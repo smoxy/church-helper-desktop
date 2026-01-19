@@ -51,10 +51,42 @@ export default function AppLayout() {
             </aside>
 
             {/* Main Content */}
-            <main className="flex-1 overflow-auto bg-muted/20">
-                <div className="p-8 max-w-6xl mx-auto space-y-8">
+            <main className="flex-1 overflow-auto bg-muted/20 flex flex-col">
+                <div className="flex-1 p-8 max-w-6xl mx-auto w-full space-y-8">
                     <Outlet />
                 </div>
+                <footer className="p-8 max-w-6xl mx-auto w-full border-t text-sm text-muted-foreground">
+                    <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+                        <div className="space-y-1 text-center md:text-left">
+                            <p className="flex items-center justify-center md:justify-start gap-1">
+                                <span>© 2026 ChurchHelper</span>
+                                <span className="opacity-50">|</span>
+                                <span>Open Source under MIT License</span>
+                            </p>
+                            <p className="text-xs opacity-70">
+                                Built with heart for the community.
+                            </p>
+                        </div>
+
+                        <div className="flex flex-col items-center md:items-end gap-2">
+                            <a
+                                href="mailto:dev@adventistyouth.it"
+                                className="hover:text-primary transition-colors flex items-center gap-1.5"
+                            >
+                                <span className="text-xs">Support:</span>
+                                <span className="font-medium">dev@adventistyouth.it</span>
+                            </a>
+                            <a
+                                href="https://www.buymeacoffee.com/your-profile" // Ideally replace with actual link
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-orange-500/10 text-orange-600 hover:bg-orange-500/20 transition-all font-semibold text-xs border border-orange-500/20"
+                            >
+                                ☕ Help me paying the server
+                            </a>
+                        </div>
+                    </div>
+                </footer>
             </main>
         </div>
     );
