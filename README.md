@@ -99,3 +99,13 @@ church-helper-desktop/
 ## 📄 Licenza
 
 MIT - Vedi [LICENSE](../LICENSE)
+
+## 🔐 Code Signing Policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
+### Project Team & Roles
+* **Maintainers (Committers & Approvers):** [smoxy](https://github.com/smoxy)
+* **Reviewers:** Community contributors (Pull Requests are reviewed by Maintainers)
