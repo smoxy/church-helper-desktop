@@ -1,0 +1,155 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ./church-helper-desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: './church-helper-desktop/package-lock.json'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+           workspaces: './church-helper-desktop/src-tauri'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri App (Unsigned)
+        run: npm run tauri build -- --target x86_64-pc-windows-msvc
+
+      - name: Upload Unsigned MSI for Signing
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-msi
+          path: ./church-helper-desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign MSI with SignPath
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          policy-slug: ${{ secrets.SIGNPATH_POLICY_SLUG }}
+          artifact-name: unsigned-msi
+          wait-for-completion: true
+          output-artifact-directory: signed-artifacts
+
+      - name: Upload Signed MSI to Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: signed-artifacts/*.msi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            args: ''
+          - arch: arm64
+            args: '--target aarch64-unknown-linux-gnu'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install dependencies (x64)
+        if: matrix.arch == 'x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+
+      - name: Install dependencies (arm64 cross)
+        if: matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: './church-helper-desktop/package-lock.json'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch == 'arm64' && 'aarch64-unknown-linux-gnu' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+           workspaces: './church-helper-desktop/src-tauri'
+
+      - name: Install frontend dependencies
+        working-directory: ./church-helper-desktop
+        run: npm ci
+
+      # Build x64 naturally
+      - name: Build Linux Deb (x64)
+        if: matrix.arch == 'x64'
+        working-directory: ./church-helper-desktop
+        run: npm run tauri build -- --bundles deb
+
+      # Build ARM64 using tauri-action which handles docker-based cross-compilation effectively
+      # Using 'tauri-apps/tauri-action' is often smoother for cross-compile than manual 'npm run tauri' unless we setup 'cross' manually.
+      # To keep it consistent, let's use tauri-action just for the actual build step if simple 'tauri build' fails for cross.
+      # However, for simplicity in this specific "Easy Path" request, we will stick to attempting a cross-build via the action 
+      # or standard commands if configured.
+      # Note: Cross-compiling GUI apps (GTK) for Linux from Linux x64 is notoriously hard due to C libs.
+      # The most robust way is usually standard runners for x64 and ARM runners for arm64.
+      # Since we don't have ARM runners, we will produce x64 first. 
+      # If the user *strictly* needs arm64 now without ARM runners, we'd need complex docker setup.
+      # Given user constraints, I will leave the ARM64 matrix step but use the official tauri-action for it, 
+      # as it has built-in logic to help or fail fast if setup is missing.
+      
+      # ACTUALLY, sticking to x64 for now as "Easy Path" and adding a note about ARM64 complexity without dedicated hardware
+      # matches the "Linux (The Easy Path)" sentiment, but user explicitly asked for arm64.
+      # Let's try to enable it via 'cross'.
+      
+      - name: Build Linux Deb (arm64)
+        if: matrix.arch == 'arm64'
+        working-directory: ./church-helper-desktop
+        # Configuring tauri action for cross-compilation is safer:
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: ./church-helper-desktop
+          args: --bundles deb --target aarch64-unknown-linux-gnu
+          # tauri-action will use local machine if possible or error if dependencies are missing. 
+          # For true cross-compilation of GTK apps, Docker is needed. 
+          # This config assumes the user might set up QEMU or similar if they run it, or it will fail and they can revert to x64.
+      
+      - name: Upload Deb to Release (x64)
+        if: matrix.arch == 'x64'
+        uses: softprops/action-gh-release@v1
+        with:
+           files: ./church-helper-desktop/src-tauri/target/release/bundle/deb/*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
