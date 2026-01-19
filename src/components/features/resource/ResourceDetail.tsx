@@ -7,7 +7,7 @@ interface ResourceDetailProps {
 }
 
 export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
-    const { isDownloaded, isDownloading, isAutoDownloadEnabled, fileSize, download, toggleAutoDownload } = useResource(resource);
+    const { isDownloaded, isDownloading, isAutoDownloadEnabled, fileSize, error, progress, download, toggleAutoDownload } = useResource(resource);
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 backdrop-blur-sm" onClick={onClose}>
@@ -29,20 +29,27 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                             </div>
                         )}
 
-                        <div className="flex flex-wrap md:flex-nowrap items-start gap-4 mt-6">
-                            <div className="flex-1 min-w-[200px]">
+                        <div className="flex flex-col gap-4 mt-6">
+                            <div className="w-full">
                                 <h3 className="text-lg font-semibold mb-2">Download</h3>
                                 <div className="flex flex-wrap items-center gap-3">
                                     <button
                                         onClick={download}
                                         disabled={isDownloaded || isDownloading}
                                         className={`
-                                            flex items-center gap-3 px-6 py-3 rounded-lg font-bold transition-all shadow-md active:scale-95 whitespace-nowrap
+                                            relative flex items-center gap-3 px-6 py-3 rounded-lg font-bold transition-all shadow-md active:scale-95 whitespace-nowrap flex-1 justify-center overflow-hidden
                                             ${isDownloaded ? 'bg-success text-success-foreground' :
                                                 isDownloading ? 'bg-muted text-muted-foreground cursor-wait' :
                                                     'bg-primary text-primary-foreground hover:bg-primary/90'}
                                         `}
                                     >
+                                        {isDownloading && progress !== null && (
+                                            <div
+                                                className="absolute left-0 top-0 bottom-0 bg-primary/10 transition-all duration-300 ease-out"
+                                                style={{ width: `${progress}%` }}
+                                            />
+                                        )}
+
                                         {isDownloaded ? (
                                             <>
                                                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
@@ -50,8 +57,14 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                             </>
                                         ) : isDownloading ? (
                                             <>
-                                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
-                                                Downloading...
+                                                {progress !== null ? (
+                                                    <span className="relative z-10 font-mono">{progress}%</span>
+                                                ) : (
+                                                    <>
+                                                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
+                                                        Downloading...
+                                                    </>
+                                                )}
                                             </>
                                         ) : (
                                             <>
@@ -61,7 +74,15 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                         )}
                                     </button>
 
-                                    {fileSize && (
+                                    {error && (
+                                        <div className="w-full text-xs text-destructive font-medium mt-1 animate-in fade-in slide-in-from-top-1">
+                                            {error === "Work directory not configured"
+                                                ? "Please set a download folder in Settings."
+                                                : error}
+                                        </div>
+                                    )}
+
+                                    {fileSize && !error && (
                                         <div className="text-sm text-muted-foreground font-medium bg-muted/50 px-3 py-1.5 rounded-md whitespace-nowrap">
                                             {fileSize}
                                         </div>
@@ -69,7 +90,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                 </div>
                             </div>
 
-                            <div className="w-full md:w-auto md:flex-1 bg-secondary/20 p-4 rounded-lg min-w-[200px]">
+                            <div className="w-full bg-secondary/20 p-4 rounded-lg">
                                 <div className="flex items-center justify-between mb-2 gap-4">
                                     <span className="font-medium text-foreground whitespace-nowrap">Auto-download</span>
                                     <button

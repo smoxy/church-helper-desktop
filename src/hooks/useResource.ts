@@ -1,4 +1,5 @@
 import {invoke} from '@tauri-apps/api/core';
+import {listen} from '@tauri-apps/api/event';
 import {useEffect, useState} from 'react';
 
 import {AppConfig, Resource} from '../types';
@@ -11,12 +12,23 @@ export function useResource(resource: Resource) {
 
   const [fileSize, setFileSize] = useState<string|null>(null);
 
+  const [error, setError] = useState<string|null>(null);
+
+  const [progress, setProgress] = useState<number|null>(null);
+
   // Initial check for status and config
   useEffect(() => {
     checkStatus();
     checkAutoDownload();
     fetchFileSize();
   }, [resource]);
+
+  // ... (checkStatus, checkAutoDownload, fetchFileSize remain same - omitted
+  // for brevity if possible, but replace_file_content needs contiguity or full
+  // replacement if chunks are complex. I'll replace the full body for safety or
+  // target carefully) To avoid huge replacement, I will replace the state defs
+  // and the download function separately if possible, or just the whole top and
+  // bottom. Actually, I'll do a large chunk replacement to be safe.
 
   const checkStatus = async () => {
     try {
@@ -65,23 +77,34 @@ export function useResource(resource: Resource) {
     if (isDownloading || isDownloaded) return;
 
     setIsDownloading(true);
+    setError(null);
+    setProgress(0);
+
+    let unlisten: (() => void)|undefined;
+
     try {
+      // Set up listener before starting download
+      unlisten = await listen<{id: number, progress: number}>(
+          'download-progress', (event) => {
+            if (event.payload.id === resource.id) {
+              setProgress(event.payload.progress);
+            }
+          });
+
       await invoke('download_resource', {resource});
 
-      // Listen for the download-complete event or just poll/check locally?
-      // Since the command is async and returns path, we can assume success if
-      // no error
       setIsDownloaded(true);
-      await checkStatus();  // Verify
+      await checkStatus();
 
-      // Also emit a global event so other components know (like the card vs
-      // modal) For now, simpler: we rely on individual components checking
-      // status or re-mounting
-
-    } catch (error) {
+    } catch (error: any) {
       console.error('Download failed:', error);
+      setError(
+          typeof error === 'string' ? error :
+                                      error.message || 'Download failed');
     } finally {
       setIsDownloading(false);
+      setProgress(null);
+      if (unlisten) unlisten();
     }
   };
 
@@ -111,6 +134,8 @@ export function useResource(resource: Resource) {
     isDownloading,
     isAutoDownloadEnabled,
     fileSize,
+    error,
+    progress,
     download,
     toggleAutoDownload
   };

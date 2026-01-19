@@ -33,18 +33,22 @@ impl DownloadService {
         &self,
         resource: &Resource,
         dest_dir: &Path,
-        _app: Option<&AppHandle>,
+        app: Option<&AppHandle>,
     ) -> Result<PathBuf, DownloadError> {
         if resource.is_youtube() {
             self.create_youtube_shortcut(resource, dest_dir)
         } else {
-            self.download_file(resource, dest_dir).await
+            self.download_file(resource, dest_dir, app).await
         }
     }
 
     /// Download a regular file
-    async fn download_file(&self, resource: &Resource, dest_dir: &Path) -> Result<PathBuf, DownloadError> {
+    async fn download_file(&self, resource: &Resource, dest_dir: &Path, app: Option<&AppHandle>) -> Result<PathBuf, DownloadError> {
+        use futures_util::StreamExt;
+        use tauri::Emitter;
+
         let response = self.client.get(&resource.download_url).send().await?;
+        let total_size = response.content_length();
         
         // Extract filename from URL or use resource title
         let filename = extract_filename_from_url(&resource.download_url)
@@ -52,13 +56,34 @@ impl DownloadService {
         
         let dest_path = dest_dir.join(&filename);
 
-        // Stream to file
-        let bytes = response.bytes().await?;
-        
-        std::fs::write(&dest_path, &bytes).map_err(|e| DownloadError::WriteError {
+        let mut file = std::fs::File::create(&dest_path).map_err(|e| DownloadError::WriteError {
             path: dest_path.clone(),
             source: e,
         })?;
+
+        let mut stream = response.bytes_stream();
+        let mut downloaded: u64 = 0;
+
+        while let Some(item) = stream.next().await {
+            let chunk = item?;
+            file.write_all(&chunk).map_err(|e| DownloadError::WriteError {
+                path: dest_path.clone(),
+                source: e,
+            })?;
+
+            downloaded += chunk.len() as u64;
+
+            if let Some(app) = app {
+                if let Some(total) = total_size {
+                    let progress = ((downloaded as f64 / total as f64) * 100.0) as u8;
+                    // Emit progress event: payload = { id: string, progress: number }
+                    let _ = app.emit("download-progress", serde_json::json!({
+                        "id": resource.id,
+                        "progress": progress
+                    }));
+                }
+            }
+        }
 
         Ok(dest_path)
     }
