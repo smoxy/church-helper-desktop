@@ -55,9 +55,11 @@ impl DownloadService {
             .unwrap_or_else(|| sanitize_filename(&resource.title));
         
         let dest_path = dest_dir.join(&filename);
+        // Use .part extension for incomplete download
+        let part_path = dest_dir.join(format!("{}.part", filename));
 
-        let mut file = std::fs::File::create(&dest_path).map_err(|e| DownloadError::WriteError {
-            path: dest_path.clone(),
+        let mut file = std::fs::File::create(&part_path).map_err(|e| DownloadError::WriteError {
+            path: part_path.clone(),
             source: e,
         })?;
 
@@ -67,7 +69,7 @@ impl DownloadService {
         while let Some(item) = stream.next().await {
             let chunk = item?;
             file.write_all(&chunk).map_err(|e| DownloadError::WriteError {
-                path: dest_path.clone(),
+                path: part_path.clone(),
                 source: e,
             })?;
 
@@ -84,6 +86,12 @@ impl DownloadService {
                 }
             }
         }
+
+        // Rename .part file to final filename on success
+        std::fs::rename(&part_path, &dest_path).map_err(|e| DownloadError::WriteError {
+            path: dest_path.clone(),
+            source: e,
+        })?;
 
         Ok(dest_path)
     }

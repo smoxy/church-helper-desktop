@@ -50,12 +50,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                             />
                                         )}
 
-                                        {isDownloaded ? (
-                                            <>
-                                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                                                Downloaded
-                                            </>
-                                        ) : isDownloading ? (
+                                        {isDownloading ? (
                                             <>
                                                 {progress !== null ? (
                                                     <span className="relative z-10 font-mono">{progress}%</span>
@@ -65,6 +60,11 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                                         Downloading...
                                                     </>
                                                 )}
+                                            </>
+                                        ) : isDownloaded ? (
+                                            <>
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                                Downloaded
                                             </>
                                         ) : (
                                             <>
@@ -89,34 +89,37 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                     )}
                                 </div>
                             </div>
-
-                            <div className="w-full bg-secondary/20 p-4 rounded-lg">
-                                <div className="flex items-center justify-between mb-2 gap-4">
-                                    <span className="font-medium text-foreground whitespace-nowrap">Auto-download</span>
-                                    <button
-                                        onClick={toggleAutoDownload}
-                                        className={`
-                                            relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2
-                                            ${isAutoDownloadEnabled ? 'bg-success' : 'bg-muted'}
-                                        `}
-                                    >
-                                        <span className={`
-                                            inline-block h-4 w-4 transform rounded-full bg-white transition-transform
-                                            ${isAutoDownloadEnabled ? 'translate-x-6' : 'translate-x-1'}
-                                        `} />
-                                    </button>
-                                </div>
-                                <p className="text-xs text-muted-foreground">
-                                    Automatically download future resources in the <strong>{resource.category}</strong> category.
-                                </p>
-                            </div>
                         </div>
                     </div>
 
                     <div className="space-y-4">
-                        <div>
-                            <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Category</span>
-                            <p className="text-lg font-medium text-foreground capitalize">{resource.category}</p>
+                        <div className="flex justify-between items-start">
+                            <div>
+                                <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Category</span>
+                                <p className="text-lg font-medium text-foreground capitalize">{resource.category}</p>
+                            </div>
+
+                            {/* Auto-download Toggle with Tooltip */}
+                            <div className="group relative flex items-center">
+                                <button
+                                    onClick={toggleAutoDownload}
+                                    className={`
+                                        relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2
+                                        ${isAutoDownloadEnabled ? 'bg-success' : 'bg-muted'}
+                                    `}
+                                >
+                                    <span className={`
+                                        inline-block h-4 w-4 transform rounded-full bg-white transition-transform
+                                        ${isAutoDownloadEnabled ? 'translate-x-6' : 'translate-x-1'}
+                                    `} />
+                                </button>
+
+                                {/* Tooltip */}
+                                <div className="absolute right-0 top-full mt-2 w-48 p-2 bg-popover text-popover-foreground text-xs rounded-md shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 border border-border">
+                                    Automatically download future resources in the <strong>{resource.category}</strong> category.
+                                    <div className="absolute -top-1 right-3 w-2 h-2 bg-popover transform rotate-45 border-t border-l border-border"></div>
+                                </div>
+                            </div>
                         </div>
 
                         <div>

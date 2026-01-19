@@ -28,17 +28,15 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
         >
             {/* Download Status Indicator (Top Right of Card) */}
             <div className="absolute top-2 right-2 z-10 flex gap-1">
-                {isDownloaded && (
-                    <div className="bg-success text-success-foreground p-1.5 rounded-full shadow-sm" title="Downloaded">
-                        <Check className="h-3 w-3" />
-                    </div>
-                )}
-                {isDownloading && (
+                {isDownloading ? (
                     <div className="bg-muted text-muted-foreground p-1.5 rounded-full shadow-sm" title="Downloading...">
                         <Loader2 className="h-3 w-3 animate-spin" />
                     </div>
-                )}
-                {!isDownloaded && !isDownloading && (
+                ) : isDownloaded ? (
+                    <div className="bg-success text-success-foreground p-1.5 rounded-full shadow-sm" title="Downloaded">
+                        <Check className="h-3 w-3" />
+                    </div>
+                ) : (
                     <div className="bg-black/30 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" title="Click to view">
                         <Download className="h-3 w-3" />
                     </div>
