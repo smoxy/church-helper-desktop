@@ -1,9 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useAppStore } from "../stores/appStore";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { RefreshCw, FileAudio, FileVideo, FileText, MonitorPlay } from "lucide-react";
 import { format } from "date-fns";
+import { Resource } from "../types";
+import { ResourceDetail } from "../components/features/resource/ResourceDetail";
 
 export default function Dashboard() {
     const {
@@ -14,6 +16,8 @@ export default function Dashboard() {
         fetchInitialData,
         forcePoll
     } = useAppStore();
+
+    const [selectedResource, setSelectedResource] = useState<Resource | null>(null);
 
     useEffect(() => {
         fetchInitialData();
@@ -119,18 +123,22 @@ export default function Dashboard() {
                         </div>
                     ) : (
                         resources.map((resource) => (
-                            <Card key={resource.id} className="overflow-hidden">
+                            <Card
+                                key={resource.id}
+                                className="overflow-hidden cursor-pointer hover:border-primary/50 transition-colors group"
+                                onClick={() => setSelectedResource(resource)}
+                            >
                                 {resource.thumbnail_url && (
                                     <div className="aspect-video w-full overflow-hidden">
                                         <img
                                             src={resource.thumbnail_url}
                                             alt={resource.title}
-                                            className="w-full h-full object-cover transition-transform hover:scale-105"
+                                            className="w-full h-full object-cover transition-transform group-hover:scale-105"
                                         />
                                     </div>
                                 )}
                                 <CardHeader className="pb-3">
-                                    <CardTitle className="text-lg line-clamp-1" title={resource.title}>
+                                    <CardTitle className="text-lg line-clamp-1 group-hover:text-primary transition-colors" title={resource.title}>
                                         {resource.title}
                                     </CardTitle>
                                     <CardDescription className="flex items-center gap-2 text-xs">
@@ -151,6 +159,13 @@ export default function Dashboard() {
                     )}
                 </div>
             </div>
+
+            {selectedResource && (
+                <ResourceDetail
+                    resource={selectedResource}
+                    onClose={() => setSelectedResource(null)}
+                />
+            )}
         </div>
     );
 }
