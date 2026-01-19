@@ -77,7 +77,7 @@ export default function AppLayout() {
                                 <span className="font-medium">dev@adventistyouth.it</span>
                             </a>
                             <a
-                                href="https://www.buymeacoffee.com/your-profile" // Ideally replace with actual link
+                                href="https://buymeacoffee.com/smoxy"
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-orange-500/10 text-orange-600 hover:bg-orange-500/20 transition-all font-semibold text-xs border border-orange-500/20"
