@@ -2,7 +2,7 @@
 //!
 //! These commands implement the "Dumb UI, Smart Backend" architecture.
 
-use crate::error::AppError;
+
 use crate::models::{AppConfig, AppStatus, Resource, ResourceListResponse, WeekIdentifier};
 use std::path::PathBuf;
 use std::sync::RwLock;

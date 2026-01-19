@@ -2,7 +2,7 @@
 //!
 //! These models represent the core domain entities used throughout the application.
 
-use chrono::{DateTime, Datelike, IsoWeek, Utc};
+use chrono::{DateTime, Datelike, IsoWeek, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -58,9 +58,32 @@ pub struct Resource {
     pub thumbnail_url: Option<String>,
     pub file_type: Option<String>,
     pub is_active: bool,
+    #[serde(deserialize_with = "deserialize_naive_to_utc")]
     pub created_at: DateTime<Utc>,
 }
 
+fn deserialize_naive_to_utc<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+
+    // Attempt to parse as RFC3339 (standard JSON format for DateTime<Utc>)
+    if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+
+    // Attempt to parse as NaiveDateTime (default for the API)
+    // The format is ISO 8601 without timezone
+    if let Ok(naive) = s.parse::<NaiveDateTime>() {
+        return Ok(naive.and_utc());
+    }
+
+    Err(serde::de::Error::custom(format!(
+        "Failed to parse datetime: {}",
+        s
+    )))
+}
 impl Resource {
     /// Check if the download URL is a YouTube link
     pub fn is_youtube(&self) -> bool {
@@ -328,7 +351,7 @@ mod tests {
                     "thumbnail_url": "https://example.com/thumb.jpg",
                     "file_type": null,
                     "is_active": true,
-                    "created_at": "2026-01-17T23:51:02.358083Z"
+                    "created_at": "2026-01-17T23:51:02.358083"
                 },
                 {
                     "id": 2,
