@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { LayoutDashboard, Settings } from "lucide-react";
 import { cn } from "../lib/utils";
+import { ToastContainer } from "../components/ui/toast";
 
 export default function AppLayout() {
     return (
@@ -88,6 +89,7 @@ export default function AppLayout() {
                     </div>
                 </footer>
             </main>
+            <ToastContainer />
         </div>
     );
 }

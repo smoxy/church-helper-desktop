@@ -1,21 +1,24 @@
 import { useEffect, useState } from "react";
 import { useAppStore } from "../stores/appStore";
+import { useToastStore } from "../stores/toastStore";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Switch } from "../components/ui/switch";
-import { FolderOpen, Save } from "lucide-react";
+import { FolderOpen } from "lucide-react";
 
 
 export default function Settings() {
     const {
         config,
         fetchInitialData,
-        selectWorkDirectory,
-        togglePolling,
+        selectWorkDirectory: selectWorkDirAction,
+        togglePolling: togglePollingAction,
         setPollingInterval,
         setRetentionDays
     } = useAppStore();
+
+    const { addToast } = useToastStore();
 
     // Local state for interval to manage input changes before committing
     const [localInterval, setLocalInterval] = useState(60);
@@ -32,13 +35,64 @@ export default function Settings() {
         }
     }, [config]);
 
-    const handleIntervalChange = async () => {
-        await setPollingInterval(localInterval);
+    const handleIntervalBlur = async () => {
+        if (!config) return;
+        if (localInterval === config.polling_interval_minutes) return;
+
+        if (isNaN(localInterval) || localInterval < 1 || localInterval > 1440) {
+            addToast("Polling interval must be between 1 and 1440 minutes", "error");
+            // Reset to last valid config value
+            setLocalInterval(config.polling_interval_minutes);
+            return;
+        }
+
+        try {
+            await setPollingInterval(localInterval);
+            addToast("Polling interval updated", "success");
+        } catch (e) {
+            addToast(`Failed to update interval: ${e}`, "error");
+        }
     };
 
-    const handleRetentionChange = async () => {
-        await setRetentionDays(localRetention);
+    const handleRetentionBlur = async () => {
+        if (!config) return;
+        if (localRetention === config.retention_days) return;
+
+        if (localRetention !== null && localRetention < 0) {
+            addToast("Retention days cannot be negative", "error");
+            setLocalRetention(config.retention_days);
+            return;
+        }
+
+        try {
+            await setRetentionDays(localRetention);
+            addToast("Retention policy updated", "success");
+        } catch (e) {
+            addToast(`Failed to update retention: ${e}`, "error");
+        }
     };
+
+    const togglePolling = async (enabled: boolean) => {
+        try {
+            await togglePollingAction(enabled);
+            addToast(enabled ? "Polling enabled" : "Polling paused", "success");
+        } catch (e) {
+            addToast(`Failed to toggle polling: ${e}`, "error");
+        }
+    };
+
+    const selectWorkDirectory = async () => {
+        try {
+            const oldPath = config?.work_directory;
+            await selectWorkDirAction();
+            // check store to see if it changed (the action in store updates the state)
+            // But selectWorkDirAction is async, so we should wait or check return if it returned something
+            // currently selectWorkDirectory in appStore doesn't return anything but updates state.
+            addToast("Work directory updated", "success");
+        } catch (e) {
+            addToast(`Failed to select directory: ${e}`, "error");
+        }
+    }
 
     if (!config) return <div>Loading settings...</div>;
 
@@ -80,26 +134,23 @@ export default function Settings() {
                     <div className="flex flex-col gap-2 pt-4 border-t">
                         <label className="text-sm font-medium">Retention Policy</label>
                         <div className="flex flex-wrap items-center gap-4">
-                            <div className="flex-1 min-w-[200px]">
-                                <div className="flex items-center gap-2">
-                                    <Input
-                                        type="number"
-                                        min="0"
-                                        placeholder="Days (Empty = Forever)"
-                                        className="flex-1 min-w-[120px]"
-                                        value={localRetention === null ? "" : localRetention}
-                                        onChange={(e) => {
-                                            const val = e.target.value;
-                                            setLocalRetention(val === "" ? null : parseInt(val));
-                                        }}
-                                    />
-                                    <Button size="sm" onClick={handleRetentionChange} className="shrink-0">
-                                        <Save className="h-4 w-4" />
-                                    </Button>
-                                </div>
+                            <div className="flex items-center gap-2 w-48 min-w-[140px]">
+                                <Input
+                                    type="number"
+                                    min="0"
+                                    placeholder="Days"
+                                    className="flex-1 min-w-0"
+                                    value={localRetention === null ? "" : localRetention}
+                                    onChange={(e) => {
+                                        const val = e.target.value;
+                                        setLocalRetention(val === "" ? null : parseInt(val));
+                                    }}
+                                    onBlur={handleRetentionBlur}
+                                />
+                                <span className="text-sm shrink-0">days</span>
                             </div>
-                            <span className="text-sm text-muted-foreground truncate">
-                                days to keep archives (0 = delete immediately, empty = keep forever)
+                            <span className="text-sm text-muted-foreground">
+                                (0 = delete immediately, empty = keep forever)
                             </span>
                         </div>
                     </div>
@@ -138,16 +189,14 @@ export default function Settings() {
                                     className="flex-1 min-w-0"
                                     value={localInterval}
                                     onChange={(e) => setLocalInterval(parseInt(e.target.value))}
+                                    onBlur={handleIntervalBlur}
                                 />
                                 <span className="text-sm shrink-0">min</span>
                             </div>
-                            <Button size="sm" variant="outline" onClick={handleIntervalChange} className="whitespace-nowrap">
-                                Save Interval
-                            </Button>
+                            <span className="text-sm text-muted-foreground">
+                                (1 - 1440 minutes)
+                            </span>
                         </div>
-                        <p className="text-xs text-muted-foreground">
-                            How often to check for updates (1 - 1440 minutes).
-                        </p>
                     </div>
                 </CardContent>
             </Card>
@@ -170,3 +219,4 @@ export default function Settings() {
         </div>
     );
 }
+
