@@ -64,12 +64,27 @@ pub fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
 }
 
 /// Update the configuration
+/// Update the configuration
 #[tauri::command]
-pub fn set_config(state: State<'_, AppState>, config: AppConfig) -> Result<(), String> {
+pub fn set_config(state: State<'_, AppState>, app: AppHandle, config: AppConfig) -> Result<(), String> {
     // Validate before saving
     config
         .validate()
         .map_err(|e| format!("Invalid config: {:?}", e))?;
+
+    // Save to store
+    use tauri_plugin_store::StoreExt;
+    let store = app
+        .store("settings.json")
+        .map_err(|e| format!("Failed to access store: {}", e))?;
+    
+    let json = serde_json::to_value(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    
+    store.set("config", json);
+    store
+        .save()
+        .map_err(|e| format!("Failed to save store: {}", e))?;
 
     let mut current = state
         .config
@@ -151,8 +166,13 @@ pub async fn force_poll(
 }
 
 /// Set the work directory
+/// Set the work directory
 #[tauri::command]
-pub fn set_work_directory(state: State<'_, AppState>, path: String) -> Result<(), String> {
+pub fn set_work_directory(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    path: String,
+) -> Result<(), String> {
     let path_buf = PathBuf::from(&path);
 
     // Verify directory exists
@@ -169,12 +189,32 @@ pub fn set_work_directory(state: State<'_, AppState>, path: String) -> Result<()
         .write()
         .map_err(|e| format!("Failed to write config: {}", e))?;
     config.work_directory = Some(path_buf);
+
+    // Save to store
+    use tauri_plugin_store::StoreExt;
+    let store = app
+        .store("settings.json")
+        .map_err(|e| format!("Failed to access store: {}", e))?;
+    
+    let json = serde_json::to_value(&*config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    
+    store.set("config", json);
+    store
+        .save()
+        .map_err(|e| format!("Failed to save store: {}", e))?;
+
     Ok(())
 }
 
 /// Toggle polling on/off
+/// Toggle polling on/off
 #[tauri::command]
-pub fn set_polling_enabled(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+pub fn set_polling_enabled(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
     let mut config = state
         .config
         .write()
@@ -187,12 +227,31 @@ pub fn set_polling_enabled(state: State<'_, AppState>, enabled: bool) -> Result<
         .map_err(|e| format!("Failed to write status: {}", e))?;
     status.polling_active = enabled;
 
+    // Save to store
+    use tauri_plugin_store::StoreExt;
+    let store = app
+        .store("settings.json")
+        .map_err(|e| format!("Failed to access store: {}", e))?;
+    
+    let json = serde_json::to_value(&*config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    
+    store.set("config", json);
+    store
+        .save()
+        .map_err(|e| format!("Failed to save store: {}", e))?;
+
     Ok(())
 }
 
 /// Set the polling interval in minutes
+/// Set the polling interval in minutes
 #[tauri::command]
-pub fn set_polling_interval(state: State<'_, AppState>, minutes: u32) -> Result<(), String> {
+pub fn set_polling_interval(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    minutes: u32,
+) -> Result<(), String> {
     if minutes < 1 || minutes > 1440 {
         return Err("Polling interval must be between 1 and 1440 minutes".to_string());
     }
@@ -202,17 +261,52 @@ pub fn set_polling_interval(state: State<'_, AppState>, minutes: u32) -> Result<
         .write()
         .map_err(|e| format!("Failed to write config: {}", e))?;
     config.polling_interval_minutes = minutes;
+
+    // Save to store
+    use tauri_plugin_store::StoreExt;
+    let store = app
+        .store("settings.json")
+        .map_err(|e| format!("Failed to access store: {}", e))?;
+    
+    let json = serde_json::to_value(&*config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    
+    store.set("config", json);
+    store
+        .save()
+        .map_err(|e| format!("Failed to save store: {}", e))?;
+
     Ok(())
 }
 
 /// Set the retention policy
+/// Set the retention policy
 #[tauri::command]
-pub fn set_retention_days(state: State<'_, AppState>, days: Option<u32>) -> Result<(), String> {
+pub fn set_retention_days(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    days: Option<u32>,
+) -> Result<(), String> {
     let mut config = state
         .config
         .write()
         .map_err(|e| format!("Failed to write config: {}", e))?;
     config.retention_days = days;
+
+    // Save to store
+    use tauri_plugin_store::StoreExt;
+    let store = app
+        .store("settings.json")
+        .map_err(|e| format!("Failed to access store: {}", e))?;
+    
+    let json = serde_json::to_value(&*config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    
+    store.set("config", json);
+    store
+        .save()
+        .map_err(|e| format!("Failed to save store: {}", e))?;
+
     Ok(())
 }
 

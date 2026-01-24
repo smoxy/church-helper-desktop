@@ -42,7 +42,7 @@ impl PollingService {
         let is_running = self.is_running.clone();
         let mut cancel_rx = self.cancel_tx.subscribe();
 
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             let duration = Duration::from_secs(interval_mins as u64 * 60);
             let mut ticker = interval(duration);
 

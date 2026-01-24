@@ -27,17 +27,39 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Initialize application state
-            app.manage(AppState::default());
+            let app_state = AppState::default();
+
+            // Load config from store
+            use tauri_plugin_store::StoreExt;
+            let store = app.store("settings.json")?;
+            
+            // Try to load existing config
+            let mut config = AppConfig::default();
+            if let Some(json) = store.get("config") {
+                if let Ok(loaded_config) = serde_json::from_value(json.clone()) {
+                    tracing::info!("Loaded configuration from store");
+                    config = loaded_config;
+                }
+            } else {
+                // Save default config if not exists
+                tracing::info!("Initializing default configuration");
+                let json = serde_json::to_value(&config).expect("Failed to serialize default config");
+                store.set("config", json);
+                store.save()?;
+            }
+
+            // Set config in state
+            *app_state.config.write().unwrap() = config.clone();
+
+            app.manage(app_state);
 
             tracing::info!("Church Helper Desktop initialized");
 
-            // TODO: Load config from store and start polling if enabled
-            // let state = app.state::<AppState>();
-            // let config = state.config.read().unwrap();
-            // if config.polling_enabled {
-            //     let polling_service = PollingService::new();
-            //     polling_service.start(app.handle().clone(), config.polling_interval_minutes);
-            // }
+            // Auto-start polling if enabled
+            if config.polling_enabled {
+                let polling_service = PollingService::new();
+                polling_service.start(app.handle().clone(), config.polling_interval_minutes);
+            }
 
             Ok(())
         })
