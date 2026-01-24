@@ -439,3 +439,56 @@ pub async fn get_file_size(url: String) -> Result<u64, String> {
 
     Ok(content_length)
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResourceSummary {
+    pub total: usize,
+    pub downloaded: usize,
+    pub active: usize,
+    pub queued: usize,
+}
+
+#[tauri::command]
+pub async fn get_resource_summary(state: State<'_, AppState>) -> Result<ResourceSummary, String> {
+    // Clone data that needs to be used after await points or potentially long operations
+    // This avoids holding non-Send RwLockGuard across await points
+    let (resources, config) = {
+        let resources = state.resources.read().map_err(|e| e.to_string())?.clone();
+        let config = state.config.read().map_err(|e| e.to_string())?.clone();
+        (resources, config)
+    };
+    
+    // Now we can await without holding the lock guards
+    let active = state.download_queue.active_count();
+    let queued = state.download_queue.queue_len().await;
+    let total = resources.len();
+    
+    let mut downloaded = 0;
+    
+    // We need to clone the work directory to move it into the 'static closure
+    if let Some(work_dir) = config.work_directory.clone() {
+        // Run filesystem checks in a blocking task to avoid blocking the async runtime
+        downloaded = tauri::async_runtime::spawn_blocking(move || {
+            let mut count = 0;
+            for resource in resources {
+                let week_dir = resource.week().as_dir_name();
+                let dest_dir = work_dir.join(week_dir);
+                let filename = crate::services::download::extract_filename_from_url(&resource.download_url)
+                    .unwrap_or_else(|| crate::services::download::sanitize_filename(&resource.title));
+                let dest_path = dest_dir.join(filename);
+                
+                if dest_path.exists() {
+                    count += 1;
+                }
+            }
+            count
+        }).await.map_err(|e| e.to_string())?;
+    }
+    
+    Ok(ResourceSummary {
+        total,
+        downloaded,
+        active,
+        queued,
+    })
+}

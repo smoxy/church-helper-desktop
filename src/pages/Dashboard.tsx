@@ -18,6 +18,7 @@ export default function Dashboard() {
         isLoading,
         error,
         activeDownloads,
+        summary,
         fetchInitialData,
         forcePoll
     } = useAppStore();
@@ -45,7 +46,7 @@ export default function Dashboard() {
         }
     }, [error, addToast]);
 
-    const activeDownloadsCount = Object.values(activeDownloads).filter(d => d.status === 'downloading' || d.status === 'pending').length;
+    const activeDownloadsCount = summary?.active || 0;
 
     return (
         <div className="space-y-6">
@@ -60,11 +61,13 @@ export default function Dashboard() {
 
             {/* Status Cards */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                <ResourcesFoundCard
-                    resourceCount={resources.length}
-                    activeDownloadsCount={activeDownloadsCount}
-                    onClick={() => setShowDownloads(true)}
-                />
+                <div className="lg:col-span-2">
+                    <ResourcesFoundCard
+                        summary={summary}
+                        activeDownloads={activeDownloads}
+                        onClick={() => setShowDownloads(true)}
+                    />
+                </div>
 
                 <Card>
                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">

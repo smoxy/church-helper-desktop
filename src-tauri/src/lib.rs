@@ -113,6 +113,7 @@ pub fn run() {
             commands::cancel_download,
             commands::check_resource_status,
             commands::get_file_size,
+            commands::get_resource_summary,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -308,4 +308,11 @@ impl DownloadQueue {
             }
         });
     }
+    pub fn active_count(&self) -> usize {
+        self.active_count.load(Ordering::SeqCst)
+    }
+
+    pub async fn queue_len(&self) -> usize {
+        self.queue.lock().await.len()
+    }
 }

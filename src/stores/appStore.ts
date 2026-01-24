@@ -23,11 +23,19 @@ export interface QueueStatusPayload {
   active: number[];
 }
 
+export interface ResourceSummary {
+  total: number;
+  downloaded: number;
+  active: number;
+  queued: number;
+}
+
 interface AppState {
   config: AppConfig|null;
   status: AppStatus|null;
   resources: Resource[];
   activeDownloads: Record<number, ActiveDownload>;
+  summary: ResourceSummary|null;
   archivedWeeks: WeekIdentifier[];
   isLoading: boolean;
   error: string|null;
@@ -41,6 +49,7 @@ interface AppState {
   setPollingInterval: (minutes: number) => Promise<void>;
   setRetentionDays: (days: number|null) => Promise<void>;
   fetchArchivedWeeks: () => Promise<void>;
+  fetchSummary: () => Promise<void>;
   startDownload: (resource: Resource) => Promise<void>;
   pauseDownload: (resourceId: number) => Promise<void>;
   resumeDownload: (resource: Resource) => Promise<void>;
@@ -56,15 +65,17 @@ export const useAppStore = create<AppState>(
       isLoading: true,
       error: null,
       activeDownloads: {},
+      summary: null,
 
       fetchInitialData: async () => {
         try {
           set({isLoading: true, error: null});
 
-          const [config, status, resources] = await Promise.all([
+          const [config, status, resources, summary] = await Promise.all([
             invoke<AppConfig>('get_config'),
             invoke<AppStatus>('get_status'),
             invoke<Resource[]>('get_resources'),
+            invoke<ResourceSummary>('get_resource_summary'),
           ]);
 
           // If work directory is set, fetch archived weeks
@@ -78,13 +89,21 @@ export const useAppStore = create<AppState>(
             }
           }
 
-          set({config, status, resources, archivedWeeks, isLoading: false});
+          set({
+            config,
+            status,
+            resources,
+            summary,
+            archivedWeeks,
+            isLoading: false
+          });
 
           // Listen for updates
           await listen<ResourceListResponse>('resources-updated', (event) => {
             set({resources: event.payload.resources});
             // Also refresh status to update last poll time
             invoke<AppStatus>('get_status').then(status => set({status}));
+            get().fetchSummary();
           });
 
           await listen<string>('poll-error', (event) => {
@@ -152,6 +171,7 @@ export const useAppStore = create<AppState>(
 
               return {activeDownloads: newActiveDownloads};
             });
+            get().fetchSummary();
           });
 
           // Listen for download start from queue
@@ -189,6 +209,7 @@ export const useAppStore = create<AppState>(
                 }
               };
             });
+            get().fetchSummary();
           });
 
           // Listen for download completion from auto-download queue
@@ -210,6 +231,7 @@ export const useAppStore = create<AppState>(
                 }
               };
             });
+            get().fetchSummary();
           });
 
         } catch (e) {
@@ -300,6 +322,15 @@ export const useAppStore = create<AppState>(
         } catch (e) {
           // Silently fail if e.g. dir not set
           console.error(e);
+        }
+      },
+
+      fetchSummary: async () => {
+        try {
+          const summary = await invoke<ResourceSummary>('get_resource_summary');
+          set({summary});
+        } catch (e) {
+          console.error('Failed to fetch summary', e);
         }
       },
 
