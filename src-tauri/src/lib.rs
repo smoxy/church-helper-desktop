@@ -50,6 +50,25 @@ pub fn run() {
 
             // Set config in state
             *app_state.config.write().unwrap() = config.clone();
+            
+            // Sync status with config
+            app_state.status.write().unwrap().polling_active = config.polling_enabled;
+
+            // Try to load cached resources
+            let cache_store = app.store("cache.json")?;
+            if let Some(json) = cache_store.get("resources") {
+                if let Ok(cached_resources) = serde_json::from_value::<Vec<Resource>>(json.clone()) {
+                    *app_state.resources.write().unwrap() = cached_resources.clone();
+                    tracing::info!("Loaded {} cached resources", cached_resources.len());
+                    
+                    // Update status with cached data
+                    let mut status = app_state.status.write().unwrap();
+                    status.total_resources = cached_resources.len();
+                    if let Some(resource) = cached_resources.first() {
+                         status.current_week = Some(resource.week());
+                    }
+                }
+            }
 
             app.manage(app_state);
 

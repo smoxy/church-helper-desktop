@@ -139,6 +139,13 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
     app.emit("resources-updated", &api_response)?;
     app.emit("poll-tick", ())?;
 
+    // Save to cache
+    use tauri_plugin_store::StoreExt;
+    let store = app.store("cache.json").map_err(|e| e.to_string())?;
+    let json = serde_json::to_value(&api_response.resources).map_err(|e| e.to_string())?;
+    store.set("resources", json);
+    store.save().map_err(|e| e.to_string())?;
+
     tracing::info!(
         "Poll completed: {} resources fetched",
         api_response.resources.len()
