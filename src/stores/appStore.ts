@@ -11,6 +11,16 @@ export interface ActiveDownload {
   integrity?: 'verified'|'mismatch'|'unknown';
   path?: string;
   hash?: string;
+  // Added fields
+  currentBytes?: number;
+  totalBytes?: number;
+  queuePosition?: number;
+  startTime?: number;
+}
+
+export interface QueueStatusPayload {
+  queued: Array<{id: number, position: number}>;
+  active: number[];
 }
 
 interface AppState {
@@ -86,24 +96,121 @@ export const useAppStore = create<AppState>(
           });
 
           // Global download progress listener
-          await listen<{id: number, progress: number}>(
-              'download-progress', (event) => {
-                set(state => {
-                  const current = state.activeDownloads[event.payload.id];
-                  // If paused, don't update progress (though backend shouldn't
-                  // emit)
-                  if (!current || current.status !== 'downloading')
-                    return state;
+          await listen<{
+            id: number,
+            progress: number,
+            current_bytes?: number,
+            total_bytes?: number
+          }>('download-progress', (event) => {
+            set(state => {
+              const current = state.activeDownloads[event.payload.id];
+              // If paused, don't update progress (though backend shouldn't
+              // emit)
+              if (!current || current.status !== 'downloading') return state;
 
-                  return {
-                    activeDownloads: {
-                      ...state.activeDownloads,
-                      [event.payload.id]:
-                          {...current, progress: event.payload.progress}
-                    }
+              return {
+                activeDownloads: {
+                  ...state.activeDownloads,
+                  [event.payload.id]: {
+                    ...current,
+                    progress: event.payload.progress,
+                    currentBytes: event.payload.current_bytes,
+                    totalBytes: event.payload.total_bytes,
+                    // Set start time if not set
+                    startTime: current.startTime || Date.now()
+                  }
+                }
+              };
+            });
+          });
+
+          // Listen for queue status changes
+          await listen<QueueStatusPayload>('queue-status-changed', (event) => {
+            set(state => {
+              const {queued, active} = event.payload;
+              const newActiveDownloads = {...state.activeDownloads};
+
+              // Update queue positions for queued items
+              queued.forEach(item => {
+                // If we know about this download (it's potentially in
+                // pending/paused/downloading state)
+                if (newActiveDownloads[item.id]) {
+                  newActiveDownloads[item.id] = {
+                    ...newActiveDownloads[item.id],
+                    queuePosition: item.position,
+                    status: 'pending'  // Ensure it's marked pending if in queue
                   };
-                });
+                } else {
+                  // New item from queue we didn't know about? Add it.
+                  newActiveDownloads[item.id] = {
+                    progress: 0,
+                    status: 'pending',
+                    queuePosition: item.position
+                  };
+                }
               });
+
+              return {activeDownloads: newActiveDownloads};
+            });
+          });
+
+          // Listen for download start from queue
+          await listen<number>('download-started', (event) => {
+            const resourceId = event.payload;
+            console.log(
+                `[DownloadEvent] Received download-started for resource ${
+                    resourceId}`);
+            set(state => {
+              const current = state.activeDownloads[resourceId];
+
+              if (current) {
+                console.log(
+                    `[DownloadEvent] Resource ${resourceId} found (status: ${
+                        current.status}), updating to downloading`);
+                return {
+                  activeDownloads: {
+                    ...state.activeDownloads,
+                    [resourceId]: {
+                      ...current,
+                      status: 'downloading',
+                      // Reset error if retrying
+                      error: undefined
+                    }
+                  }
+                };
+              }
+
+              console.log(`[DownloadEvent] Adding new resource ${
+                  resourceId} to activeDownloads`);
+              return {
+                activeDownloads: {
+                  ...state.activeDownloads,
+                  [resourceId]: {progress: 0, status: 'downloading'}
+                }
+              };
+            });
+          });
+
+          // Listen for download completion from auto-download queue
+          await listen<number>('download-complete', (event) => {
+            const resourceId = event.payload;
+            set(state => {
+              const current = state.activeDownloads[resourceId];
+              if (!current) {
+                // Auto-download completed for a resource not manually initiated
+                // Don't add it to activeDownloads to avoid clutter
+                return state;
+              }
+
+              // Update existing download to completed
+              return {
+                activeDownloads: {
+                  ...state.activeDownloads,
+                  [resourceId]: {...current, progress: 100, status: 'completed'}
+                }
+              };
+            });
+          });
 
         } catch (e) {
           set({error: `Initialization failed: ${e}`, isLoading: false});
@@ -201,77 +308,24 @@ export const useAppStore = create<AppState>(
         // If already downloading, do nothing
         if (activeDownloads[resource.id]?.status === 'downloading') return;
 
-        // Determine initial progress (preserve if resuming)
-        const initialProgress = activeDownloads[resource.id]?.progress || 0;
-
+        // Mark as downloading immediately
         set(state => ({
               activeDownloads: {
                 ...state.activeDownloads,
-                [resource.id]: {
-                  progress: initialProgress,
-                  status: 'downloading',
-                  error: undefined
-                }
+                [resource.id]:
+                    {progress: 0, status: 'downloading', error: undefined}
               }
             }));
 
         try {
-          const result = await invoke<{path: string, hash: string}>(
-              'download_resource', {resource});
-
-          let integrity: ActiveDownload['integrity'] = 'unknown';
-          if (resource.checksum && resource.checksum.trim() !== '') {
-            // Simple check: backend hash is hex string. Check equality.
-            // Assuming case-insensitive comparison might be safer
-            integrity =
-                result.hash.toLowerCase() === resource.checksum.toLowerCase() ?
-                'verified' :
-                'mismatch';
-          } else {
-            // If return hash is "youtube-shortcut", implicit success/verified
-            if (result.hash === 'youtube-shortcut') {
-              integrity = 'verified';
-            }
-          }
-
-          set(state => ({
-                activeDownloads: {
-                  ...state.activeDownloads,
-                  [resource.id]: {
-                    progress: 100,
-                    status: 'completed',
-                    integrity,
-                    path: result.path,
-                    hash: result.hash
-                  }
-                }
-              }));
+          // Just trigger the download, queue and events handle the rest
+          await invoke('download_resource', {resource});
+          // The download-started, download-progress, and download-complete
+          // events will update the state automatically
         } catch (error: any) {
           const errorMessage = typeof error === 'string' ?
               error :
               error.message || 'Download failed';
-
-          // Check if error message contains "cancelled"
-          const isCancelled = errorMessage.toLowerCase().includes('cancelled');
-
-          if (isCancelled) {
-            // This branch entered if backend returns error Cancelled.
-            // We need to check if user intended pause or cancel.
-            // Usually pauseDownload() updates state before backend returns.
-            // So if state is PAUSED, keep it.
-            // If state is CANCELLING (removed), this callback might fire?
-            // If removed, activeDownloads[id] is undefined.
-
-            const current = get().activeDownloads[resource.id];
-            if (current && current.status === 'paused') {
-              // Remain paused
-              return;
-            }
-            if (!current) {
-              // It was removed (cancelled), do nothing
-              return;
-            }
-          }
 
           set(state => ({
                 activeDownloads: {

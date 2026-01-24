@@ -2,6 +2,7 @@ import {invoke} from '@tauri-apps/api/core';
 import {useEffect, useState} from 'react';
 
 import {useAppStore} from '../stores/appStore';
+import {useToastStore} from '../stores/toastStore';
 import {AppConfig, Resource} from '../types';
 
 export function useResource(resource: Resource) {
@@ -108,12 +109,17 @@ export function useResource(resource: Resource) {
     // Actually cancelDownload updates state immediately.
   };
 
+  const {addToast} = useToastStore();
+
   const toggleAutoDownload = async () => {
     try {
       const config = await invoke<AppConfig>('get_config');
       let newCategories = [...config.auto_download_categories];
 
-      if (isAutoDownloadEnabled) {
+      const checkEnabled =
+          isAutoDownloadEnabled;  // Capture current state before toggle
+
+      if (checkEnabled) {
         newCategories = newCategories.filter(c => c !== resource.category);
       } else {
         if (!newCategories.includes(resource.category)) {
@@ -123,9 +129,17 @@ export function useResource(resource: Resource) {
 
       const newConfig = {...config, auto_download_categories: newCategories};
       await invoke('set_config', {config: newConfig});
-      setIsAutoDownloadEnabled(!isAutoDownloadEnabled);
+
+      const newState = !checkEnabled;
+      setIsAutoDownloadEnabled(newState);
+
+      addToast(
+          `Auto-download ${newState ? 'enabled' : 'disabled'} for "${
+              resource.category}"`,
+          'success');
     } catch (error) {
       console.error('Failed to toggle auto-download:', error);
+      addToast(`Failed to toggle auto-download: ${error}`, 'error');
     }
   };
 

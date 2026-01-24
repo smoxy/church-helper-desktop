@@ -11,11 +11,13 @@ import { FolderOpen } from "lucide-react";
 export default function Settings() {
     const {
         config,
+        resources,
         fetchInitialData,
         selectWorkDirectory: selectWorkDirAction,
         togglePolling: togglePollingAction,
         setPollingInterval,
-        setRetentionDays
+        setRetentionDays,
+        updateConfig
     } = useAppStore();
 
     const { addToast } = useToastStore();
@@ -23,6 +25,9 @@ export default function Settings() {
     // Local state for interval to manage input changes before committing
     const [localInterval, setLocalInterval] = useState(60);
     const [localRetention, setLocalRetention] = useState<number | null>(null);
+    const [availableCategories, setAvailableCategories] = useState<string[]>([]);
+    const [localAutoDownloadCats, setLocalAutoDownloadCats] = useState<string[]>([]);
+    const [localDownloadMode, setLocalDownloadMode] = useState<'Queue' | 'Parallel'>('Queue');
 
     useEffect(() => {
         fetchInitialData();
@@ -32,8 +37,56 @@ export default function Settings() {
         if (config) {
             setLocalInterval(config.polling_interval_minutes);
             setLocalRetention(config.retention_days);
+            setLocalAutoDownloadCats(config.auto_download_categories);
+            setLocalDownloadMode(config.download_mode);
         }
     }, [config]);
+
+    // Derive available categories from resources and config
+    useEffect(() => {
+        const cats = new Set<string>();
+        // Add from current resources
+        resources.forEach(r => cats.add(r.category));
+        // Add from config (persisted ones even if no current resources)
+        if (config) {
+            config.auto_download_categories.forEach(c => cats.add(c));
+        }
+        setAvailableCategories(Array.from(cats).sort());
+    }, [resources, config]);
+
+    const toggleCategory = async (category: string, checked: boolean) => {
+        if (!config) return;
+
+        let newCats = [...localAutoDownloadCats];
+        if (checked) {
+            if (!newCats.includes(category)) newCats.push(category);
+        } else {
+            newCats = newCats.filter(c => c !== category);
+        }
+
+        setLocalAutoDownloadCats(newCats);
+
+        try {
+            await updateConfig({ auto_download_categories: newCats });
+            addToast(`Auto-download ${checked ? 'enabled' : 'disabled'} for "${category}"`, "success");
+        } catch (e) {
+            addToast(`Failed to update category: ${e}`, "error");
+            // Revert to config state on error
+            if (config) setLocalAutoDownloadCats(config.auto_download_categories);
+        }
+    };
+
+    const updateDownloadMode = async (mode: 'Queue' | 'Parallel') => {
+        if (!config || mode === config.download_mode) return;
+        setLocalDownloadMode(mode);
+        try {
+            await updateConfig({ download_mode: mode });
+            addToast(`Download mode set to ${mode}`, "success");
+        } catch (e) {
+            addToast(`Failed to update mode: ${e}`, "error");
+            if (config) setLocalDownloadMode(config.download_mode);
+        }
+    };
 
     const handleIntervalBlur = async () => {
         if (!config) return;
@@ -159,6 +212,37 @@ export default function Settings() {
 
             <Card>
                 <CardHeader>
+                    <CardTitle>Auto-Download</CardTitle>
+                    <CardDescription>
+                        Automatically download new resources for these categories.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent>
+                    {availableCategories.length === 0 ? (
+                        <div className="text-sm text-muted-foreground italic">
+                            No categories discovered yet. Visit the Dashboard to load resources.
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                            {availableCategories.map(cat => (
+                                <div key={cat} className="flex items-center justify-between space-x-4 border p-3 rounded-lg bg-card/50">
+                                    <label htmlFor={`switch-${cat}`} className="text-sm font-medium capitalize cursor-pointer flex-1">
+                                        {cat}
+                                    </label>
+                                    <Switch
+                                        id={`switch-${cat}`}
+                                        checked={localAutoDownloadCats.includes(cat)}
+                                        onCheckedChange={(checked) => toggleCategory(cat, checked)}
+                                    />
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardHeader>
                     <CardTitle>Automation</CardTitle>
                     <CardDescription>
                         Configure automatic background checking for new resources.
@@ -176,6 +260,37 @@ export default function Settings() {
                             checked={config.polling_enabled}
                             onCheckedChange={togglePolling}
                         />
+                    </div>
+
+                    <div className="flex flex-col gap-2 pt-4 border-t">
+                        <label className="text-sm font-medium">Download Strategy</label>
+                        <div className="flex gap-6">
+                            <div className="flex items-center space-x-2">
+                                <input
+                                    type="radio"
+                                    id="mode-queue"
+                                    name="download-mode"
+                                    checked={localDownloadMode === 'Queue'}
+                                    onChange={() => updateDownloadMode('Queue')}
+                                    className="accent-primary h-4 w-4"
+                                />
+                                <label htmlFor="mode-queue" className="text-sm cursor-pointer select-none">Queue (Sequential)</label>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                                <input
+                                    type="radio"
+                                    id="mode-parallel"
+                                    name="download-mode"
+                                    checked={localDownloadMode === 'Parallel'}
+                                    onChange={() => updateDownloadMode('Parallel')}
+                                    className="accent-primary h-4 w-4"
+                                />
+                                <label htmlFor="mode-parallel" className="text-sm cursor-pointer select-none">Parallel (4x)</label>
+                            </div>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                            Queue downloads one file at a time. Parallel downloads up to 4 files simultaneously.
+                        </p>
                     </div>
 
                     <div className="flex flex-col gap-2 pt-4 border-t">

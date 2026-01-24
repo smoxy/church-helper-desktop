@@ -152,41 +152,7 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
     );
 
     // Initial check for auto-downloads
-    let state = app.state::<AppState>();
-    let config = state.config.read().map_err(|e| e.to_string())?.clone();
-
-    if let Some(work_dir) = &config.work_directory {
-        let download_service = crate::services::DownloadService::new();
-        
-        for resource in &api_response.resources {
-            // Check if category is enabled for auto-download
-            if config.auto_download_categories.contains(&resource.category) {
-                // Determine destination directory
-                let week_dir = resource.week().as_dir_name();
-                let dest_dir = work_dir.join(week_dir);
-                
-                if !dest_dir.exists() {
-                     std::fs::create_dir_all(&dest_dir)?;
-                }
-
-                // Check if file already exists
-                let filename = crate::services::download::extract_filename_from_url(&resource.download_url)
-                    .unwrap_or_else(|| crate::services::download::sanitize_filename(&resource.title));
-                let dest_path = dest_dir.join(&filename);
-
-                if !dest_path.exists() {
-                    tracing::info!("Auto-downloading resource: {}", resource.title);
-                    // We spawn the download to not block the polling loop, or we could await it
-                    // Since this is already in a background task, awaiting is fine
-                    if let Err(e) = download_service.download_resource(resource, &dest_dir, Some(app), None).await {
-                        tracing::error!("Failed to auto-download {}: {}", resource.title, e);
-                    } else {
-                         let _ = app.emit("download-complete", resource.id);
-                    }
-                }
-            }
-        }
-    }
+    state.download_queue.scan_and_queue(app.clone()).await;
 
     Ok(())
 }

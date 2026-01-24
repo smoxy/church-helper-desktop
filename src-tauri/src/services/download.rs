@@ -34,6 +34,18 @@ impl DownloadService {
         Self { client }
     }
 
+    /// Check if a resource file already exists
+    pub fn check_file_exists(resource: &Resource, work_dir: &Path) -> bool {
+        let week_dir = resource.week().as_dir_name();
+        let dest_dir = work_dir.join(week_dir);
+        
+        let filename = extract_filename_from_url(&resource.download_url)
+            .unwrap_or_else(|| sanitize_filename(&resource.title));
+            
+        let dest_path = dest_dir.join(filename);
+        dest_path.exists()
+    }
+
     /// Download a resource to the destination directory
     ///
     /// Returns the path to the downloaded file and its SHA-256 hash.
@@ -64,12 +76,16 @@ impl DownloadService {
         use futures_util::StreamExt;
         use tauri::Emitter;
 
+        tracing::debug!("Starting download_file for resource: {} ({})", resource.title, resource.download_url);
+
         // Extract filename
         let filename = extract_filename_from_url(&resource.download_url)
             .unwrap_or_else(|| sanitize_filename(&resource.title));
 
         let dest_path = dest_dir.join(&filename);
         let part_path = dest_dir.join(format!("{}.part", filename));
+
+        tracing::debug!("Destination path: {:?}", dest_path);
 
         // Check for existing partial download
         let mut resume_offset = 0;
@@ -87,6 +103,7 @@ impl DownloadService {
 
         let response = request.send().await?;
         let status = response.status();
+        tracing::debug!("Download response status: {} for {}", status, resource.title);
 
         // If server doesn't support range (returns 200 instead of 206), we start over
         let is_partial = status == reqwest::StatusCode::PARTIAL_CONTENT;
@@ -115,6 +132,7 @@ impl DownloadService {
 
         let mut stream = response.bytes_stream();
         let mut downloaded = resume_offset;
+        tracing::debug!("Starting download stream for {} (total size: {:?})", resource.title, content_length);
 
         while let Some(item) = stream.next().await {
             // Check cancellation signal
@@ -144,12 +162,16 @@ impl DownloadService {
                         "download-progress",
                         serde_json::json!({
                             "id": resource.id,
-                            "progress": progress
+                            "progress": progress,
+                            "current_bytes": downloaded,
+                            "total_bytes": total
                         }),
                     );
                 }
             }
         }
+
+        tracing::debug!("Download stream complete for {}, renaming .part file", resource.title);
 
         // Rename .part file upon success
         std::fs::rename(&part_path, &dest_path).map_err(|e| DownloadError::WriteError {

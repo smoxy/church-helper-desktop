@@ -74,6 +74,19 @@ pub fn run() {
 
             tracing::info!("Church Helper Desktop initialized");
 
+            // Check for auto-downloads of cached resources at startup
+            if config.work_directory.is_some() && !config.auto_download_categories.is_empty() {
+                let app_handle = app.handle().clone();
+                tracing::debug!("Scanning cached resources for auto-download at startup");
+                tauri::async_runtime::spawn(async move {
+                    // Delay to give frontend time to register event listeners
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    tracing::debug!("Starting auto-download scan after frontend initialization delay");
+                    let state = app_handle.state::<AppState>();
+                    state.download_queue.scan_and_queue(app_handle.clone()).await;
+                });
+            }
+
             // Auto-start polling if enabled
             if config.polling_enabled {
                 let polling_service = PollingService::new();

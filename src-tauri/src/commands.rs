@@ -3,7 +3,8 @@
 //! These commands implement the "Dumb UI, Smart Backend" architecture.
 
 use crate::models::{AppConfig, AppStatus, Resource, ResourceListResponse, WeekIdentifier};
-use crate::services::download::{STATUS_CANCELLED, STATUS_PAUSED, STATUS_RUNNING};
+use crate::services::download::{STATUS_CANCELLED, STATUS_PAUSED};
+use crate::services::DownloadQueue;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,6 +20,8 @@ pub struct AppState {
     pub status: RwLock<AppStatus>,
     /// Signals to control active downloads (Pause/Cancel)
     pub download_signals: RwLock<HashMap<i64, Arc<AtomicU8>>>,
+    /// Download queue service
+    pub download_queue: Arc<DownloadQueue>,
 }
 
 /// Response for download command
@@ -46,6 +49,7 @@ impl Default for AppState {
             resources: RwLock::new(Vec::new()),
             status: RwLock::new(AppStatus::default()),
             download_signals: RwLock::new(HashMap::new()),
+            download_queue: Arc::new(DownloadQueue::new()),
         }
     }
 }
@@ -65,8 +69,9 @@ pub fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
 
 /// Update the configuration
 /// Update the configuration
+/// Update the configuration
 #[tauri::command]
-pub fn set_config(state: State<'_, AppState>, app: AppHandle, config: AppConfig) -> Result<(), String> {
+pub async fn set_config(state: State<'_, AppState>, app: AppHandle, config: AppConfig) -> Result<(), String> {
     // Validate before saving
     config
         .validate()
@@ -86,11 +91,19 @@ pub fn set_config(state: State<'_, AppState>, app: AppHandle, config: AppConfig)
         .save()
         .map_err(|e| format!("Failed to save store: {}", e))?;
 
-    let mut current = state
-        .config
-        .write()
-        .map_err(|e| format!("Failed to write config: {}", e))?;
-    *current = config;
+    // Update state
+    {
+        let mut current = state
+            .config
+            .write()
+            .map_err(|e| format!("Failed to write config: {}", e))?;
+        *current = config.clone();
+    }
+
+    // Trigger queue updates
+    state.download_queue.update_mode(config.download_mode).await;
+    state.download_queue.scan_and_queue(app).await;
+
     Ok(())
 }
 
@@ -161,6 +174,10 @@ pub async fn force_poll(
 
     // Emit event to frontend
     let _ = app.emit("resources-updated", &api_response);
+
+    // Check for auto-downloads after force poll
+    tracing::debug!("Scanning resources for auto-download after force poll");
+    state.download_queue.scan_and_queue(app.clone()).await;
 
     Ok(api_response)
 }
@@ -334,17 +351,19 @@ pub fn is_resource_youtube(url: String) -> bool {
 }
 
 /// Download a specific resource
+/// This adds the resource to the download queue with priority
 #[tauri::command]
 pub async fn download_resource(
     state: State<'_, AppState>,
     app: AppHandle,
     resource: Resource,
-) -> Result<DownloadResponse, String> {
+) -> Result<(), String> {
     let config = state.config.read().map_err(|e| e.to_string())?.clone();
 
     let work_dir = config
         .work_directory
         .ok_or("Work directory not configured")?;
+    
     let week_dir = resource.week().as_dir_name();
     let dest_dir = work_dir.join(week_dir);
 
@@ -352,33 +371,10 @@ pub async fn download_resource(
         std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
     }
 
-    // Initialize cancellation signal
-    let signal = Arc::new(AtomicU8::new(STATUS_RUNNING));
-    {
-        state
-            .download_signals
-            .write()
-            .map_err(|e| e.to_string())?
-            .insert(resource.id, signal.clone());
-    }
+    // Add to queue with priority (manual downloads go first)
+    state.download_queue.add_task_priority(app.clone(), resource).await;
 
-    let download_service = crate::services::DownloadService::new();
-    let result = download_service
-        .download_resource(&resource, &dest_dir, Some(&app), Some(signal))
-        .await;
-
-    // Cleanup signal
-    {
-        let mut signals = state.download_signals.write().unwrap();
-        signals.remove(&resource.id);
-    }
-
-    let (path, hash) = result.map_err(|e| e.to_string())?;
-
-    Ok(DownloadResponse {
-        path: path.to_string_lossy().to_string(),
-        hash,
-    })
+    Ok(())
 }
 
 /// Pause an active download

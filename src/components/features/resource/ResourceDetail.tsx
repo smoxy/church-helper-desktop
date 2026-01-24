@@ -162,24 +162,36 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                             </div>
 
                             {/* Auto-download Toggle with Tooltip */}
-                            <div className="group relative flex items-center">
-                                <button
-                                    onClick={toggleAutoDownload}
-                                    className={`
-                                        relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2
-                                        ${isAutoDownloadEnabled ? 'bg-success' : 'bg-muted'}
-                                    `}
-                                >
-                                    <span className={`
-                                        inline-block h-4 w-4 transform rounded-full bg-white transition-transform
-                                        ${isAutoDownloadEnabled ? 'translate-x-6' : 'translate-x-1'}
-                                    `} />
-                                </button>
+                            <div className="flex flex-col items-end gap-1.5 pt-1">
+                                <div className="flex items-center gap-2">
+                                    <span className={`text-[10px] font-black uppercase tracking-widest transition-colors ${isAutoDownloadEnabled ? 'text-success' : 'text-muted-foreground/60'}`}>
+                                        Auto-download
+                                    </span>
+                                    {isAutoDownloadEnabled && (
+                                        <span className="flex h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
+                                    )}
+                                </div>
+                                <div className="group relative flex items-center">
+                                    <button
+                                        onClick={toggleAutoDownload}
+                                        className={`
+                                            relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2
+                                            ${isAutoDownloadEnabled
+                                                ? 'bg-success ring-4 ring-success/30 shadow-[0_0_15px_-3px_rgba(34,197,94,0.6)]'
+                                                : 'bg-gray-200 dark:bg-gray-700 border border-transparent'}
+                                        `}
+                                    >
+                                        <span className={`
+                                            inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform duration-300
+                                            ${isAutoDownloadEnabled ? 'translate-x-6' : 'translate-x-1'}
+                                        `} />
+                                    </button>
 
-                                {/* Tooltip */}
-                                <div className="absolute right-0 top-full mt-2 w-48 p-2 bg-popover text-popover-foreground text-xs rounded-md shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 border border-border">
-                                    Automatically download future resources in the <strong>{resource.category}</strong> category.
-                                    <div className="absolute -top-1 right-3 w-2 h-2 bg-popover transform rotate-45 border-t border-l border-border"></div>
+                                    {/* Tooltip */}
+                                    <div className="absolute right-0 top-full mt-2 w-48 p-2 bg-popover text-popover-foreground text-xs rounded-md shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 border border-border">
+                                        Automatically download future resources in the <strong>{resource.category}</strong> category.
+                                        <div className="absolute -top-1 right-3 w-2 h-2 bg-popover transform rotate-45 border-t border-l border-border"></div>
+                                    </div>
                                 </div>
                             </div>
                         </div>

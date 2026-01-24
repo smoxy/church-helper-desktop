@@ -16,9 +16,18 @@ pub struct AppConfig {
     /// Polling interval in minutes (1-1440)
     pub polling_interval_minutes: u32,
     /// Retention policy in days. None = KeepForever, Some(0) = Immediate delete
+    /// Retention policy in days. None = KeepForever, Some(0) = Immediate delete
     pub retention_days: Option<u32>,
     /// Categories enabled for auto-download
     pub auto_download_categories: Vec<String>,
+    /// Download mode (Queue or Parallel)
+    pub download_mode: DownloadMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum DownloadMode {
+    Queue,
+    Parallel,
 }
 
 impl Default for AppConfig {
@@ -29,6 +38,7 @@ impl Default for AppConfig {
             polling_interval_minutes: 60, // Default: 1 hour
             retention_days: Some(7),      // Default: 7 days
             auto_download_categories: Vec::new(),
+            download_mode: DownloadMode::Queue,
         }
     }
 }
