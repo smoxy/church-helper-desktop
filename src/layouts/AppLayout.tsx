@@ -4,7 +4,7 @@ import { cn } from "../lib/utils";
 
 export default function AppLayout() {
     return (
-        <div className="flex h-screen bg-background text-foreground">
+        <div className="flex h-screen bg-background text-foreground overflow-hidden">
             {/* Sidebar */}
             <aside className="w-64 border-r bg-card flex flex-col">
                 <div className="p-6 border-b">
