@@ -42,36 +42,31 @@ jobs:
           echo "Updating version to $VERSION"
           jq --arg v "$VERSION" '.version = $v' ./church-helper-desktop/src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./church-helper-desktop/src-tauri/tauri.conf.json
 
-      - name: Build Tauri App (Unsigned)
+      - name: Build Tauri App
         run: npm run tauri build -- --target x86_64-pc-windows-msvc
 
-      - name: Upload Unsigned MSI for Signing
-        id: upload-unsigned
-        uses: actions/upload-artifact@v4
-        with:
-          name: unsigned-msi
-          path: ./church-helper-desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
-          if-no-files-found: error
-          retention-days: 1
+      - name: Zip Windows Assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          mkdir release-assets
+          cp ./church-helper-desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi release-assets/ || true
+          cp ./church-helper-desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe release-assets/ || true
+          cd release-assets
+          7z a ../windows-assets.zip *
 
-      - name: Sign MSI with SignPath
-        uses: signpath/github-action-submit-signing-request@v1
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
-          policy-slug: ${{ secrets.SIGNPATH_POLICY_SLUG }}
-          artifact-name: unsigned-msi
-          wait-for-completion: true
-          output-artifact-directory: signed-artifacts
-
-      - name: Upload Signed MSI to Release
+      - name: Upload Assets to Release
         uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
-          files: signed-artifacts/*.msi
+          files: windows-assets.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # SignPath steps temporarily disabled until access is granted
+      # - name: Sign MSI with SignPath
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   ...
 
   release-linux:
     runs-on: ubuntu-latest
