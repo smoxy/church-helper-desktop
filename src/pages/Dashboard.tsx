@@ -3,7 +3,7 @@ import { useAppStore } from "../stores/appStore";
 import { useToastStore } from "../stores/toastStore";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
-import { RefreshCw, FileText } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { format } from "date-fns";
 import { Resource } from "../types";
 import { ResourceDetail } from "../components/features/resource/ResourceDetail";
@@ -46,7 +46,7 @@ export default function Dashboard() {
         }
     }, [error, addToast]);
 
-    const activeDownloadsCount = summary?.active || 0;
+
 
     return (
         <div className="space-y-6">

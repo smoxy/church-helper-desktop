@@ -146,7 +146,7 @@ export const useAppStore = create<AppState>(
           // Listen for queue status changes
           await listen<QueueStatusPayload>('queue-status-changed', (event) => {
             set(state => {
-              const {queued, active} = event.payload;
+              const {queued, active: _active} = event.payload;
               const newActiveDownloads = {...state.activeDownloads};
 
               // Update queue positions for queued items

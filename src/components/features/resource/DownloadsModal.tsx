@@ -223,7 +223,7 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
                         <div className="space-y-3">
                             <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Recently Completed</h3>
                             <div className="grid gap-2">
-                                {completedList.map(([idStr, download]) => {
+                                {completedList.map(([idStr, _download]) => {
                                     const id = parseInt(idStr);
                                     const resource = resources.find(r => r.id === id);
                                     if (!resource) return null;

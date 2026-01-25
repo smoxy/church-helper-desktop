@@ -21,7 +21,6 @@ export interface AppConfig {
   polling_enabled: boolean;
   polling_interval_minutes: number;
   retention_days: number|null;
-  retention_days: number|null;
   auto_download_categories: string[];
   download_mode: 'Queue'|'Parallel';
 }

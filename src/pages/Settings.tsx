@@ -136,7 +136,7 @@ export default function Settings() {
 
     const selectWorkDirectory = async () => {
         try {
-            const oldPath = config?.work_directory;
+            // const oldPath = config?.work_directory;
             await selectWorkDirAction();
             // check store to see if it changed (the action in store updates the state)
             // But selectWorkDirAction is async, so we should wait or check return if it returned something
