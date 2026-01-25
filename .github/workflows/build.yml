@@ -146,7 +146,6 @@ jobs:
       
       - name: Build Linux Deb (arm64)
         if: matrix.arch == 'arm64'
-        working-directory: ./church-helper-desktop
         # Configuring tauri action for cross-compilation is safer:
         uses: tauri-apps/tauri-action@v0
         env:
