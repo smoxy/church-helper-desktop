@@ -8,9 +8,6 @@ on:
 jobs:
   release-windows:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: ./church-helper-desktop
     steps:
       - uses: actions/checkout@v4
 
@@ -19,7 +16,7 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
-          cache-dependency-path: './church-helper-desktop/package-lock.json'
+          cache-dependency-path: './package-lock.json'
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -29,7 +26,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-           workspaces: './church-helper-desktop/src-tauri'
+           workspaces: './src-tauri'
 
       - name: Install frontend dependencies
         run: npm ci
@@ -40,7 +37,7 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           echo "Updating version to $VERSION"
-          jq --arg v "$VERSION" '.version = $v' ./church-helper-desktop/src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./church-helper-desktop/src-tauri/tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v' ./src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./src-tauri/tauri.conf.json
 
       - name: Build Tauri App
         run: npm run tauri build -- --target x86_64-pc-windows-msvc
@@ -50,8 +47,8 @@ jobs:
         shell: bash
         run: |
           mkdir release-assets
-          cp ./church-helper-desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi release-assets/ || true
-          cp ./church-helper-desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe release-assets/ || true
+          cp ./src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi release-assets/ || true
+          cp ./src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe release-assets/ || true
           cd release-assets
           7z a ../windows-assets.zip *
 
@@ -97,7 +94,7 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
-          cache-dependency-path: './church-helper-desktop/package-lock.json'
+          cache-dependency-path: './package-lock.json'
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -107,43 +104,24 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-           workspaces: './church-helper-desktop/src-tauri'
+           workspaces: './src-tauri'
 
       - name: Install frontend dependencies
-        working-directory: ./church-helper-desktop
         run: npm ci
 
       - name: Update version from tag
         if: startsWith(github.ref, 'refs/tags/v')
-        working-directory: ./church-helper-desktop
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           echo "Updating version to $VERSION"
           sudo apt-get install -y jq
-          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v' ./src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./src-tauri/tauri.conf.json
 
       # Build x64 naturally
       - name: Build Linux Deb (x64)
         if: matrix.arch == 'x64'
-        working-directory: ./church-helper-desktop
         run: npm run tauri build -- --bundles deb
 
-      # Build ARM64 using tauri-action which handles docker-based cross-compilation effectively
-      # Using 'tauri-apps/tauri-action' is often smoother for cross-compile than manual 'npm run tauri' unless we setup 'cross' manually.
-      # To keep it consistent, let's use tauri-action just for the actual build step if simple 'tauri build' fails for cross.
-      # However, for simplicity in this specific "Easy Path" request, we will stick to attempting a cross-build via the action 
-      # or standard commands if configured.
-      # Note: Cross-compiling GUI apps (GTK) for Linux from Linux x64 is notoriously hard due to C libs.
-      # The most robust way is usually standard runners for x64 and ARM runners for arm64.
-      # Since we don't have ARM runners, we will produce x64 first. 
-      # If the user *strictly* needs arm64 now without ARM runners, we'd need complex docker setup.
-      # Given user constraints, I will leave the ARM64 matrix step but use the official tauri-action for it, 
-      # as it has built-in logic to help or fail fast if setup is missing.
-      
-      # ACTUALLY, sticking to x64 for now as "Easy Path" and adding a note about ARM64 complexity without dedicated hardware
-      # matches the "Linux (The Easy Path)" sentiment, but user explicitly asked for arm64.
-      # Let's try to enable it via 'cross'.
-      
       - name: Build Linux Deb (arm64)
         if: matrix.arch == 'arm64'
         # Configuring tauri action for cross-compilation is safer:
@@ -151,16 +129,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: ./church-helper-desktop
+          projectPath: .
           args: --bundles deb --target aarch64-unknown-linux-gnu
-          # tauri-action will use local machine if possible or error if dependencies are missing. 
-          # For true cross-compilation of GTK apps, Docker is needed. 
-          # This config assumes the user might set up QEMU or similar if they run it, or it will fail and they can revert to x64.
       
       - name: Upload Deb to Release (x64)
         if: matrix.arch == 'x64'
         uses: softprops/action-gh-release@v1
         with:
-           files: ./church-helper-desktop/src-tauri/target/release/bundle/deb/*.deb
+           files: ./src-tauri/target/release/bundle/deb/*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
