@@ -69,6 +69,14 @@ pub fn run() {
                     }
                 }
             }
+            
+            // Try to load cached file sizes
+            if let Some(json) = cache_store.get("file_size_cache") {
+                if let Ok(cached_sizes) = serde_json::from_value::<std::collections::HashMap<String, u64>>(json.clone()) {
+                    *app_state.file_size_cache.write().unwrap() = cached_sizes;
+                    tracing::info!("Loaded {} cached file sizes", app_state.file_size_cache.read().unwrap().len());
+                }
+            }
 
             app.manage(app_state);
 

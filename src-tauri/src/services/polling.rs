@@ -54,7 +54,7 @@ impl PollingService {
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
-                        tracing::debug!("Polling tick");
+                        tracing::trace!("Polling tick");
                         
                         // Check if we should still be running
                         if !is_running.load(Ordering::SeqCst) {
@@ -111,18 +111,65 @@ impl Default for PollingService {
 
 /// Perform a single poll of the API
 async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let client = reqwest::Client::new();
+    let state = app.state::<AppState>();
     let url = format!("{}/api/resources/latest-week", API_BASE_URL);
 
-    let response = client.get(&url).send().await?;
+    let response = state.shared_http_client.get(&url).send().await?;
     let api_response: ResourceListResponse = response.json().await?;
 
-    // Get app state and update resources
-    let state = app.state::<AppState>();
+    // Get old resources for cache invalidation
+    let old_resources = {
+        let resources = state.resources.read().map_err(|e| e.to_string())?;
+        resources.clone()
+    };
     
+    // Update resources
     {
         let mut resources = state.resources.write().map_err(|e| e.to_string())?;
         *resources = api_response.resources.clone();
+    }
+
+    // Invalidate cache for changed/removed URLs
+    {
+        let mut cache = state.file_size_cache.write().map_err(|e| e.to_string())?;
+        
+        // Build a map of old URLs by resource ID
+        let old_url_map: std::collections::HashMap<i64, String> = old_resources
+            .iter()
+            .map(|r| (r.id, r.download_url.clone()))
+            .collect();
+        
+        // Build a set of current URLs
+        let current_urls: std::collections::HashSet<String> = api_response.resources
+            .iter()
+            .map(|r| r.download_url.clone())
+            .collect();
+        
+        // Remove cache entries for URLs that changed or no longer exist
+        for new_resource in &api_response.resources {
+            if let Some(old_url) = old_url_map.get(&new_resource.id) {
+                if old_url != &new_resource.download_url {
+                    // Same resource ID but URL changed (errata corrige)
+                    cache.remove(old_url);
+                    tracing::debug!("Invalidated cache for changed URL: {}", old_url);
+                }
+            }
+        }
+        
+        // Remove cache entries for URLs that no longer exist
+        let keys_to_remove: Vec<String> = cache
+            .keys()
+            .filter(|url| !current_urls.contains(*url))
+            .cloned()
+            .collect();
+        
+        for key in &keys_to_remove {
+            cache.remove(key);
+        }
+        
+        if !keys_to_remove.is_empty() {
+            tracing::debug!("Removed {} stale cache entries", keys_to_remove.len());
+        }
     }
 
     {
@@ -144,6 +191,18 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
     let store = app.store("cache.json").map_err(|e| e.to_string())?;
     let json = serde_json::to_value(&api_response.resources).map_err(|e| e.to_string())?;
     store.set("resources", json);
+    
+    // Save file size cache (exclude negative cache entries from persistence)
+    let cache_snapshot = {
+        let cache = state.file_size_cache.read().map_err(|e| e.to_string())?;
+        cache.iter()
+            .filter(|(_, &size)| size != u64::MAX)  // Exclude negative cache
+            .map(|(k, v)| (k.clone(), *v))
+            .collect::<std::collections::HashMap<String, u64>>()
+    };
+    let cache_json = serde_json::to_value(&cache_snapshot).map_err(|e| e.to_string())?;
+    store.set("file_size_cache", cache_json);
+    
     store.save().map_err(|e| e.to_string())?;
 
     tracing::info!(

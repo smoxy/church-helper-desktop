@@ -147,7 +147,7 @@ impl DownloadQueue {
                      // Check if already downloaded
                       let is_downloaded = crate::services::download::DownloadService::check_file_exists(&resource, work_dir);
                      if !is_downloaded {
-                         tracing::debug!("Queuing for auto-download: {} ({})", resource.title, resource.category);
+                         tracing::trace!("Queuing for auto-download: {} ({})", resource.title, resource.category);
                          self.add_task(app.clone(), resource).await;
                          queued_count += 1;
                      }
@@ -260,7 +260,7 @@ impl DownloadQueue {
                                  if let Err(e) = app_clone.emit("download-started", resource.id) {
                                      tracing::error!("Failed to emit download-started event for {}: {:?}", resource.id, e);
                                  } else {
-                                     tracing::debug!("Emitted download-started event for resource {}", resource.id);
+                                     tracing::trace!("Emitted download-started event for resource {}", resource.id);
                                  }
                                  
                                  match download_service.download_resource(&resource, &dest_dir, Some(&app_clone), Some(signal)).await {
@@ -287,7 +287,7 @@ impl DownloadQueue {
                          }
                          
                         let previous = active_count_clone.fetch_sub(1, Ordering::SeqCst);
-                        tracing::info!("Download worker finished. Active count decremented from {} to {}", previous, previous - 1);
+                        tracing::trace!("Download worker finished. Active count decremented from {} to {}", previous, previous - 1);
                         
                         // Remove from active IDs
                         {

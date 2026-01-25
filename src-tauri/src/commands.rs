@@ -22,6 +22,11 @@ pub struct AppState {
     pub download_signals: RwLock<HashMap<i64, Arc<AtomicU8>>>,
     /// Download queue service
     pub download_queue: Arc<DownloadQueue>,
+    /// Cache for file sizes (keyed by download_url)
+    /// Note: u64::MAX is used as a sentinel value for failed requests (negative cache)
+    pub file_size_cache: RwLock<HashMap<String, u64>>,
+    /// Shared HTTP client for all requests (connection pooling)
+    pub shared_http_client: reqwest::Client,
 }
 
 /// Response for download command
@@ -50,6 +55,8 @@ impl Default for AppState {
             status: RwLock::new(AppStatus::default()),
             download_signals: RwLock::new(HashMap::new()),
             download_queue: Arc::new(DownloadQueue::new()),
+            file_size_cache: RwLock::new(HashMap::new()),
+            shared_http_client: reqwest::Client::new(),
         }
     }
 }
@@ -134,10 +141,9 @@ pub async fn force_poll(
     app: AppHandle,
 ) -> Result<ResourceListResponse, String> {
     // Fetch from API
-    let client = reqwest::Client::new();
     let url = format!("{}/api/resources/latest-week", API_BASE_URL);
 
-    let response = client
+    let response = state.shared_http_client
         .get(&url)
         .send()
         .await
@@ -148,6 +154,13 @@ pub async fn force_poll(
         .await
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
+    // Get old resources for cache invalidation
+    let old_resources = {
+        let resources = state.resources.read()
+            .map_err(|e| format!("Failed to read resources: {}", e))?;
+        resources.clone()
+    };
+
     // Update state
     {
         let mut resources = state
@@ -155,6 +168,49 @@ pub async fn force_poll(
             .write()
             .map_err(|e| format!("Failed to update resources: {}", e))?;
         *resources = api_response.resources.clone();
+    }
+
+    // Invalidate cache for changed/removed URLs
+    {
+        let mut cache = state.file_size_cache.write()
+            .map_err(|e| format!("Failed to write cache: {}", e))?;
+        
+        // Build a map of old URLs by resource ID
+        let old_url_map: std::collections::HashMap<i64, String> = old_resources
+            .iter()
+            .map(|r| (r.id, r.download_url.clone()))
+            .collect();
+        
+        // Build a set of current URLs
+        let current_urls: std::collections::HashSet<String> = api_response.resources
+            .iter()
+            .map(|r| r.download_url.clone())
+            .collect();
+        
+        // Remove cache entries for URLs that changed
+        for new_resource in &api_response.resources {
+            if let Some(old_url) = old_url_map.get(&new_resource.id) {
+                if old_url != &new_resource.download_url {
+                    cache.remove(old_url);
+                    tracing::trace!("Invalidated cache for changed URL: {}", old_url);
+                }
+            }
+        }
+        
+        // Remove cache entries for URLs that no longer exist
+        let keys_to_remove: Vec<String> = cache
+            .keys()
+            .filter(|url| !current_urls.contains(*url))
+            .cloned()
+            .collect();
+        
+        for key in &keys_to_remove {
+            cache.remove(key);
+        }
+        
+        if !keys_to_remove.is_empty() {
+            tracing::debug!("Removed {} stale cache entries", keys_to_remove.len());
+        }
     }
 
     // Update status
@@ -174,6 +230,25 @@ pub async fn force_poll(
 
     // Emit event to frontend
     let _ = app.emit("resources-updated", &api_response);
+
+    // Save to cache
+    use tauri_plugin_store::StoreExt;
+    let store = app.store("cache.json").map_err(|e| e.to_string())?;
+    let json = serde_json::to_value(&api_response.resources).map_err(|e| e.to_string())?;
+    store.set("resources", json);
+    
+    // Save file size cache (exclude negative cache entries from persistence)
+    let cache_snapshot = {
+        let cache = state.file_size_cache.read().map_err(|e| e.to_string())?;
+        cache.iter()
+            .filter(|(_, &size)| size != u64::MAX)  // Exclude negative cache
+            .map(|(k, v)| (k.clone(), *v))
+            .collect::<std::collections::HashMap<String, u64>>()
+    };
+    let cache_json = serde_json::to_value(&cache_snapshot).map_err(|e| e.to_string())?;
+    store.set("file_size_cache", cache_json);
+    
+    store.save().map_err(|e| e.to_string())?;
 
     // Check for auto-downloads after force poll
     tracing::debug!("Scanning resources for auto-download after force poll");
@@ -418,15 +493,43 @@ pub fn check_resource_status(state: State<'_, AppState>, resource: Resource) -> 
 
 /// Get the size of a file from its URL without downloading it
 #[tauri::command]
-pub async fn get_file_size(url: String) -> Result<u64, String> {
-    let client = reqwest::Client::new();
-    let response = client
+pub async fn get_file_size(state: State<'_, AppState>, url: String) -> Result<u64, String> {
+    // Check cache first
+    {
+        let cache = state.file_size_cache.read()
+            .map_err(|e| format!("Failed to read cache: {}", e))?;
+        if let Some(&size) = cache.get(&url) {
+            if size == u64::MAX {
+                // Negative cache hit - this URL previously failed
+                tracing::debug!("Cache hit (negative) for file size: {}", url);
+                return Err("File size unavailable (cached failure)".to_string());
+            }
+            tracing::debug!("Cache hit for file size: {}", url);
+            return Ok(size);
+        }
+    }
+
+    // Cache miss - fetch from remote
+    tracing::debug!("Cache miss for file size, fetching: {}", url);
+    let response = state.shared_http_client
         .head(&url)
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch headers: {}", e))?;
+        .map_err(|e| {
+            // Cache negative result to avoid repeated failures
+            let _ = state.file_size_cache.write().map(|mut cache| {
+                cache.insert(url.clone(), u64::MAX);
+                tracing::debug!("Cached negative result (request failed) for: {}", url);
+            });
+            format!("Failed to fetch headers: {}", e)
+        })?;
 
     if !response.status().is_success() {
+        // Cache negative result for non-success status
+        let _ = state.file_size_cache.write().map(|mut cache| {
+            cache.insert(url.clone(), u64::MAX);
+            tracing::debug!("Cached negative result (status {}) for: {}", response.status(), url);
+        });
         return Err(format!("Request failed with status: {}", response.status()));
     }
 
@@ -434,10 +537,26 @@ pub async fn get_file_size(url: String) -> Result<u64, String> {
         .headers()
         .get(reqwest::header::CONTENT_LENGTH)
         .and_then(|val| val.to_str().ok())
-        .and_then(|val| val.parse::<u64>().ok())
-        .ok_or_else(|| "Content-Length header missing or invalid".to_string())?;
+        .and_then(|val| val.parse::<u64>().ok());
 
-    Ok(content_length)
+    match content_length {
+        Some(size) => {
+            // Save successful result to cache
+            let mut cache = state.file_size_cache.write()
+                .map_err(|e| format!("Failed to write cache: {}", e))?;
+            cache.insert(url.clone(), size);
+            tracing::debug!("Cached file size for: {}", url);
+            Ok(size)
+        }
+        None => {
+            // Cache negative result for missing/invalid Content-Length
+            let _ = state.file_size_cache.write().map(|mut cache| {
+                cache.insert(url.clone(), u64::MAX);
+                tracing::debug!("Cached negative result (no Content-Length) for: {}", url);
+            });
+            Err("Content-Length header missing or invalid".to_string())
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
