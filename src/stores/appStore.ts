@@ -56,8 +56,26 @@ interface AppState {
   cancelDownload: (resourceId: number) => Promise<void>;
 }
 
+// Simple debounce helper
+function debounce<T extends (...args: any[]) => any>(
+  func: T,
+  wait: number
+): (...args: Parameters<T>) => void {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  return (...args: Parameters<T>) => {
+    if (timeout) clearTimeout(timeout);
+    timeout = setTimeout(() => func(...args), wait);
+  };
+}
+
 export const useAppStore = create<AppState>(
-    (set, get) => ({
+    (set, get) => {
+      // Create debounced version of fetchSummary for event listeners
+      const debouncedFetchSummary = debounce(() => {
+        get().fetchSummary();
+      }, 300);
+
+      return {
       config: null,
       status: null,
       resources: [],
@@ -103,7 +121,7 @@ export const useAppStore = create<AppState>(
             set({resources: event.payload.resources});
             // Also refresh status to update last poll time
             invoke<AppStatus>('get_status').then(status => set({status}));
-            get().fetchSummary();
+            debouncedFetchSummary();
           });
 
           await listen<string>('poll-error', (event) => {
@@ -171,7 +189,7 @@ export const useAppStore = create<AppState>(
 
               return {activeDownloads: newActiveDownloads};
             });
-            get().fetchSummary();
+            debouncedFetchSummary();
           });
 
           // Listen for download start from queue
@@ -209,7 +227,7 @@ export const useAppStore = create<AppState>(
                 }
               };
             });
-            get().fetchSummary();
+            debouncedFetchSummary();
           });
 
           // Listen for download completion from auto-download queue
@@ -231,7 +249,43 @@ export const useAppStore = create<AppState>(
                 }
               };
             });
-            get().fetchSummary();
+            debouncedFetchSummary();
+          });
+
+          // Listen for download failures
+          await listen<{id: number, error: string}>('download-failed', (event) => {
+            const { id: resourceId, error } = event.payload;
+            console.log(`[DownloadEvent] Received download-failed for resource ${resourceId}: ${error}`);
+            
+            set(state => {
+              const current = state.activeDownloads[resourceId];
+              if (!current) {
+                // Failed download for unknown resource - add it to show the error
+                return {
+                  activeDownloads: {
+                    ...state.activeDownloads,
+                    [resourceId]: {
+                      progress: 0,
+                      status: 'error',
+                      error
+                    }
+                  }
+                };
+              }
+
+              // Update existing download to error state
+              return {
+                activeDownloads: {
+                  ...state.activeDownloads,
+                  [resourceId]: {
+                    ...current,
+                    status: 'error',
+                    error
+                  }
+                }
+              };
+            });
+            debouncedFetchSummary();
           });
 
         } catch (e) {
@@ -376,10 +430,18 @@ export const useAppStore = create<AppState>(
                     {...state.activeDownloads[resourceId], status: 'paused'}
               }
             }));
-        try {
-          await invoke('pause_download', {resourceId});
-        } catch (e) {
-          console.error('Failed to pause', e);
+        // Retry a few times in case the lock is temporarily held
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await invoke('pause_download', {resourceId});
+            return;
+          } catch (e) {
+            if (attempt < 2) {
+              await new Promise(resolve => setTimeout(resolve, 50));
+            } else {
+              console.error('Failed to pause after retries', e);
+            }
+          }
         }
       },
 
@@ -394,11 +456,20 @@ export const useAppStore = create<AppState>(
           const {[resourceId]: deleted, ...rest} = state.activeDownloads;
           return {activeDownloads: rest};
         });
-        try {
-          await invoke('cancel_download', {resourceId});
-        } catch (e) {
-          console.error('Failed to cancel', e);
+        // Retry a few times in case the lock is temporarily held
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await invoke('cancel_download', {resourceId});
+            return;
+          } catch (e) {
+            if (attempt < 2) {
+              await new Promise(resolve => setTimeout(resolve, 50));
+            } else {
+              console.error('Failed to cancel after retries', e);
+            }
+          }
         }
       }
 
-    }));
+    };
+  });

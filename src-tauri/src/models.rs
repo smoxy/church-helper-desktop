@@ -112,6 +112,17 @@ impl Resource {
     pub fn week(&self) -> WeekIdentifier {
         WeekIdentifier::from_datetime(self.created_at)
     }
+
+    /// Get the effective download URL based on preference
+    /// If prefer_optimized is true and optimized_video_url is available, returns that.
+    /// Otherwise returns the standard download_url.
+    pub fn get_effective_download_url(&self, prefer_optimized: bool) -> &str {
+        if prefer_optimized {
+            self.optimized_video_url.as_deref().unwrap_or(&self.download_url)
+        } else {
+            &self.download_url
+        }
+    }
 }
 
 /// Check if a URL is a YouTube link

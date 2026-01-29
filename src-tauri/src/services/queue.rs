@@ -145,7 +145,7 @@ impl DownloadQueue {
              for resource in resources {
                  if config.auto_download_categories.contains(&resource.category) {
                      // Check if already downloaded
-                      let is_downloaded = crate::services::download::DownloadService::check_file_exists(&resource, work_dir);
+                      let is_downloaded = crate::services::download::DownloadService::check_file_exists(&resource, work_dir, config.prefer_optimized);
                      if !is_downloaded {
                          tracing::trace!("Queuing for auto-download: {} ({})", resource.title, resource.category);
                          self.add_task(app.clone(), resource).await;
