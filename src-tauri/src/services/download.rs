@@ -50,18 +50,20 @@ impl DownloadService {
     ///
     /// Returns the path to the downloaded file and its SHA-256 hash.
     /// For YouTube URLs, creates a shortcut and returns a placeholder hash.
+    /// If prefer_optimized is true and optimized_video_url is available, uses that URL.
     pub async fn download_resource(
         &self,
         resource: &Resource,
         dest_dir: &Path,
         app: Option<&AppHandle>,
         signal: Option<Arc<AtomicU8>>,
+        prefer_optimized: bool,
     ) -> Result<(PathBuf, String), DownloadError> {
         if resource.is_youtube() {
             let path = self.create_youtube_shortcut(resource, dest_dir)?;
             Ok((path, "youtube-shortcut".to_string()))
         } else {
-            self.download_file(resource, dest_dir, app, signal).await
+            self.download_file(resource, dest_dir, app, signal, prefer_optimized).await
         }
     }
 
@@ -72,14 +74,22 @@ impl DownloadService {
         dest_dir: &Path,
         app: Option<&AppHandle>,
         signal: Option<Arc<AtomicU8>>,
+        prefer_optimized: bool,
     ) -> Result<(PathBuf, String), DownloadError> {
         use futures_util::StreamExt;
         use tauri::Emitter;
 
-        tracing::debug!("Starting download_file for resource: {} ({})", resource.title, resource.download_url);
+        // Determine which URL to use
+        let download_url = if prefer_optimized {
+            resource.optimized_video_url.as_ref().unwrap_or(&resource.download_url)
+        } else {
+            &resource.download_url
+        };
+
+        tracing::debug!("Starting download_file for resource: {} ({})", resource.title, download_url);
 
         // Extract filename
-        let filename = extract_filename_from_url(&resource.download_url)
+        let filename = extract_filename_from_url(download_url)
             .unwrap_or_else(|| sanitize_filename(&resource.title));
 
         let dest_path = dest_dir.join(&filename);
@@ -96,7 +106,7 @@ impl DownloadService {
         }
 
         // Build request
-        let mut request = self.client.get(&resource.download_url);
+        let mut request = self.client.get(download_url);
         if resume_offset > 0 {
             request = request.header("Range", format!("bytes={}-", resume_offset));
         }

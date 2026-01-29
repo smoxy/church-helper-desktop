@@ -238,6 +238,7 @@ impl DownloadQueue {
                                  let download_service = crate::services::DownloadService::new();
                                  let week_dir = resource.week().as_dir_name();
                                  let dest_dir = work_dir.join(week_dir);
+                                 let prefer_optimized = config.prefer_optimized;
                                  
                                  if !dest_dir.exists() {
                                      let _ = std::fs::create_dir_all(&dest_dir);
@@ -263,7 +264,7 @@ impl DownloadQueue {
                                      tracing::trace!("Emitted download-started event for resource {}", resource.id);
                                  }
                                  
-                                 match download_service.download_resource(&resource, &dest_dir, Some(&app_clone), Some(signal)).await {
+                                 match download_service.download_resource(&resource, &dest_dir, Some(&app_clone), Some(signal), prefer_optimized).await {
                                     Ok((path, hash)) => {
                                         tracing::info!("Download completed successfully: {} -> {:?} (hash: {})", resource.title, path, hash);
                                         let _ = app_clone.emit("download-complete", resource.id);

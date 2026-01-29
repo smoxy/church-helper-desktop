@@ -22,6 +22,8 @@ pub struct AppConfig {
     pub auto_download_categories: Vec<String>,
     /// Download mode (Queue or Parallel)
     pub download_mode: DownloadMode,
+    /// Prefer optimized video URL when available
+    pub prefer_optimized: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -39,6 +41,7 @@ impl Default for AppConfig {
             retention_days: Some(7),      // Default: 7 days
             auto_download_categories: Vec::new(),
             download_mode: DownloadMode::Queue,
+            prefer_optimized: true,        // Default: prefer optimized videos
         }
     }
 }
@@ -74,6 +77,7 @@ pub struct Resource {
     pub is_active: bool,
     #[serde(deserialize_with = "deserialize_naive_to_utc")]
     pub created_at: DateTime<Utc>,
+    pub optimized_video_url: Option<String>,
 }
 
 fn deserialize_naive_to_utc<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>

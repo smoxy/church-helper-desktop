@@ -1,7 +1,7 @@
 import { Resource } from '../../../types';
 import { useResource } from '../../../hooks/useResource';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card';
-import { FileAudio, FileVideo, FileText, MonitorPlay, Check, Download, Loader2 } from "lucide-react";
+import { FileAudio, FileVideo, FileText, MonitorPlay, Check, Download, Loader2, Zap } from "lucide-react";
 
 interface ResourceCardProps {
     resource: Resource;
@@ -28,6 +28,11 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
         >
             {/* Download Status Indicator (Top Right of Card) */}
             <div className="absolute top-2 right-2 z-10 flex gap-1">
+                {resource.optimized_video_url && (
+                    <div className="bg-green-500/90 text-white p-1.5 rounded-full shadow-sm" title="Video ottimizzato disponibile">
+                        <Zap className="h-3 w-3" />
+                    </div>
+                )}
                 {isDownloading ? (
                     <div className="bg-muted text-muted-foreground p-1.5 rounded-full shadow-sm" title="Downloading...">
                         <Loader2 className="h-3 w-3 animate-spin" />
