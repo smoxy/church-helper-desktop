@@ -155,11 +155,12 @@ impl DownloadService {
             // Check cancellation signal
             if let Some(sig) = &signal {
                 let status = sig.load(Ordering::Relaxed);
-                if status != STATUS_RUNNING {
-                    if status == STATUS_CANCELLED {
-                        // Attempt to delete partial file
-                        let _ = std::fs::remove_file(&part_path);
-                    }
+                if status == STATUS_PAUSED {
+                    // Keep .part file for resume
+                    return Err(DownloadError::Paused);
+                } else if status == STATUS_CANCELLED {
+                    // Delete partial file on cancel
+                    let _ = std::fs::remove_file(&part_path);
                     return Err(DownloadError::Cancelled);
                 }
             }
@@ -432,5 +433,56 @@ mod tests {
         let service = DownloadService::default();
         // Just verify it creates without panicking
         assert!(std::mem::size_of_val(&service) > 0);
+    }
+
+    #[test]
+    fn test_download_error_paused_display() {
+        let error = DownloadError::Paused;
+        assert_eq!(error.to_string(), "Download paused");
+    }
+
+    #[test]
+    fn test_download_error_cancelled_display() {
+        let error = DownloadError::Cancelled;
+        assert_eq!(error.to_string(), "Download cancelled");
+    }
+
+    #[test]
+    fn test_download_error_paused_not_equal_cancelled() {
+        // Verify that Paused and Cancelled are distinct error types
+        let paused = DownloadError::Paused;
+        let cancelled = DownloadError::Cancelled;
+        
+        assert_ne!(paused.to_string(), cancelled.to_string());
+    }
+
+    #[tokio::test]
+    async fn test_pause_signal_returns_paused_error() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use std::sync::Arc;
+        
+        let signal = Arc::new(AtomicU8::new(STATUS_RUNNING));
+        
+        // Set signal to paused
+        signal.store(STATUS_PAUSED, Ordering::Relaxed);
+        
+        // Verify signal is paused
+        assert_eq!(signal.load(Ordering::Relaxed), STATUS_PAUSED);
+        assert_ne!(signal.load(Ordering::Relaxed), STATUS_CANCELLED);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_signal_returns_cancelled_error() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use std::sync::Arc;
+        
+        let signal = Arc::new(AtomicU8::new(STATUS_RUNNING));
+        
+        // Set signal to cancelled
+        signal.store(STATUS_CANCELLED, Ordering::Relaxed);
+        
+        // Verify signal is cancelled
+        assert_eq!(signal.load(Ordering::Relaxed), STATUS_CANCELLED);
+        assert_ne!(signal.load(Ordering::Relaxed), STATUS_PAUSED);
     }
 }

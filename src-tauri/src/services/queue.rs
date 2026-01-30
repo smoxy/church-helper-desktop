@@ -269,9 +269,16 @@ impl DownloadQueue {
                                         tracing::info!("Download completed successfully: {} -> {:?} (hash: {})", resource.title, path, hash);
                                         let _ = app_clone.emit("download-complete", resource.id);
                                     },
+                                    Err(crate::error::DownloadError::Paused) => {
+                                        tracing::info!("Download paused: {}", resource.title);
+                                        let _ = app_clone.emit("download-paused", resource.id);
+                                    },
+                                    Err(crate::error::DownloadError::Cancelled) => {
+                                        tracing::info!("Download cancelled: {}", resource.title);
+                                        let _ = app_clone.emit("download-cancelled", resource.id);
+                                    },
                                     Err(e) => {
                                         tracing::error!("Download failed for {}: {}", resource.title, e);
-                                        // Emit failure event too?
                                         let _ = app_clone.emit("download-failed", serde_json::json!({"id": resource.id, "error": e.to_string()}));
                                     }
                                  }
