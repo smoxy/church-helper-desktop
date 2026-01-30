@@ -51,3 +51,56 @@ To verify color contrast ratios recursively across the application:
 2.  In a separate terminal, run: `npm run test:contrast`
 
 This uses `pa11y-ci` to crawl the application and report any contrast violations.
+
+## GitHub Actions Workflow Testing
+
+Before pushing changes to `.github/workflows/build.yml`, test the workflow locally to catch errors early.
+
+### Using `act` to Test Workflows Locally
+
+**Installation:**
+```bash
+# Linux
+sudo apt-get install act
+
+# macOS
+brew install act
+```
+
+**Testing the build workflow:**
+```bash
+# Test all workflows
+act
+
+# Test specific workflow job
+act -j release-windows
+act -j release-linux
+
+# Verbose output for debugging
+act -v
+```
+
+**Simulating a tag push (for version-specific builds):**
+```bash
+# Create a test payload
+cat > payload.json << 'EOF'
+{
+  "ref": "refs/tags/v0.3.0"
+}
+EOF
+
+# Run workflow with the tag
+act push -e payload.json
+```
+
+**Requirements:**
+- Docker must be running
+- First run downloads necessary container images (may take time)
+
+### Quick YAML Validation
+
+For simple syntax checks without Docker:
+```bash
+pip install yamllint
+yamllint .github/workflows/build.yml
+```
