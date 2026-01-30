@@ -20,7 +20,6 @@ export function useResource(resource: Resource) {
   const pauseDownloadAction = useAppStore(state => state.pauseDownload);
   const resumeDownloadAction = useAppStore(state => state.resumeDownload);
   const cancelDownloadAction = useAppStore(state => state.cancelDownload);
-  const config = useAppStore(state => state.config);
 
   const downloadState = activeDownloads[resource.id];
   const isDownloading = downloadState?.status === 'downloading';
