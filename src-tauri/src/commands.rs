@@ -455,7 +455,9 @@ pub async fn download_resource(
 /// Pause an active download
 #[tauri::command]
 pub fn pause_download(state: State<'_, AppState>, resource_id: i64) -> Result<(), String> {
-    let signals = state.download_signals.read().map_err(|e| e.to_string())?;
+    // Use try_read to avoid blocking if a write lock is held
+    let signals = state.download_signals.try_read()
+        .map_err(|_| "Download signals locked, try again".to_string())?;
     if let Some(signal) = signals.get(&resource_id) {
         signal.store(STATUS_PAUSED, Ordering::Relaxed);
     }
@@ -465,7 +467,9 @@ pub fn pause_download(state: State<'_, AppState>, resource_id: i64) -> Result<()
 /// Cancel and delete an active download
 #[tauri::command]
 pub fn cancel_download(state: State<'_, AppState>, resource_id: i64) -> Result<(), String> {
-    let signals = state.download_signals.read().map_err(|e| e.to_string())?;
+    // Use try_read to avoid blocking if a write lock is held
+    let signals = state.download_signals.try_read()
+        .map_err(|_| "Download signals locked, try again".to_string())?;
     if let Some(signal) = signals.get(&resource_id) {
         signal.store(STATUS_CANCELLED, Ordering::Relaxed);
     }
@@ -475,13 +479,16 @@ pub fn cancel_download(state: State<'_, AppState>, resource_id: i64) -> Result<(
 /// Check if a resource is already downloaded
 #[tauri::command]
 pub fn check_resource_status(state: State<'_, AppState>, resource: Resource) -> Result<bool, String> {
-    let config = state.config.read().map_err(|e| e.to_string())?;
+    // Use try_read to avoid blocking if a write lock is held
+    let config = state.config.try_read()
+        .map_err(|_| "Config locked, try again".to_string())?;
 
     if let Some(work_dir) = &config.work_directory {
         let week_dir = resource.week().as_dir_name();
         let dest_dir = work_dir.join(week_dir);
 
-        let filename = crate::services::download::extract_filename_from_url(&resource.download_url)
+        let effective_url = resource.get_effective_download_url(config.prefer_optimized);
+        let filename = crate::services::download::extract_filename_from_url(effective_url)
             .unwrap_or_else(|| crate::services::download::sanitize_filename(&resource.title));
 
         let dest_path = dest_dir.join(filename);
@@ -584,15 +591,17 @@ pub async fn get_resource_summary(state: State<'_, AppState>) -> Result<Resource
     
     let mut downloaded = 0;
     
-    // We need to clone the work directory to move it into the 'static closure
+    // We need to clone the work directory and prefer_optimized to move them into the 'static closure
     if let Some(work_dir) = config.work_directory.clone() {
+        let prefer_optimized = config.prefer_optimized;
         // Run filesystem checks in a blocking task to avoid blocking the async runtime
         downloaded = tauri::async_runtime::spawn_blocking(move || {
             let mut count = 0;
             for resource in resources {
                 let week_dir = resource.week().as_dir_name();
                 let dest_dir = work_dir.join(week_dir);
-                let filename = crate::services::download::extract_filename_from_url(&resource.download_url)
+                let effective_url = resource.get_effective_download_url(prefer_optimized);
+                let filename = crate::services::download::extract_filename_from_url(effective_url)
                     .unwrap_or_else(|| crate::services::download::sanitize_filename(&resource.title));
                 let dest_path = dest_dir.join(filename);
                 

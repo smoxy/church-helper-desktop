@@ -14,6 +14,8 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
         isPaused,
         isAutoDownloadEnabled,
         fileSize,
+        originalSizeBytes,
+        optimizedSizeBytes,
         error,
         progress,
         integrity,
@@ -21,20 +23,46 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
         pause,
         resume,
         cancel,
-        toggleAutoDownload
+        toggleAutoDownload,
+        preferOptimized
     } = useResource(resource);
 
     const handleMainAction = () => {
         if (isDownloading) {
-            pause();
+            void pause();
         } else if (isPaused) {
-            resume();
+            void resume();
         } else {
-            download();
+            void download();
         }
     };
 
     const isCorrupted = isDownloaded && integrity === 'mismatch';
+
+    // Calculate potential savings when prefer_optimized is false
+    const formatBytes = (bytes: number): string => {
+        const units = ['B', 'KB', 'MB', 'GB'];
+        let size = bytes;
+        let unitIndex = 0;
+        while (size >= 1024 && unitIndex < units.length - 1) {
+            size /= 1024;
+            unitIndex++;
+        }
+        return `${size.toFixed(1)} ${units[unitIndex]}`;
+    };
+
+    const canShowSavingsWarning = !preferOptimized && 
+        optimizedSizeBytes && 
+        originalSizeBytes && 
+        optimizedSizeBytes < originalSizeBytes;
+
+    const potentialSavings = canShowSavingsWarning 
+        ? formatBytes(originalSizeBytes! - optimizedSizeBytes!)
+        : null;
+
+    const savingsPercentage = canShowSavingsWarning
+        ? Math.round(((originalSizeBytes! - optimizedSizeBytes!) / originalSizeBytes!) * 100)
+        : null;
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 backdrop-blur-sm" onClick={onClose}>
@@ -60,11 +88,33 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                             <div className="w-full">
                                 <div className="flex justify-between items-center mb-2">
                                     <h3 className="text-lg font-semibold">Download</h3>
-                                    {fileSize && !error && (
-                                        <span className="text-sm text-muted-foreground font-medium bg-muted/50 px-2 py-0.5 rounded">
-                                            {fileSize}
-                                        </span>
-                                    )}
+                                    <div className="flex items-center gap-2">
+                                        {fileSize && !error && (
+                                            <span className="text-sm text-muted-foreground font-medium bg-muted/50 px-2 py-0.5 rounded">
+                                                {fileSize}
+                                            </span>
+                                        )}
+                                        {canShowSavingsWarning && (
+                                            <div className="group relative">
+                                                <div className="bg-yellow-500/90 text-white p-1 rounded-full cursor-help">
+                                                    <AlertTriangle className="h-4 w-4" />
+                                                </div>
+                                                {/* Tooltip */}
+                                                <div className="absolute right-0 top-full mt-2 w-64 p-3 bg-popover text-popover-foreground text-xs rounded-md shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 border border-border">
+                                                    <div className="font-semibold mb-1 text-yellow-600 dark:text-yellow-400">
+                                                        ⚡ Risparmio possibile: {potentialSavings} ({savingsPercentage}%)
+                                                    </div>
+                                                    <p className="mb-2">
+                                                        Attivando i video ottimizzati risparmieresti <strong>{potentialSavings}</strong> di spazio su questo download.
+                                                    </p>
+                                                    <p className="text-muted-foreground italic">
+                                                        Puoi cambiare questa preferenza nelle Impostazioni.
+                                                    </p>
+                                                    <div className="absolute -top-1 right-3 w-2 h-2 bg-popover transform rotate-45 border-t border-l border-border"></div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
 
                                 <div className="flex flex-col gap-3">

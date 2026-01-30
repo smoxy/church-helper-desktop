@@ -145,7 +145,7 @@ impl DownloadQueue {
              for resource in resources {
                  if config.auto_download_categories.contains(&resource.category) {
                      // Check if already downloaded
-                      let is_downloaded = crate::services::download::DownloadService::check_file_exists(&resource, work_dir);
+                      let is_downloaded = crate::services::download::DownloadService::check_file_exists(&resource, work_dir, config.prefer_optimized);
                      if !is_downloaded {
                          tracing::trace!("Queuing for auto-download: {} ({})", resource.title, resource.category);
                          self.add_task(app.clone(), resource).await;
@@ -238,6 +238,7 @@ impl DownloadQueue {
                                  let download_service = crate::services::DownloadService::new();
                                  let week_dir = resource.week().as_dir_name();
                                  let dest_dir = work_dir.join(week_dir);
+                                 let prefer_optimized = config.prefer_optimized;
                                  
                                  if !dest_dir.exists() {
                                      let _ = std::fs::create_dir_all(&dest_dir);
@@ -263,14 +264,21 @@ impl DownloadQueue {
                                      tracing::trace!("Emitted download-started event for resource {}", resource.id);
                                  }
                                  
-                                 match download_service.download_resource(&resource, &dest_dir, Some(&app_clone), Some(signal)).await {
+                                 match download_service.download_resource(&resource, &dest_dir, Some(&app_clone), Some(signal), prefer_optimized).await {
                                     Ok((path, hash)) => {
                                         tracing::info!("Download completed successfully: {} -> {:?} (hash: {})", resource.title, path, hash);
                                         let _ = app_clone.emit("download-complete", resource.id);
                                     },
+                                    Err(crate::error::DownloadError::Paused) => {
+                                        tracing::info!("Download paused: {}", resource.title);
+                                        let _ = app_clone.emit("download-paused", resource.id);
+                                    },
+                                    Err(crate::error::DownloadError::Cancelled) => {
+                                        tracing::info!("Download cancelled: {}", resource.title);
+                                        let _ = app_clone.emit("download-cancelled", resource.id);
+                                    },
                                     Err(e) => {
                                         tracing::error!("Download failed for {}: {}", resource.title, e);
-                                        // Emit failure event too?
                                         let _ = app_clone.emit("download-failed", serde_json::json!({"id": resource.id, "error": e.to_string()}));
                                     }
                                  }

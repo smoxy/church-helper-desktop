@@ -58,6 +58,9 @@ pub enum DownloadError {
     #[error("Failed to create URL shortcut: {0}")]
     ShortcutCreationFailed(std::io::Error),
 
+    #[error("Download paused")]
+    Paused,
+
     #[error("Download cancelled")]
     Cancelled,
 }

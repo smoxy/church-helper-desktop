@@ -10,6 +10,9 @@ export function useResource(resource: Resource) {
   const [isAutoDownloadEnabled, setIsAutoDownloadEnabled] =
       useState<boolean>(false);
   const [fileSize, setFileSize] = useState<string|null>(null);
+  const [originalSizeBytes, setOriginalSizeBytes] = useState<number|null>(null);
+  const [optimizedSizeBytes, setOptimizedSizeBytes] = useState<number|null>(null);
+  const [preferOptimized, setPreferOptimized] = useState<boolean>(true);
 
   // Get download state from global store
   const activeDownloads = useAppStore(state => state.activeDownloads);
@@ -17,6 +20,7 @@ export function useResource(resource: Resource) {
   const pauseDownloadAction = useAppStore(state => state.pauseDownload);
   const resumeDownloadAction = useAppStore(state => state.resumeDownload);
   const cancelDownloadAction = useAppStore(state => state.cancelDownload);
+  const config = useAppStore(state => state.config);
 
   const downloadState = activeDownloads[resource.id];
   const isDownloading = downloadState?.status === 'downloading';
@@ -33,8 +37,30 @@ export function useResource(resource: Resource) {
         fetchFileSize();
       },
       [
-        resource, downloadState?.status
-      ]);  // Re-check when download status completes
+        resource
+      ]);  // Re-check when resource changes
+
+  // Update displayed file size when preference changes
+  useEffect(
+      () => {
+        // Determine which size to show based on preference and availability
+        let sizeToShow: number | null = null;
+        
+        if (preferOptimized && optimizedSizeBytes) {
+          sizeToShow = optimizedSizeBytes;
+        } else if (originalSizeBytes) {
+          sizeToShow = originalSizeBytes;
+        }
+
+        if (sizeToShow) {
+          setFileSize(formatBytes(sizeToShow));
+        } else {
+          setFileSize(null);
+        }
+      },
+      [
+        preferOptimized, originalSizeBytes, optimizedSizeBytes
+      ]);
 
   const checkStatus = async () => {
     try {
@@ -50,32 +76,49 @@ export function useResource(resource: Resource) {
       const config = await invoke<AppConfig>('get_config');
       setIsAutoDownloadEnabled(
           config.auto_download_categories.includes(resource.category));
+      setPreferOptimized(config.prefer_optimized);
     } catch (error) {
       console.error('Failed to check auto-download config:', error);
     }
+  };
+
+  const formatBytes = (bytes: number): string => {
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let size = bytes;
+    let unitIndex = 0;
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex++;
+    }
+    return `${size.toFixed(1)} ${units[unitIndex]}`;
   };
 
   const fetchFileSize = async () => {
     // Simple check for YouTube URLs
     const isYoutube = resource.download_url.includes('youtube.com') ||
         resource.download_url.includes('youtu.be');
-    if (isYoutube) return;  // Don't fetch size for YouTube links
-    try {
-      const sizeBytes =
-          await invoke<number>('get_file_size', {url: resource.download_url});
+    if (isYoutube) {
+      setFileSize(null);
+      setOriginalSizeBytes(null);
+      setOptimizedSizeBytes(null);
+      return;
+    }
 
-      // Format bytes to human readable string
-      const units = ['B', 'KB', 'MB', 'GB'];
-      let size = sizeBytes;
-      let unitIndex = 0;
-      while (size >= 1024 && unitIndex < units.length - 1) {
-        size /= 1024;
-        unitIndex++;
-      }
-      setFileSize(`${size.toFixed(1)} ${units[unitIndex]}`);
+    try {
+      // Fetch both sizes in parallel for better performance
+      const [originalSize, optimizedSize] = await Promise.all([
+        invoke<number>('get_file_size', { url: resource.download_url }),
+        resource.optimized_video_url 
+          ? invoke<number>('get_file_size', { url: resource.optimized_video_url })
+          : Promise.resolve(0)
+      ]);
+
+      setOriginalSizeBytes(originalSize > 0 ? originalSize : null);
+      setOptimizedSizeBytes(optimizedSize > 0 ? optimizedSize : null);
     } catch (error) {
       console.error('Failed to fetch file size:', error);
-      setFileSize(null);
+      setOriginalSizeBytes(null);
+      setOptimizedSizeBytes(null);
     }
   };
 
@@ -149,6 +192,8 @@ export function useResource(resource: Resource) {
     isPaused,
     isAutoDownloadEnabled,
     fileSize,
+    originalSizeBytes,
+    optimizedSizeBytes,
     error,
     progress,
     integrity,
@@ -156,6 +201,8 @@ export function useResource(resource: Resource) {
     pause,
     resume,
     cancel,
-    toggleAutoDownload
+    toggleAutoDownload,
+    preferOptimized,
+    resource
   };
 }

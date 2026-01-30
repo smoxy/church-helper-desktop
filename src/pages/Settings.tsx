@@ -28,6 +28,7 @@ export default function Settings() {
     const [availableCategories, setAvailableCategories] = useState<string[]>([]);
     const [localAutoDownloadCats, setLocalAutoDownloadCats] = useState<string[]>([]);
     const [localDownloadMode, setLocalDownloadMode] = useState<'Queue' | 'Parallel'>('Queue');
+    const [localPreferOptimized, setLocalPreferOptimized] = useState(true);
 
     useEffect(() => {
         fetchInitialData();
@@ -39,6 +40,7 @@ export default function Settings() {
             setLocalRetention(config.retention_days);
             setLocalAutoDownloadCats(config.auto_download_categories);
             setLocalDownloadMode(config.download_mode);
+            setLocalPreferOptimized(config.prefer_optimized);
         }
     }, [config]);
 
@@ -85,6 +87,18 @@ export default function Settings() {
         } catch (e) {
             addToast(`Failed to update mode: ${e}`, "error");
             if (config) setLocalDownloadMode(config.download_mode);
+        }
+    };
+
+    const togglePreferOptimized = async (checked: boolean) => {
+        if (!config || checked === config.prefer_optimized) return;
+        setLocalPreferOptimized(checked);
+        try {
+            await updateConfig({ prefer_optimized: checked });
+            addToast(checked ? "Video ottimizzati preferiti" : "Video originali preferiti", "success");
+        } catch (e) {
+            addToast(`Failed to update preference: ${e}`, "error");
+            if (config) setLocalPreferOptimized(config.prefer_optimized);
         }
     };
 
@@ -291,6 +305,19 @@ export default function Settings() {
                         <p className="text-xs text-muted-foreground">
                             Queue downloads one file at a time. Parallel downloads up to 4 files simultaneously.
                         </p>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-4 pt-4 border-t">
+                        <div className="space-y-0.5">
+                            <label className="text-base font-medium">Preferisci Video Ottimizzati</label>
+                            <p className="text-sm text-muted-foreground">
+                                Il file ottimizzato ha la stessa qualità percepita ma pesa fino a 10 volte di meno. Ogni risorsa ottimizzata è fornita grazie al lavoro dei volontari.
+                            </p>
+                        </div>
+                        <Switch
+                            checked={localPreferOptimized}
+                            onCheckedChange={togglePreferOptimized}
+                        />
                     </div>
 
                     <div className="flex flex-col gap-2 pt-4 border-t">

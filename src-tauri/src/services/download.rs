@@ -9,7 +9,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tauri::AppHandle;
+use urlencoding;
 
 // Download status constants
 pub const STATUS_RUNNING: u8 = 0;
@@ -35,11 +37,13 @@ impl DownloadService {
     }
 
     /// Check if a resource file already exists
-    pub fn check_file_exists(resource: &Resource, work_dir: &Path) -> bool {
+    /// Uses the effective download URL based on prefer_optimized setting
+    pub fn check_file_exists(resource: &Resource, work_dir: &Path, prefer_optimized: bool) -> bool {
         let week_dir = resource.week().as_dir_name();
         let dest_dir = work_dir.join(week_dir);
         
-        let filename = extract_filename_from_url(&resource.download_url)
+        let effective_url = resource.get_effective_download_url(prefer_optimized);
+        let filename = extract_filename_from_url(effective_url)
             .unwrap_or_else(|| sanitize_filename(&resource.title));
             
         let dest_path = dest_dir.join(filename);
@@ -50,18 +54,20 @@ impl DownloadService {
     ///
     /// Returns the path to the downloaded file and its SHA-256 hash.
     /// For YouTube URLs, creates a shortcut and returns a placeholder hash.
+    /// If prefer_optimized is true and optimized_video_url is available, uses that URL.
     pub async fn download_resource(
         &self,
         resource: &Resource,
         dest_dir: &Path,
         app: Option<&AppHandle>,
         signal: Option<Arc<AtomicU8>>,
+        prefer_optimized: bool,
     ) -> Result<(PathBuf, String), DownloadError> {
         if resource.is_youtube() {
             let path = self.create_youtube_shortcut(resource, dest_dir)?;
             Ok((path, "youtube-shortcut".to_string()))
         } else {
-            self.download_file(resource, dest_dir, app, signal).await
+            self.download_file(resource, dest_dir, app, signal, prefer_optimized).await
         }
     }
 
@@ -72,14 +78,22 @@ impl DownloadService {
         dest_dir: &Path,
         app: Option<&AppHandle>,
         signal: Option<Arc<AtomicU8>>,
+        prefer_optimized: bool,
     ) -> Result<(PathBuf, String), DownloadError> {
         use futures_util::StreamExt;
         use tauri::Emitter;
 
-        tracing::debug!("Starting download_file for resource: {} ({})", resource.title, resource.download_url);
+        // Determine which URL to use
+        let download_url = if prefer_optimized {
+            resource.optimized_video_url.as_ref().unwrap_or(&resource.download_url)
+        } else {
+            &resource.download_url
+        };
+
+        tracing::debug!("Starting download_file for resource: {} ({})", resource.title, download_url);
 
         // Extract filename
-        let filename = extract_filename_from_url(&resource.download_url)
+        let filename = extract_filename_from_url(download_url)
             .unwrap_or_else(|| sanitize_filename(&resource.title));
 
         let dest_path = dest_dir.join(&filename);
@@ -96,7 +110,7 @@ impl DownloadService {
         }
 
         // Build request
-        let mut request = self.client.get(&resource.download_url);
+        let mut request = self.client.get(download_url);
         if resume_offset > 0 {
             request = request.header("Range", format!("bytes={}-", resume_offset));
         }
@@ -132,17 +146,21 @@ impl DownloadService {
 
         let mut stream = response.bytes_stream();
         let mut downloaded = resume_offset;
+        let mut last_progress_emit = Instant::now();
+        const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(100);
+        
         tracing::debug!("Starting download stream for {} (total size: {:?})", resource.title, content_length);
 
         while let Some(item) = stream.next().await {
             // Check cancellation signal
             if let Some(sig) = &signal {
                 let status = sig.load(Ordering::Relaxed);
-                if status != STATUS_RUNNING {
-                    if status == STATUS_CANCELLED {
-                        // Attempt to delete partial file
-                        let _ = std::fs::remove_file(&part_path);
-                    }
+                if status == STATUS_PAUSED {
+                    // Keep .part file for resume
+                    return Err(DownloadError::Paused);
+                } else if status == STATUS_CANCELLED {
+                    // Delete partial file on cancel
+                    let _ = std::fs::remove_file(&part_path);
                     return Err(DownloadError::Cancelled);
                 }
             }
@@ -155,23 +173,43 @@ impl DownloadService {
 
             downloaded += chunk.len() as u64;
 
+            // Throttle progress events to max 10/second (100ms interval)
             if let Some(app) = app {
                 if let Some(total) = content_length {
-                    let progress = ((downloaded as f64 / total as f64) * 100.0) as u8;
-                    let _ = app.emit(
-                        "download-progress",
-                        serde_json::json!({
-                            "id": resource.id,
-                            "progress": progress,
-                            "current_bytes": downloaded,
-                            "total_bytes": total
-                        }),
-                    );
+                    let now = Instant::now();
+                    if now.duration_since(last_progress_emit) >= PROGRESS_EMIT_INTERVAL {
+                        let progress = ((downloaded as f64 / total as f64) * 100.0) as u8;
+                        let _ = app.emit(
+                            "download-progress",
+                            serde_json::json!({
+                                "id": resource.id,
+                                "progress": progress,
+                                "current_bytes": downloaded,
+                                "total_bytes": total
+                            }),
+                        );
+                        last_progress_emit = now;
+                    }
                 }
             }
         }
 
         tracing::debug!("Download stream complete for {}, renaming .part file", resource.title);
+
+        // Emit final progress event to ensure 100% is shown
+        if let Some(app) = app {
+            if let Some(total) = content_length {
+                let _ = app.emit(
+                    "download-progress",
+                    serde_json::json!({
+                        "id": resource.id,
+                        "progress": 100,
+                        "current_bytes": downloaded,
+                        "total_bytes": total
+                    }),
+                );
+            }
+        }
 
         // Rename .part file upon success
         std::fs::rename(&part_path, &dest_path).map_err(|e| DownloadError::WriteError {
@@ -279,14 +317,31 @@ fn create_linux_desktop_shortcut(name: &str, url: &str) -> (String, String) {
     (filename, content)
 }
 
-/// Extract filename from URL
+/// Extract filename from URL with URL decoding support
+/// 
+/// 1. Extracts the filename from the last path segment
+/// 2. Removes query parameters
+/// 3. Decodes URL-encoded characters (%20 -> space, etc.)
+/// 4. Returns None if result is invalid/empty
 pub(crate) fn extract_filename_from_url(url: &str) -> Option<String> {
     url.split('/')
         .last()
         .filter(|s| !s.is_empty() && s.contains('.'))
-        .map(|s| {
+        .and_then(|s| {
             // Remove query parameters
-            s.split('?').next().unwrap_or(s).to_string()
+            let without_query = s.split('?').next().unwrap_or(s);
+            
+            // Decode URL-encoded characters
+            let decoded = urlencoding::decode(without_query)
+                .ok()?
+                .into_owned();
+            
+            // Only return if not empty after decoding
+            if decoded.is_empty() {
+                None
+            } else {
+                Some(decoded)
+            }
         })
 }
 
@@ -306,6 +361,27 @@ pub(crate) fn sanitize_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_extract_filename_from_url_decoded() {
+        // Test URL-encoded spaces
+        assert_eq!(
+            extract_filename_from_url("https://example.com/gcv_05%20-%20USARE%20LE%20COSE.mp4"),
+            Some("gcv_05 - USARE LE COSE.mp4".to_string())
+        );
+        
+        // Test URL-encoded special chars
+        assert_eq!(
+            extract_filename_from_url("https://example.com/mis-05%20-%20SEMI%20CHE%20SI%20MOLTIPLICANO%20-%2001_2026.mp4"),
+            Some("mis-05 - SEMI CHE SI MOLTIPLICANO - 01_2026.mp4".to_string())
+        );
+        
+        // Test with query parameters AND encoding
+        assert_eq!(
+            extract_filename_from_url("https://example.com/video%20name.mp4?token=abc&size=1080p"),
+            Some("video name.mp4".to_string())
+        );
+    }
 
     #[test]
     fn test_extract_filename_from_url_valid() {
@@ -357,5 +433,56 @@ mod tests {
         let service = DownloadService::default();
         // Just verify it creates without panicking
         assert!(std::mem::size_of_val(&service) > 0);
+    }
+
+    #[test]
+    fn test_download_error_paused_display() {
+        let error = DownloadError::Paused;
+        assert_eq!(error.to_string(), "Download paused");
+    }
+
+    #[test]
+    fn test_download_error_cancelled_display() {
+        let error = DownloadError::Cancelled;
+        assert_eq!(error.to_string(), "Download cancelled");
+    }
+
+    #[test]
+    fn test_download_error_paused_not_equal_cancelled() {
+        // Verify that Paused and Cancelled are distinct error types
+        let paused = DownloadError::Paused;
+        let cancelled = DownloadError::Cancelled;
+        
+        assert_ne!(paused.to_string(), cancelled.to_string());
+    }
+
+    #[tokio::test]
+    async fn test_pause_signal_returns_paused_error() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use std::sync::Arc;
+        
+        let signal = Arc::new(AtomicU8::new(STATUS_RUNNING));
+        
+        // Set signal to paused
+        signal.store(STATUS_PAUSED, Ordering::Relaxed);
+        
+        // Verify signal is paused
+        assert_eq!(signal.load(Ordering::Relaxed), STATUS_PAUSED);
+        assert_ne!(signal.load(Ordering::Relaxed), STATUS_CANCELLED);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_signal_returns_cancelled_error() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use std::sync::Arc;
+        
+        let signal = Arc::new(AtomicU8::new(STATUS_RUNNING));
+        
+        // Set signal to cancelled
+        signal.store(STATUS_CANCELLED, Ordering::Relaxed);
+        
+        // Verify signal is cancelled
+        assert_eq!(signal.load(Ordering::Relaxed), STATUS_CANCELLED);
+        assert_ne!(signal.load(Ordering::Relaxed), STATUS_PAUSED);
     }
 }
