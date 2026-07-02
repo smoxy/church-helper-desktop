@@ -26,6 +26,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             // Flag appended to the command the OS uses to auto-launch the
@@ -213,6 +215,20 @@ pub fn run() {
                     .map_err(|e| format!("Failed to show main window: {}", e))?;
             }
 
+            // Check for app updates in the background: download automatically
+            // if one is found, then ask for explicit confirmation before
+            // installing and restarting. Never installs silently (policy
+            // from bl-desktop-autoupdate: notify + explicit consent only).
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // Let the rest of startup (initial poll, retention, tray,
+                    // window) settle first.
+                    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                    check_for_updates(app_handle).await;
+                });
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -368,4 +384,104 @@ async fn shutdown_and_exit(app: tauri::AppHandle) {
 
     tracing::info!("Clean shutdown complete, exiting");
     app.exit(0);
+}
+
+/// Check for a new app version against the configured updater endpoint
+/// (`plugins.updater.endpoints` in `tauri.conf.json`, currently the GitHub
+/// Release `latest.json` manifest). If one is available, download it in the
+/// background, then show a confirmation dialog before installing and
+/// restarting — the user always has the final say, there is no silent
+/// install (bl-desktop-autoupdate).
+///
+/// No-ops quietly (debug/warn log only) if the check or download fails, e.g.
+/// no network connectivity: this must never crash or block startup.
+async fn check_for_updates(app: tauri::AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = match app.updater() {
+        Ok(updater) => updater,
+        Err(e) => {
+            tracing::warn!("Updater not available: {}", e);
+            return;
+        }
+    };
+
+    let update = match updater.check().await {
+        Ok(Some(update)) => update,
+        Ok(None) => {
+            tracing::debug!("No update available");
+            return;
+        }
+        Err(e) => {
+            // Expected in the common case: no network, or the endpoint isn't
+            // reachable/configured yet (placeholder pubkey, see
+            // UPDATER_SETUP.md). Never fatal.
+            tracing::warn!("Update check failed: {}", e);
+            return;
+        }
+    };
+
+    tracing::info!(
+        "Update available: {} -> {}, downloading in background",
+        update.current_version,
+        update.version
+    );
+
+    let download_result = update
+        .download(
+            |_chunk_size, _content_length| {},
+            || tracing::debug!("Update download finished"),
+        )
+        .await;
+
+    let bytes = match download_result {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::error!("Update download failed: {}", e);
+            return;
+        }
+    };
+
+    tracing::info!(
+        "Update {} downloaded, asking for confirmation before installing",
+        update.version
+    );
+
+    // Explicit consent required before touching anything on disk: ask via a
+    // native dialog (tauri-plugin-dialog, already used elsewhere for the
+    // folder picker). `.show()`'s callback runs off the calling task, so
+    // bridge it back into this async function with a oneshot channel.
+    let (confirmed_tx, confirmed_rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(format!(
+            "È disponibile la versione {} (attuale: {}). Vuoi installarla ora? L'app verrà riavviata.",
+            update.version, update.current_version
+        ))
+        .title("Aggiornamento disponibile")
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Installa e riavvia".to_string(),
+            "Più tardi".to_string(),
+        ))
+        .show(move |confirmed| {
+            let _ = confirmed_tx.send(confirmed);
+        });
+
+    let confirmed = confirmed_rx.await.unwrap_or(false);
+    if !confirmed {
+        tracing::info!(
+            "Update {} downloaded but installation postponed by the user",
+            update.version
+        );
+        return;
+    }
+
+    tracing::info!("Installing update {} and restarting", update.version);
+    if let Err(e) = update.install(bytes) {
+        tracing::error!("Failed to install update {}: {}", update.version, e);
+        return;
+    }
+
+    app.restart();
 }
