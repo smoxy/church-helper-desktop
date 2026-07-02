@@ -1,21 +1,38 @@
-import { useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import AppLayout from "./layouts/AppLayout";
+import Dashboard from "./pages/Dashboard";
+import Settings from "./pages/Settings";
+import { SplashScreen } from "./components/ui/SplashScreen";
+
+const router = createBrowserRouter([
+  {
+    path: "/",
+    element: <AppLayout />,
+    children: [
+      {
+        path: "/",
+        element: <Dashboard />,
+      },
+      {
+        path: "/settings",
+        element: <Settings />,
+      },
+    ],
+  },
+]);
 
 /**
- * App.tsx is currently not used directly as the main UI entry point 
- * because the application uses react-router-dom in main.tsx.
- * 
- * We keep it as a simple redirector or placeholder.
+ * Application root, mounted by main.tsx. Renders the router plus the
+ * startup splash overlay on top of it (see SplashScreen for its own
+ * self-contained visibility timer — it appears on every launch).
  */
 function App() {
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    // Redirect to the dashboard which is our main entry point
-    navigate("/");
-  }, [navigate]);
-
-  return null;
+  return (
+    <>
+      <RouterProvider router={router} />
+      <SplashScreen />
+    </>
+  );
 }
 
 export default App;

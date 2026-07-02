@@ -2,6 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { LayoutDashboard, Settings } from "lucide-react";
 import { cn } from "../lib/utils";
 import { ToastContainer } from "../components/ui/toast";
+import { RinoovaLogo } from "../components/ui/RinoovaLogo";
 
 export default function AppLayout() {
     return (
@@ -77,14 +78,25 @@ export default function AppLayout() {
                                 <span className="text-xs">Support:</span>
                                 <span className="font-medium">dev@adventistyouth.it</span>
                             </a>
-                            <a
-                                href="https://buymeacoffee.com/smoxy"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-orange-500/10 text-orange-600 hover:bg-orange-500/20 transition-all font-semibold text-xs border border-orange-500/20"
-                            >
-                                ☕ Help me paying the server
-                            </a>
+                            <div className="flex flex-wrap items-center justify-center gap-3">
+                                <a
+                                    href="https://buymeacoffee.com/smoxy"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-orange-500/10 text-orange-600 hover:bg-orange-500/20 transition-all font-semibold text-xs border border-orange-500/20"
+                                >
+                                    ☕ Help me paying the server
+                                </a>
+                                <a
+                                    href="https://rinoova.com"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-card text-foreground hover:bg-muted hover:text-primary transition-all font-semibold text-xs border border-border"
+                                >
+                                    <RinoovaLogo variant="light" className="h-4" />
+                                    Sponsored by Rinoova
+                                </a>
+                            </div>
                         </div>
                     </div>
                 </footer>

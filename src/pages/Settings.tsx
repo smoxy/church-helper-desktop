@@ -6,6 +6,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Switch } from "../components/ui/switch";
 import { FolderOpen } from "lucide-react";
+import rinoovaIcon from "../assets/sponsor/logo-rinoova-icon.svg";
 
 
 export default function Settings() {
@@ -378,6 +379,23 @@ export default function Settings() {
                     <div className="flex justify-between">
                         <span className="text-muted-foreground">Tauri Version</span>
                         <span>v2.0.0</span>
+                    </div>
+
+                    <div className="flex items-center gap-4 rounded-lg border bg-card/50 p-4 mt-4">
+                        <img src={rinoovaIcon} alt="Rinoova" className="h-10 w-auto shrink-0" />
+                        <div className="space-y-1">
+                            <p className="text-foreground">
+                                Rinoova sostiene questo progetto fornendo server, sviluppatori e know-how.
+                            </p>
+                            <a
+                                href="https://rinoova.com"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-block font-medium text-primary hover:underline"
+                            >
+                                rinoova.com
+                            </a>
+                        </div>
                     </div>
                 </CardContent>
             </Card>
