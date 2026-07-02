@@ -41,16 +41,30 @@ impl PollingService {
         let mut cancel_rx = self.cancel_tx.subscribe();
 
         tauri::async_runtime::spawn(async move {
-            let duration = Duration::from_secs(interval_mins as u64 * 60);
-            let mut ticker = interval(duration);
-
-            // Skip the first immediate tick
-            ticker.tick().await;
-
             tracing::info!(
                 "Polling service started with interval {} minutes",
                 interval_mins
             );
+
+            // Poll immediately on startup so the user sees fresh data within
+            // seconds instead of waiting a full `interval_mins` for the first
+            // fetch. Explicit call (rather than relying on the implicit
+            // first-tick-fires-immediately behavior of `tokio::time::interval`)
+            // so the intent is obvious and independent of interval semantics.
+            tracing::info!("Performing initial poll on startup");
+            if let Err(e) = poll_api(&app).await {
+                tracing::error!("Initial polling failed: {}", e);
+                let _ = app.emit("poll-error", e.to_string());
+            }
+
+            let duration = Duration::from_secs(interval_mins as u64 * 60);
+            let mut ticker = interval(duration);
+
+            // `interval` fires its first tick immediately upon creation; consume
+            // it here so the periodic ticks below stay spaced by `duration`
+            // starting after the initial poll above, instead of firing a second
+            // poll back-to-back with it.
+            ticker.tick().await;
 
             loop {
                 tokio::select! {

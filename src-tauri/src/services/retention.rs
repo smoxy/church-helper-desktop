@@ -7,11 +7,23 @@ use crate::models::WeekIdentifier;
 use chrono::{Duration, Utc};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tauri::{AppHandle, Manager};
+use tokio::sync::watch;
+use tokio::time::{interval, Duration as TokioDuration};
 
 /// Archive directory name
 const ARCHIVE_DIR: &str = ".archive";
 /// Superseded files subdirectory within week archive
 const SUPERSEDED_DIR: &str = ".superseded";
+/// How often the background scheduler re-checks the retention policy.
+const RETENTION_CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60; // once a day
+/// Startup grace period before the first retention run, so it doesn't
+/// contend with the rest of app initialization (frontend listener
+/// registration, the initial poll). Mirrors the delay already used for the
+/// auto-download scan in `lib.rs`.
+const STARTUP_DELAY_SECS: u64 = 5;
 
 /// Service for managing file retention and archiving
 pub struct FileRetentionService {
@@ -42,9 +54,13 @@ impl FileRetentionService {
     /// Archive a file for a previous week
     ///
     /// Moves the file from work_dir to .archive/{week}/
-    pub fn archive_file(&self, file_path: &Path, week: &WeekIdentifier) -> Result<PathBuf, FileError> {
+    pub fn archive_file(
+        &self,
+        file_path: &Path,
+        week: &WeekIdentifier,
+    ) -> Result<PathBuf, FileError> {
         let archive_path = self.week_archive_path(week);
-        
+
         // Create archive directory if it doesn't exist
         fs::create_dir_all(&archive_path).map_err(|e| FileError::CreateDirectoryFailed {
             path: archive_path.clone(),
@@ -74,9 +90,13 @@ impl FileRetentionService {
     /// Move a superseded file to the superseded directory
     ///
     /// Moves from work_dir to .archive/{week}/.superseded/
-    pub fn archive_superseded(&self, file_path: &Path, week: &WeekIdentifier) -> Result<PathBuf, FileError> {
+    pub fn archive_superseded(
+        &self,
+        file_path: &Path,
+        week: &WeekIdentifier,
+    ) -> Result<PathBuf, FileError> {
         let superseded_path = self.superseded_path(week);
-        
+
         // Create superseded directory if it doesn't exist
         fs::create_dir_all(&superseded_path).map_err(|e| FileError::CreateDirectoryFailed {
             path: superseded_path.clone(),
@@ -104,7 +124,7 @@ impl FileRetentionService {
     /// Get all archived weeks
     pub fn get_archived_weeks(&self) -> Vec<WeekIdentifier> {
         let archive_dir = self.archive_dir();
-        
+
         if !archive_dir.exists() {
             return Vec::new();
         }
@@ -130,32 +150,64 @@ impl FileRetentionService {
     /// Returns the number of weeks moved to trash
     pub fn enforce_retention(&self, retention_days: Option<u32>) -> Result<u32, FileError> {
         let retention_days = match retention_days {
-            None => return Ok(0), // Keep forever
+            None => {
+                tracing::debug!("Retention policy is 'keep forever', nothing to enforce");
+                return Ok(0);
+            }
             Some(days) => days,
         };
 
         let cutoff_date = Utc::now() - Duration::days(retention_days as i64);
         let archived_weeks = self.get_archived_weeks();
+        tracing::debug!(
+            "Enforcing retention policy: {} archived week(s) found in {:?}, retention_days={}, cutoff={}",
+            archived_weeks.len(),
+            self.archive_dir(),
+            retention_days,
+            cutoff_date.to_rfc3339()
+        );
         let mut deleted_count = 0;
 
         for week in archived_weeks {
             let week_path = self.week_archive_path(&week);
-            
+
             // Check if the week is old enough to delete
             if let Ok(metadata) = fs::metadata(&week_path) {
                 if let Ok(modified) = metadata.modified() {
                     let modified_datetime: chrono::DateTime<Utc> = modified.into();
-                    
+
                     if modified_datetime < cutoff_date {
                         // Move to system trash
                         trash::delete(&week_path).map_err(|e| FileError::TrashFailed {
                             path: week_path.clone(),
                             source: e,
                         })?;
+                        tracing::info!(
+                            "Retention: moved archived week {} to trash (archived {}, older than {} day(s))",
+                            week,
+                            modified_datetime.to_rfc3339(),
+                            retention_days
+                        );
                         deleted_count += 1;
+                    } else {
+                        tracing::trace!(
+                            "Retention: keeping archived week {} (archived {}, within {} day(s))",
+                            week,
+                            modified_datetime.to_rfc3339(),
+                            retention_days
+                        );
                     }
                 }
             }
+        }
+
+        if deleted_count > 0 {
+            tracing::info!(
+                "Retention enforcement complete: {} archived week(s) moved to trash",
+                deleted_count
+            );
+        } else {
+            tracing::debug!("Retention enforcement complete: nothing old enough to trash");
         }
 
         Ok(deleted_count)
@@ -164,13 +216,16 @@ impl FileRetentionService {
     /// Check if there are superseded files for a given week
     pub fn has_superseded_files(&self, week: &WeekIdentifier) -> bool {
         let path = self.superseded_path(week);
-        path.exists() && fs::read_dir(&path).map(|rd| rd.count() > 0).unwrap_or(false)
+        path.exists()
+            && fs::read_dir(&path)
+                .map(|rd| rd.count() > 0)
+                .unwrap_or(false)
     }
 
     /// Get list of superseded files for a week
     pub fn get_superseded_files(&self, week: &WeekIdentifier) -> Vec<PathBuf> {
         let path = self.superseded_path(week);
-        
+
         if !path.exists() {
             return Vec::new();
         }
@@ -205,6 +260,142 @@ fn parse_week_dir_name(name: &str) -> Option<WeekIdentifier> {
     }
 }
 
+/// Background scheduler that periodically enforces the retention policy.
+///
+/// Mirrors `PollingService` (see `services/polling.rs`): runs once shortly
+/// after startup and then every `RETENTION_CHECK_INTERVAL_SECS`, reading
+/// `work_directory`/`retention_days` fresh from `AppState` on every run so
+/// config changes (e.g. the user updating the retention policy in Settings)
+/// take effect on the next scheduled run without needing a restart.
+pub struct RetentionScheduler {
+    /// Channel sender to signal cancellation
+    cancel_tx: watch::Sender<bool>,
+    /// Whether the scheduler is currently running
+    is_running: Arc<AtomicBool>,
+}
+
+impl RetentionScheduler {
+    /// Create a new retention scheduler
+    pub fn new() -> Self {
+        let (cancel_tx, _) = watch::channel(false);
+        Self {
+            cancel_tx,
+            is_running: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Start the retention background task.
+    ///
+    /// Runs independently of `PollingService`/`polling_enabled`: retention is
+    /// local disk hygiene, not tied to whether automatic remote polling is on.
+    pub fn start(&self, app: AppHandle) {
+        if self.is_running.load(Ordering::SeqCst) {
+            tracing::warn!("Retention scheduler already running, ignoring start request");
+            return;
+        }
+
+        self.is_running.store(true, Ordering::SeqCst);
+        let is_running = self.is_running.clone();
+        let mut cancel_rx = self.cancel_tx.subscribe();
+
+        tauri::async_runtime::spawn(async move {
+            tracing::info!(
+                "Retention scheduler started (checks every {}h)",
+                RETENTION_CHECK_INTERVAL_SECS / 3600
+            );
+
+            // Give the rest of app startup (frontend event listeners, the
+            // initial poll, see bl-desktop-first-poll-skipped) a brief head
+            // start before touching the filesystem.
+            tokio::time::sleep(TokioDuration::from_secs(STARTUP_DELAY_SECS)).await;
+
+            tracing::info!("Performing initial retention enforcement on startup");
+            run_retention_once(&app).await;
+
+            let mut ticker = interval(TokioDuration::from_secs(RETENTION_CHECK_INTERVAL_SECS));
+            // `interval` fires its first tick immediately upon creation; consume
+            // it here (same rationale as PollingService::start, see
+            // bl-desktop-first-poll-skipped) so the periodic ticks below stay
+            // spaced by the full interval starting after the initial run above,
+            // instead of firing a second run back-to-back with it.
+            ticker.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        if !is_running.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        run_retention_once(&app).await;
+                    }
+                    _ = cancel_rx.changed() => {
+                        if *cancel_rx.borrow() {
+                            tracing::info!("Retention scheduler cancelled");
+                            break;
+                        }
+                    }
+                }
+            }
+
+            is_running.store(false, Ordering::SeqCst);
+            tracing::info!("Retention scheduler stopped");
+        });
+    }
+
+    /// Stop the retention background task
+    pub fn stop(&self) {
+        if self.is_running.load(Ordering::SeqCst) {
+            let _ = self.cancel_tx.send(true);
+            self.is_running.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Check if the scheduler is currently running
+    pub fn is_running(&self) -> bool {
+        self.is_running.load(Ordering::SeqCst)
+    }
+}
+
+impl Default for RetentionScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Read the current work directory/retention policy from `AppState` and
+/// enforce the retention policy once. No-ops (with a debug log) if the work
+/// directory isn't configured yet, matching how `scan_and_queue` treats a
+/// missing work directory in `services/queue.rs`.
+async fn run_retention_once(app: &AppHandle) {
+    let state = app.state::<crate::commands::AppState>();
+    let (work_dir, retention_days) = match state.config.read() {
+        Ok(config) => (config.work_directory.clone(), config.retention_days),
+        Err(e) => {
+            tracing::error!("Retention: failed to read config: {}", e);
+            return;
+        }
+    };
+
+    let Some(work_dir) = work_dir else {
+        tracing::debug!("Retention: work directory not configured yet, skipping");
+        return;
+    };
+
+    // The filesystem scan + trash move is blocking I/O; run it off the async
+    // runtime (same pattern used for the filesystem checks in
+    // commands::get_resource_summary).
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        FileRetentionService::new(work_dir).enforce_retention(retention_days)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(_)) => {} // enforce_retention already logs a clear summary
+        Ok(Err(e)) => tracing::error!("Retention enforcement failed: {}", e),
+        Err(e) => tracing::error!("Retention enforcement task panicked: {}", e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,7 +426,11 @@ mod tests {
     fn test_superseded_path() {
         let (temp_dir, service) = setup_test_dir();
         let week = WeekIdentifier::new(2026, 4);
-        let expected = temp_dir.path().join(".archive").join("2026-W04").join(".superseded");
+        let expected = temp_dir
+            .path()
+            .join(".archive")
+            .join("2026-W04")
+            .join(".superseded");
         assert_eq!(service.superseded_path(&week), expected);
     }
 
@@ -276,7 +471,7 @@ mod tests {
 
         // Archive it
         let archived_path = service.archive_file(&test_file, &week).unwrap();
-        
+
         // Verify
         assert!(!test_file.exists()); // Original should be gone
         assert!(archived_path.exists()); // Archived should exist
@@ -302,7 +497,9 @@ mod tests {
         assert!(archived_path.exists());
         assert_eq!(
             archived_path,
-            temp_dir.path().join(".archive/2026-W04/.superseded/old_version.zip")
+            temp_dir
+                .path()
+                .join(".archive/2026-W04/.superseded/old_version.zip")
         );
     }
 
@@ -371,5 +568,68 @@ mod tests {
         let (_temp_dir, service) = setup_test_dir();
         let result = service.enforce_retention(None).unwrap();
         assert_eq!(result, 0);
+    }
+
+    /// Exercises the actual `Some(n)` trashing branch end-to-end (previously
+    /// only the `None`/"keep forever" no-op path had coverage): an archived
+    /// week older than `retention_days` must be moved to the system trash,
+    /// while a recent one is left untouched. Regression guard for
+    /// bl-desktop-retention-not-wired.
+    #[test]
+    fn test_enforce_retention_trashes_old_weeks_keeps_recent() {
+        let (temp_dir, service) = setup_test_dir();
+
+        let old_week = temp_dir.path().join(".archive/2025-W40");
+        let recent_week = temp_dir.path().join(".archive/2026-W01");
+        fs::create_dir_all(&old_week).unwrap();
+        fs::create_dir_all(&recent_week).unwrap();
+
+        // Backdate the "old" week's mtime well past a 7-day retention window;
+        // leave the "recent" week at its just-created (now) mtime.
+        let old_mtime =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 24 * 60 * 60);
+        fs::File::open(&old_week)
+            .unwrap()
+            .set_modified(old_mtime)
+            .unwrap();
+
+        let trashed_count = service.enforce_retention(Some(7)).unwrap();
+
+        assert_eq!(
+            trashed_count, 1,
+            "only the week older than retention_days should be trashed"
+        );
+        assert!(
+            !old_week.exists(),
+            "old archived week should have been moved to the system trash"
+        );
+        assert!(
+            recent_week.exists(),
+            "recent archived week should be kept in place"
+        );
+    }
+
+    /// A retention run must be safe to repeat: running it again immediately
+    /// (e.g. the daily scheduler ticking, or startup + first scheduled tick in
+    /// close succession) must not error or re-count weeks already trashed.
+    #[test]
+    fn test_enforce_retention_is_idempotent_across_repeated_runs() {
+        let (temp_dir, service) = setup_test_dir();
+
+        let old_week = temp_dir.path().join(".archive/2025-W40");
+        fs::create_dir_all(&old_week).unwrap();
+        let old_mtime =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 24 * 60 * 60);
+        fs::File::open(&old_week)
+            .unwrap()
+            .set_modified(old_mtime)
+            .unwrap();
+
+        let first_run = service.enforce_retention(Some(7)).unwrap();
+        assert_eq!(first_run, 1);
+
+        // Nothing left to evaluate: must be a stable, error-free no-op.
+        let second_run = service.enforce_retention(Some(7)).unwrap();
+        assert_eq!(second_run, 0);
     }
 }

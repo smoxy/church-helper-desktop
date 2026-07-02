@@ -17,6 +17,7 @@ export default function Settings() {
         togglePolling: togglePollingAction,
         setPollingInterval,
         setRetentionDays,
+        setAutostartEnabled,
         updateConfig
     } = useAppStore();
 
@@ -148,6 +149,15 @@ export default function Settings() {
         }
     };
 
+    const toggleAutostart = async (enabled: boolean) => {
+        try {
+            await setAutostartEnabled(enabled);
+            addToast(enabled ? "Avvio automatico abilitato" : "Avvio automatico disabilitato", "success");
+        } catch (e) {
+            addToast(`Impossibile aggiornare l'avvio automatico: ${e}`, "error");
+        }
+    };
+
     const selectWorkDirectory = async () => {
         try {
             // const oldPath = config?.work_directory;
@@ -273,6 +283,19 @@ export default function Settings() {
                         <Switch
                             checked={config.polling_enabled}
                             onCheckedChange={togglePolling}
+                        />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-4 pt-4 border-t">
+                        <div className="space-y-0.5">
+                            <label className="text-base font-medium">Avvio Automatico</label>
+                            <p className="text-sm text-muted-foreground">
+                                Avvia l'app automaticamente all'accensione del computer.
+                            </p>
+                        </div>
+                        <Switch
+                            checked={config.autostart_enabled}
+                            onCheckedChange={toggleAutostart}
                         />
                     </div>
 

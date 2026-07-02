@@ -5,7 +5,7 @@
 use crate::constants::API_BASE_URL;
 use crate::models::{AppConfig, AppStatus, Resource, ResourceListResponse, WeekIdentifier};
 use crate::services::download::{STATUS_CANCELLED, STATUS_PAUSED};
-use crate::services::DownloadQueue;
+use crate::services::{DownloadQueue, PollingService, RetentionScheduler};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,6 +28,13 @@ pub struct AppState {
     pub file_size_cache: RwLock<HashMap<String, u64>>,
     /// Shared HTTP client for all requests (connection pooling)
     pub shared_http_client: reqwest::Client,
+    /// Handle to the background polling scheduler (`None` if
+    /// `polling_enabled` is off), so it can be stopped cleanly on app exit
+    /// (tray menu "Esci"). Set once at setup, taken and stopped on shutdown.
+    pub polling_service: RwLock<Option<PollingService>>,
+    /// Handle to the background retention scheduler, so it can be stopped
+    /// cleanly on app exit alongside `polling_service`.
+    pub retention_scheduler: RwLock<Option<RetentionScheduler>>,
 }
 
 /// Response for download command
@@ -58,6 +65,8 @@ impl Default for AppState {
             download_queue: Arc::new(DownloadQueue::new()),
             file_size_cache: RwLock::new(HashMap::new()),
             shared_http_client: reqwest::Client::new(),
+            polling_service: RwLock::new(None),
+            retention_scheduler: RwLock::new(None),
         }
     }
 }
@@ -393,6 +402,54 @@ pub fn set_retention_days(
         .write()
         .map_err(|e| format!("Failed to write config: {}", e))?;
     config.retention_days = days;
+
+    // Save to store
+    use tauri_plugin_store::StoreExt;
+    let store = app
+        .store("settings.json")
+        .map_err(|e| format!("Failed to access store: {}", e))?;
+
+    let json =
+        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+    store.set("config", json);
+    store
+        .save()
+        .map_err(|e| format!("Failed to save store: {}", e))?;
+
+    Ok(())
+}
+
+/// Enable or disable launching the app automatically at OS startup.
+///
+/// Toggles the actual OS-level autostart entry (Windows registry autorun /
+/// Linux XDG `.desktop` autostart, via tauri-plugin-autostart) first, and
+/// only persists the preference to config/store if that succeeds — so a
+/// failed OS-level toggle never leaves the saved config out of sync with
+/// reality.
+#[tauri::command]
+pub fn set_autostart_enabled(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let autostart_manager = app.autolaunch();
+    if enabled {
+        autostart_manager
+            .enable()
+            .map_err(|e| format!("Failed to enable autostart: {}", e))?;
+    } else {
+        autostart_manager
+            .disable()
+            .map_err(|e| format!("Failed to disable autostart: {}", e))?;
+    }
+
+    let mut config = state
+        .config
+        .write()
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+    config.autostart_enabled = enabled;
 
     // Save to store
     use tauri_plugin_store::StoreExt;

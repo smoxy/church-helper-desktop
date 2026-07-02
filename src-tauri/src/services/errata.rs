@@ -67,8 +67,10 @@ mod tests {
             download_url: format!("https://example.com/file_{}.zip", id),
             thumbnail_url: None,
             file_type: None,
+            checksum: None,
             is_active: true,
             created_at,
+            optimized_video_url: None,
         }
     }
 
@@ -151,9 +153,9 @@ mod tests {
             create_downloaded_file(3, week.clone(), original_dt),
         ];
         let remote = vec![
-            create_resource(1, updated_dt),         // Updated
-            create_resource(2, original_dt),        // Not updated
-            create_resource(3, updated_dt),         // Updated
+            create_resource(1, updated_dt),  // Updated
+            create_resource(2, original_dt), // Not updated
+            create_resource(3, updated_dt),  // Updated
         ];
 
         let changes = detect_errata_changes(&local, &remote);
@@ -182,10 +184,7 @@ mod tests {
     #[test]
     fn test_find_new_resources_empty_local() {
         let dt = Utc.with_ymd_and_hms(2026, 1, 19, 12, 0, 0).unwrap();
-        let remote = vec![
-            create_resource(1, dt),
-            create_resource(2, dt),
-        ];
+        let remote = vec![create_resource(1, dt), create_resource(2, dt)];
 
         let new = find_new_resources(&[], &remote);
         assert_eq!(new.len(), 2);
@@ -224,5 +223,53 @@ mod tests {
         let new = find_new_resources(&local, &remote);
         assert_eq!(new.len(), 1);
         assert_eq!(new[0].id, 1);
+    }
+
+    /// Guards the idempotency requirement from bl-desktop-first-poll-skipped: an
+    /// immediate poll on app startup (instead of waiting a full interval) means
+    /// two near-simultaneous polls (e.g. the app restarted twice in a row) can
+    /// run this created_at/downloaded_at comparison against an unchanged remote
+    /// snapshot. Repeating the comparison must be a pure, stable read: no
+    /// resource should be "discovered" as new or as an errata corrige more than
+    /// once, and results must not change between runs with the same input.
+    #[test]
+    fn test_repeated_poll_detection_is_idempotent() {
+        let downloaded_dt = Utc.with_ymd_and_hms(2026, 1, 19, 10, 0, 0).unwrap();
+        let updated_dt = Utc.with_ymd_and_hms(2026, 1, 19, 14, 0, 0).unwrap();
+        let week = WeekIdentifier::from_datetime(downloaded_dt);
+
+        let local = vec![
+            create_downloaded_file(1, week.clone(), downloaded_dt), // still current
+            create_downloaded_file(2, week.clone(), downloaded_dt), // has an errata corrige
+        ];
+        let remote = vec![
+            create_resource(1, downloaded_dt),
+            create_resource(2, updated_dt),
+            create_resource(3, downloaded_dt), // brand new resource
+        ];
+
+        // Simulate two back-to-back polls (e.g. immediate startup poll fired
+        // twice in a row) by running detection twice against the same snapshot.
+        let errata_first = detect_errata_changes(&local, &remote);
+        let errata_second = detect_errata_changes(&local, &remote);
+        assert_eq!(
+            errata_first, errata_second,
+            "repeated detection against the same snapshot must be stable"
+        );
+        assert_eq!(
+            errata_first.len(),
+            1,
+            "only resource 2 has an errata corrige"
+        );
+        assert_eq!(errata_first[0].resource_id, 2);
+
+        let new_first = find_new_resources(&local, &remote);
+        let new_second = find_new_resources(&local, &remote);
+        assert_eq!(
+            new_first, new_second,
+            "repeated detection against the same snapshot must be stable"
+        );
+        assert_eq!(new_first.len(), 1, "only resource 3 is new");
+        assert_eq!(new_first[0].id, 3);
     }
 }

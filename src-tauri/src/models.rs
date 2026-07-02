@@ -24,6 +24,8 @@ pub struct AppConfig {
     pub download_mode: DownloadMode,
     /// Prefer optimized video URL when available
     pub prefer_optimized: bool,
+    /// Whether the app should launch automatically at OS startup (opt-in)
+    pub autostart_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -41,7 +43,8 @@ impl Default for AppConfig {
             retention_days: Some(7),      // Default: 7 days
             auto_download_categories: Vec::new(),
             download_mode: DownloadMode::Queue,
-            prefer_optimized: true,        // Default: prefer optimized videos
+            prefer_optimized: true,   // Default: prefer optimized videos
+            autostart_enabled: false, // Default: disabled (opt-in)
         }
     }
 }
@@ -118,7 +121,9 @@ impl Resource {
     /// Otherwise returns the standard download_url.
     pub fn get_effective_download_url(&self, prefer_optimized: bool) -> &str {
         if prefer_optimized {
-            self.optimized_video_url.as_deref().unwrap_or(&self.download_url)
+            self.optimized_video_url
+                .as_deref()
+                .unwrap_or(&self.download_url)
         } else {
             &self.download_url
         }
@@ -238,6 +243,10 @@ mod tests {
         assert_eq!(config.polling_interval_minutes, 60);
         assert_eq!(config.retention_days, Some(7));
         assert!(config.work_directory.is_none());
+        assert!(
+            !config.autostart_enabled,
+            "autostart must default to disabled (opt-in only)"
+        );
     }
 
     #[test]
@@ -298,8 +307,10 @@ mod tests {
             download_url: "https://youtube.com/watch?v=abc".to_string(),
             thumbnail_url: None,
             file_type: None,
+            checksum: None,
             is_active: true,
             created_at: Utc::now(),
+            optimized_video_url: None,
         };
         assert!(youtube_resource.is_youtube());
 
@@ -345,8 +356,10 @@ mod tests {
             download_url: "https://example.com/file.zip".to_string(),
             thumbnail_url: None,
             file_type: None,
+            checksum: None,
             is_active: true,
             created_at: dt,
+            optimized_video_url: None,
         };
         let week = resource.week();
         assert_eq!(week.year, 2026);
@@ -360,6 +373,10 @@ mod tests {
             polling_enabled: false,
             polling_interval_minutes: 120,
             retention_days: None, // Keep forever
+            auto_download_categories: vec!["decime".to_string(), "video".to_string()],
+            download_mode: DownloadMode::Parallel,
+            prefer_optimized: false,
+            autostart_enabled: true,
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: AppConfig = serde_json::from_str(&json).unwrap();

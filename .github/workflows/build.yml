@@ -42,32 +42,54 @@ jobs:
           echo "Updating version to $VERSION"
           jq --arg v "$VERSION" '.version = $v' ./src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./src-tauri/tauri.conf.json
 
-      - name: Build Tauri App
-        run: npm run tauri build -- --target x86_64-pc-windows-msvc
-
-      - name: Zip Windows Assets
+      - name: Check updater signing key
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
+        # Compare via an env var (not interpolating the secret value
+        # directly into the script) so the key's contents are never spliced
+        # into shell code.
+        env:
+          HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         run: |
-          mkdir release-assets
-          cp ./src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi release-assets/ || true
-          cp ./src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe release-assets/ || true
-          cd release-assets
-          7z a ../windows-assets.zip *
+          if [ "$HAS_SIGNING_KEY" != "true" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY non configurato nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
+            jq '.bundle.createUpdaterArtifacts = false' ./src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./src-tauri/tauri.conf.json
+          fi
 
-      - name: Upload Assets to Release
-        uses: softprops/action-gh-release@v1
+      # Plain test build when NOT releasing (e.g. manual workflow_dispatch on
+      # a branch, no tag): verifies the build works without touching any
+      # GitHub Release.
+      - name: Build Tauri App (test build, no release)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: npm run tauri build -- --target x86_64-pc-windows-msvc
+
+      # Real release build: signs the updater artifacts (if
+      # TAURI_SIGNING_PRIVATE_KEY is configured, see the check step above)
+      # and publishes every bundle (msi/nsis) plus the merged latest.json
+      # updater manifest as assets on the GitHub Release for this tag.
+      - name: Build and publish release
         if: startsWith(github.ref, 'refs/tags/v')
-        with:
-          files: windows-assets.zip
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'church-helper-desktop ${{ github.ref_name }}'
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: --target x86_64-pc-windows-msvc
 
   release-linux:
+    # Runs after release-windows so the two jobs never race to merge the
+    # same latest.json asset on the same GitHub Release concurrently.
+    needs: release-windows
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -99,13 +121,42 @@ jobs:
           sudo apt-get install -y jq
           jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
 
-      - name: Build Linux Deb
+      - name: Check updater signing key
+        if: startsWith(github.ref, 'refs/tags/v')
+        # Compare via an env var (not interpolating the secret value
+        # directly into the script) so the key's contents are never spliced
+        # into shell code.
+        env:
+          HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_SIGNING_KEY" != "true" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY non configurato nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
+            jq '.bundle.createUpdaterArtifacts = false' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          fi
+
+      # Plain test build when NOT releasing (e.g. manual workflow_dispatch on
+      # a branch, no tag): verifies the build works without touching any
+      # GitHub Release.
+      - name: Build Linux Deb (test build, no release)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: npm run tauri build -- --bundles deb
 
-      - name: Upload Deb to Release
+      # Real release build: signs the updater artifact (if
+      # TAURI_SIGNING_PRIVATE_KEY is configured, see the check step above)
+      # and publishes the .deb plus the merged latest.json updater manifest
+      # (merged with the Windows job's entries, see `needs:` above) as
+      # assets on the GitHub Release for this tag.
+      - name: Build and publish release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v1
-        with:
-           files: ./src-tauri/target/release/bundle/deb/*.deb
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'church-helper-desktop ${{ github.ref_name }}'
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: --bundles deb
