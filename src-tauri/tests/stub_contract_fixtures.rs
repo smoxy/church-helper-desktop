@@ -1,0 +1,94 @@
+//! Integration tests that deserialize REAL payloads captured from the local
+//! api-stub (architecture/docs/contracts/resources-api.md, adr-0008), not
+//! hand-written approximations. Regenerate the fixtures under
+//! `tests/fixtures/` by running the stub (`node server.mjs` in the sibling
+//! `api-stub/` repo — see this repo's README, "Puntare il desktop allo stub
+//! API locale") and re-capturing `GET /api/resources/latest-week` after
+//! `POST /stub/scenario/:name` for the relevant scenario.
+
+use church_helper_desktop_lib::models::ResourceListResponse;
+
+const MULTI_VIDEO_JSON: &str = include_str!("fixtures/stub_multi_video_latest_week.json");
+const OLD_WEEKS_JSON: &str = include_str!("fixtures/stub_old_weeks_latest_week.json");
+const NO_OPTIMIZED_JSON: &str = include_str!("fixtures/stub_no_optimized_latest_week.json");
+
+/// adr-0008 "multi-video" scenario: resource 102 (a zip) offers 3 optimized
+/// variants. Confirms the REAL stub payload parses and that the desktop
+/// sees them ordered by size_bytes desc, with optimized_video_url pointing
+/// at the first (largest) one, exactly as contract-resources-api specifies.
+#[test]
+fn test_stub_multi_video_scenario_parses() {
+    let response: ResourceListResponse =
+        serde_json::from_str(MULTI_VIDEO_JSON).expect("stub multi-video payload must deserialize");
+
+    assert_eq!(response.count, 4);
+    assert_eq!(response.resources.len(), 4);
+
+    let missioni = response
+        .resources
+        .iter()
+        .find(|r| r.id == 102)
+        .expect("resource 102 (missioni zip) must be present");
+
+    let videos = missioni
+        .optimized_videos
+        .as_ref()
+        .expect("resource 102 must expose optimized_videos in this scenario");
+    assert_eq!(videos.len(), 3);
+    assert!(
+        videos
+            .windows(2)
+            .all(|w| w[0].size_bytes >= w[1].size_bytes),
+        "optimized_videos must be ordered by size_bytes desc: {:?}",
+        videos.iter().map(|v| v.size_bytes).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        missioni.optimized_video_url.as_deref(),
+        Some(videos[0].url.as_str()),
+        "optimized_video_url must be the compat-default first element"
+    );
+
+    // Resources without a multi-video choice still deserialize fine with an
+    // explicit `optimized_videos: null` (this scenario always emits the
+    // field present, unlike "no-optimized" below where the keys are absent).
+    let decime = response
+        .resources
+        .iter()
+        .find(|r| r.id == 101)
+        .expect("resource 101 must be present");
+    assert_eq!(decime.optimized_videos, None);
+}
+
+/// adr-0008 additive-field tolerance, but against the REAL response shape a
+/// pre-adr-0008 server would send: `optimized_video_url` / `optimized_videos`
+/// are entirely ABSENT keys, not explicit `null`.
+#[test]
+fn test_stub_no_optimized_scenario_parses_with_missing_keys() {
+    let response: ResourceListResponse = serde_json::from_str(NO_OPTIMIZED_JSON)
+        .expect("stub no-optimized payload must deserialize");
+
+    assert_eq!(response.count, 4);
+    for resource in &response.resources {
+        assert_eq!(resource.optimized_videos, None);
+        assert_eq!(resource.optimized_video_url, None);
+    }
+}
+
+/// bl-desktop-archiving-not-called fixture: three resources spread across
+/// three distinct past weeks, useful for exercising archiving/retention
+/// week-boundary logic against realistic data instead of only synthetic
+/// WeekIdentifiers.
+#[test]
+fn test_stub_old_weeks_scenario_parses_and_spans_distinct_weeks() {
+    let response: ResourceListResponse =
+        serde_json::from_str(OLD_WEEKS_JSON).expect("stub old-weeks payload must deserialize");
+
+    assert_eq!(response.count, 3);
+    let weeks: std::collections::HashSet<_> = response.resources.iter().map(|r| r.week()).collect();
+    assert_eq!(
+        weeks.len(),
+        3,
+        "old-weeks fixture must span 3 distinct weeks, got {:?}",
+        weeks
+    );
+}

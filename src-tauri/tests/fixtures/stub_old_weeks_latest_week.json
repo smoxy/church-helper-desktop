@@ -1,0 +1,47 @@
+{
+  "count": 3,
+  "resources": [
+    {
+      "id": 201,
+      "category": "decime",
+      "title": "Gestione Cristiana della Vita – settimana precedente",
+      "description": "Risorsa di una settimana passata, per testare retention/archivio.",
+      "download_url": "http://localhost:8799/files/decime_101_1_gestione-cristiana-vita.mp4",
+      "thumbnail_url": null,
+      "file_type": "mp4",
+      "checksum": "79d3e3db611c0c8a80fdf1575eab9bc8c737933a78517504890b986fc50cba9c",
+      "is_active": true,
+      "created_at": "2026-06-18T10:29:28.175Z",
+      "optimized_video_url": null,
+      "optimized_videos": null
+    },
+    {
+      "id": 202,
+      "category": "missioni",
+      "title": "Missioni dal Mondo – tre settimane fa",
+      "description": "Archivio zip di tre settimane fa.",
+      "download_url": "http://localhost:8799/files/missioni_102_amazzonia.zip",
+      "thumbnail_url": null,
+      "file_type": "zip",
+      "checksum": "db25b501877bab5d9640c3ae53adc49261372477618a26e4a9bcdc1c78e0c974",
+      "is_active": true,
+      "created_at": "2026-06-11T10:29:28.175Z",
+      "optimized_video_url": null,
+      "optimized_videos": null
+    },
+    {
+      "id": 203,
+      "category": "vga",
+      "title": "Video Giornale Avventista – un mese fa",
+      "description": "Puntata YouTube di quattro settimane fa.",
+      "download_url": "https://www.youtube.com/watch?v=vga2026w23puntata",
+      "thumbnail_url": null,
+      "file_type": null,
+      "checksum": null,
+      "is_active": true,
+      "created_at": "2026-06-04T10:29:28.175Z",
+      "optimized_video_url": null,
+      "optimized_videos": null
+    }
+  ]
+}
