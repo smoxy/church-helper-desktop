@@ -38,9 +38,25 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # Il tag e' l'unica fonte di verita' per la versione rilasciata:
+          # deve essere semver stretto vX.Y.Z (niente pre-release/build
+          # metadata) altrimenti la release fallisce subito con un errore
+          # chiaro invece di produrre artefatti con versione ambigua.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$TAG' non e' un semver valido nella forma vX.Y.Z (es. v1.2.3). Interrompo la release."
+            exit 1
+          fi
+          VERSION=${TAG#v}
+          CURRENT=$(jq -r '.version' ./src-tauri/tauri.conf.json)
+          if [ "$CURRENT" != "$VERSION" ]; then
+            echo "::warning::Versione committata in tauri.conf.json ($CURRENT) diversa da quella del tag ($VERSION): vince il tag, i file vengono allineati solo per questa build CI."
+          fi
           echo "Updating version to $VERSION"
           jq --arg v "$VERSION" '.version = $v' ./src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./src-tauri/tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v' ./package.json > tmp.json && mv tmp.json ./package.json
+          sed -i.bak "0,/^version = \".*\"/s//version = \"$VERSION\"/" ./src-tauri/Cargo.toml && rm -f ./src-tauri/Cargo.toml.bak
 
       - name: Check updater signing key
         if: startsWith(github.ref, 'refs/tags/v')
@@ -117,10 +133,26 @@ jobs:
       - name: Update version from tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          echo "Updating version to $VERSION"
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # Il tag e' l'unica fonte di verita' per la versione rilasciata:
+          # deve essere semver stretto vX.Y.Z (niente pre-release/build
+          # metadata) altrimenti la release fallisce subito con un errore
+          # chiaro invece di produrre artefatti con versione ambigua.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$TAG' non e' un semver valido nella forma vX.Y.Z (es. v1.2.3). Interrompo la release."
+            exit 1
+          fi
+          VERSION=${TAG#v}
           sudo apt-get install -y jq
+          CURRENT=$(jq -r '.version' src-tauri/tauri.conf.json)
+          if [ "$CURRENT" != "$VERSION" ]; then
+            echo "::warning::Versione committata in tauri.conf.json ($CURRENT) diversa da quella del tag ($VERSION): vince il tag, i file vengono allineati solo per questa build CI."
+          fi
+          echo "Updating version to $VERSION"
           jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
+          sed -i.bak "0,/^version = \".*\"/s//version = \"$VERSION\"/" src-tauri/Cargo.toml && rm -f src-tauri/Cargo.toml.bak
 
       - name: Check updater signing key
         if: startsWith(github.ref, 'refs/tags/v')
