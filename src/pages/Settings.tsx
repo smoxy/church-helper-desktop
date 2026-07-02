@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { useAppStore } from "../stores/appStore";
 import { useToastStore } from "../stores/toastStore";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -26,6 +27,10 @@ export default function Settings() {
 
     // Local state for interval to manage input changes before committing
     const [localInterval, setLocalInterval] = useState(60);
+    const [appVersion, setAppVersion] = useState("…");
+    useEffect(() => {
+        void getVersion().then(setAppVersion).catch(() => setAppVersion("n/d"));
+    }, []);
     const [localRetention, setLocalRetention] = useState<number | null>(null);
     const [availableCategories, setAvailableCategories] = useState<string[]>([]);
     const [localAutoDownloadCats, setLocalAutoDownloadCats] = useState<string[]>([]);
@@ -374,7 +379,7 @@ export default function Settings() {
                 <CardContent className="text-sm space-y-2">
                     <div className="flex justify-between">
                         <span className="text-muted-foreground">App Version</span>
-                        <span>0.1.0</span>
+                        <span>{appVersion}</span>
                     </div>
                     <div className="flex justify-between">
                         <span className="text-muted-foreground">Tauri Version</span>
