@@ -53,6 +53,7 @@ interface AppState {
   // Actions
   fetchInitialData: () => Promise<void>;
   fetchResourcesStatus: () => Promise<void>;
+  patchResourceStatus: (id: number, patch: Partial<ResourceStatus>) => void;
   updateConfig: (config: Partial<AppConfig>) => Promise<void>;
   forcePoll: () => Promise<void>;
   selectWorkDirectory: () => Promise<void>;
@@ -411,6 +412,20 @@ export const useAppStore = create<AppState>(
         } catch (e) {
           console.error('Failed to fetch resource statuses', e);
         }
+      },
+
+      // Reconcile a single batched entry in place (mount-time deletion check
+      // and the file-missing reveal path in useResource): a full refetch
+      // would re-stat every resource on disk just to correct one entry.
+      patchResourceStatus: (id, patch) => {
+        set(state => {
+          const current = state.resourceStatuses[id] ??
+              {downloaded: false, file_size: null, optimized_file_size: null};
+          return {
+            resourceStatuses:
+                {...state.resourceStatuses, [id]: {...current, ...patch}}
+          };
+        });
       },
 
       updateConfig: async (updates) => {

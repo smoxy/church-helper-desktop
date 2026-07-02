@@ -3,7 +3,7 @@ import {useEffect, useMemo, useState} from 'react';
 
 import {useAppStore} from '../stores/appStore';
 import {useToastStore} from '../stores/toastStore';
-import {errorMessage} from '../lib/utils';
+import {errorMessage, isCommandError} from '../lib/utils';
 import {OptimizedVideo, Resource} from '../types';
 
 export function useResource(resource: Resource) {
@@ -98,6 +98,45 @@ export function useResource(resource: Resource) {
       },
       [isNonDefaultVariant, effectiveResource]);
 
+  // Deletion detection: the batched statuses refresh only on download/poll/
+  // config events, so a file the user deleted from disk OUTSIDE the app would
+  // keep reading "Downloaded" until one of those fires. On mount (and when
+  // the resource changes) do one targeted backend check — with the SAME
+  // registry-OR-fs semantics as the batched map (check_resource_downloaded,
+  // not check_resource_status: the latter only probes the URL-derived path
+  // and would falsely flip registry-only-resolvable files) — and reconcile
+  // ONLY the disappearance flip (fresh=false while batched=true) into the
+  // store, with a one-time informational toast. The opposite direction
+  // (fresh=true, batched=false) is left to the existing batched triggers.
+  // The non-default variant case already does its own fresh check above.
+  useEffect(
+      () => {
+        if (isNonDefaultVariant) return;
+        let cancelled = false;
+        invoke<boolean>('check_resource_downloaded', {resource})
+            .then(freshDownloaded => {
+              if (cancelled || freshDownloaded) return;
+              // Read the store at resolution time (not from the render
+              // closure): a concurrent instance of this hook for the same
+              // resource may already have flipped the entry, and the
+              // batched-still-true guard is what makes the toast one-time.
+              const {resourceStatuses, patchResourceStatus} =
+                  useAppStore.getState();
+              if (!resourceStatuses[resource.id]?.downloaded) return;
+              patchResourceStatus(resource.id, {downloaded: false});
+              useToastStore.getState().addToast(
+                  'Il file non è più presente sul disco. Puoi scaricarlo di nuovo.',
+                  'info');
+            })
+            .catch(err => {
+              console.error('Failed to check resource downloaded state:', err);
+            });
+        return () => {
+          cancelled = true;
+        };
+      },
+      [resource, isNonDefaultVariant]);
+
   const isDownloaded = isNonDefaultVariant ?
       (variantDownloaded ?? false) :
       (statusEntry?.downloaded ?? false);
@@ -145,6 +184,16 @@ export function useResource(resource: Resource) {
     try {
       await invoke('reveal_resource', {resource: effectiveResource});
     } catch (error) {
+      // Typed `file-missing` (the file vanished between the mount-time check
+      // and this click): reconcile the status so the button re-offers the
+      // download, and show dedicated copy instead of the generic message.
+      if (isCommandError(error) && error.code === 'file-missing') {
+        if (isNonDefaultVariant) setVariantDownloaded(false);
+        useAppStore.getState().patchResourceStatus(
+            resource.id, {downloaded: false});
+        addToast('File non trovato sul disco — scaricalo di nuovo', 'error');
+        return;
+      }
       addToast(`Impossibile aprire la cartella: ${errorMessage(error)}`, 'error');
     }
   };

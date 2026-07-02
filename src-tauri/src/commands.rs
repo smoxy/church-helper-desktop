@@ -477,6 +477,37 @@ pub fn check_resource_status(
     }
 }
 
+/// Fresh single-resource `downloaded` check with the SAME semantics as the
+/// batched `get_resources_status` (registry-first OR fs fallback, via
+/// `compute_resources_status`). The UI calls it when a resource card/detail
+/// mounts to detect files deleted from disk outside the app.
+///
+/// `check_resource_status` is NOT reusable for this: it only tests the
+/// URL-derived dest path (by design, so the multi-variant picker can probe a
+/// specific URL), so a file resolvable only through the registry — e.g.
+/// downloaded under a different `prefer_optimized` — would falsely read as
+/// missing and the UI would wrongly flip a still-valid batched entry.
+#[tauri::command]
+pub fn check_resource_downloaded(
+    state: State<'_, AppState>,
+    resource: Resource,
+) -> Result<bool, CommandError> {
+    let (work_dir, prefer_optimized) = {
+        let config = state.config.read()?;
+        (config.work_directory.clone(), config.prefer_optimized)
+    };
+    let registry = state.downloaded_files.read()?;
+    let id = resource.id;
+    let statuses = compute_resources_status(
+        std::slice::from_ref(&resource),
+        &registry,
+        work_dir.as_deref(),
+        prefer_optimized,
+        &HashMap::new(),
+    );
+    Ok(statuses.get(&id).is_some_and(|s| s.downloaded))
+}
+
 /// Resolve the on-disk path of a resource's downloaded file.
 ///
 /// Registry-first: an entry in `downloaded_files` records where the download
@@ -486,10 +517,14 @@ pub fn check_resource_status(
 fn resolve_resource_path(state: &AppState, resource: &Resource) -> Result<PathBuf, CommandError> {
     {
         let registry = state.downloaded_files.read()?;
+        // A registry entry whose file vanished must not win over the derived
+        // path: the file may still exist there (stale registry), and the
+        // batched status (`compute_resources_status`) already ignores
+        // non-existing registry paths — resolution must agree with it.
         if let Some(entry) = registry
             .iter()
             .rev()
-            .find(|f| f.resource_id == resource.id && !f.is_superseded)
+            .find(|f| f.resource_id == resource.id && !f.is_superseded && f.local_path.exists())
         {
             return Ok(entry.local_path.clone());
         }
@@ -507,6 +542,21 @@ fn resolve_resource_path(state: &AppState, resource: &Resource) -> Result<PathBu
     ))
 }
 
+/// Guard for `reveal_resource`: a file that vanished from disk must surface as
+/// a typed `file-missing` error. Without this, `reveal_item_in_dir` fails on
+/// the missing file and the parent-folder fallback below "succeeds" (the week
+/// folder usually still exists), so the user gets a folder without the
+/// expected file and the UI never learns the file is gone.
+fn ensure_reveal_target_exists(path: &Path) -> Result<(), CommandError> {
+    if path.exists() {
+        Ok(())
+    } else {
+        // Bare detail only: the frontend shows its own dedicated copy when it
+        // matches the `file-missing` code (useResource.ts::revealInFolder).
+        Err(CommandError::new("file-missing", "File not found on disk"))
+    }
+}
+
 /// Reveal a downloaded resource in the system file manager, selecting the file
 /// inside its containing folder. If selection isn't supported (some Linux file
 /// managers) or the reveal otherwise fails, falls back to opening the week
@@ -520,6 +570,7 @@ pub fn reveal_resource(
     use tauri_plugin_opener::OpenerExt;
 
     let path = resolve_resource_path(state.inner(), &resource)?;
+    ensure_reveal_target_exists(&path)?;
 
     if app.opener().reveal_item_in_dir(&path).is_err() {
         let dir = path.parent().unwrap_or(path.as_path());
@@ -900,6 +951,42 @@ mod tests {
 
         let out = compute_resources_status(&[r], &registry, Some(wd), true, &HashMap::new());
         assert!(!out[&2].downloaded);
+    }
+
+    #[test]
+    fn test_reveal_guard_missing_file_is_typed_file_missing() {
+        let tmp = TempDir::new().unwrap();
+        let existing = tmp.path().join("present.mp4");
+        std::fs::write(&existing, b"x").unwrap();
+        assert!(ensure_reveal_target_exists(&existing).is_ok());
+
+        let missing = tmp.path().join("gone.mp4");
+        let err = ensure_reveal_target_exists(&missing).unwrap_err();
+        assert_eq!(err.code, "file-missing");
+    }
+
+    /// Deleting the file from disk (outside the app) must flip `downloaded`
+    /// back to false on the next computation — the semantics the mount-time
+    /// `check_resource_downloaded` reconciliation relies on.
+    #[test]
+    fn test_deleted_dest_file_is_no_longer_downloaded() {
+        let tmp = TempDir::new().unwrap();
+        let wd = tmp.path();
+        let r = make_resource(9, "https://example.com/file9.mp4");
+        let dest = create_dest_file(wd, &r);
+
+        let out = compute_resources_status(
+            std::slice::from_ref(&r),
+            &[],
+            Some(wd),
+            true,
+            &HashMap::new(),
+        );
+        assert!(out[&9].downloaded);
+
+        std::fs::remove_file(&dest).unwrap();
+        let out = compute_resources_status(&[r], &[], Some(wd), true, &HashMap::new());
+        assert!(!out[&9].downloaded);
     }
 
     #[test]

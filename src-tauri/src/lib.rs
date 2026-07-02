@@ -406,6 +406,7 @@ pub fn run() {
             commands::pause_download,
             commands::cancel_download,
             commands::check_resource_status,
+            commands::check_resource_downloaded,
             commands::get_file_size,
             commands::get_resource_summary,
             commands::get_resources_status,
