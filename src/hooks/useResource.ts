@@ -167,6 +167,30 @@ export function useResource(resource: Resource) {
     }
   };
 
+  // Intervento A: lets the user flip the global prefer_optimized preference
+  // directly from the resource detail callout. updateConfig already refetches
+  // the batched statuses when prefer_optimized changes (STATUS_AFFECTING_CONFIG_FIELDS),
+  // so the displayed size updates on its own; no local revert needed since the
+  // modal reads preferOptimized from the global config.
+  const setPreferOptimized = async (next: boolean) => {
+    if (!config) return;
+    try {
+      await updateConfig({prefer_optimized: next});
+      addToast(
+          next ?
+              'Video ottimizzati attivati — li preferirai d’ora in poi.' :
+              'Preferenza aggiornata: userai i video originali.',
+          'success');
+    } catch (error) {
+      addToast(
+          `Impossibile aggiornare la preferenza: ${errorMessage(error)}`,
+          'error');
+    }
+  };
+
+  const hasOptimizedVariant =
+      optimizedVideos.length > 0 || !!resource.optimized_video_url;
+
   return {
     isDownloaded,
     isDownloading,
@@ -184,6 +208,8 @@ export function useResource(resource: Resource) {
     revealInFolder,
     toggleAutoDownload,
     preferOptimized,
+    setPreferOptimized,
+    hasOptimizedVariant,
     optimizedVideos,
     selectedVideoUrl,
     selectVideo,

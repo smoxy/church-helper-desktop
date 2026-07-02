@@ -534,6 +534,30 @@ pub fn reveal_resource(
     Ok(())
 }
 
+/// Open the configured work directory (not a specific week folder) in the
+/// system file manager. Errors with `work-dir-not-set` if the user hasn't
+/// configured one yet, via the same `FileError` mapping used elsewhere.
+#[tauri::command]
+pub fn open_work_directory(state: State<'_, AppState>, app: AppHandle) -> Result<(), CommandError> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let work_dir = {
+        let config = state.config.read()?;
+        config
+            .work_directory
+            .clone()
+            .ok_or(FileError::WorkDirectoryNotSet)?
+    };
+
+    app.opener()
+        .open_path(work_dir.to_string_lossy().into_owned(), None::<&str>)
+        // Bare detail only, same convention as reveal_resource: the frontend
+        // toast supplies its own prefix.
+        .map_err(|e| CommandError::new("open-work-dir-failed", e.to_string()))?;
+
+    Ok(())
+}
+
 /// Get the size of a file from its URL without downloading it
 #[tauri::command]
 pub async fn get_file_size(state: State<'_, AppState>, url: String) -> Result<u64, CommandError> {

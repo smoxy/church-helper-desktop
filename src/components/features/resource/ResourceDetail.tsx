@@ -3,7 +3,9 @@ import { Resource } from '../../../types';
 import { useResource } from '../../../hooks/useResource';
 import { useResourceFileSize } from '../../../hooks/useResourceFileSize';
 import { formatBytes } from '../../../lib/utils';
+import { computeSavings } from '../../../lib/savings';
 import { OptimizedVideoPicker } from './OptimizedVideoPicker';
+import { OptimizedPreferenceToggle } from './OptimizedPreferenceToggle';
 import { LoaderCircle, Download, Check, Pause, Play, Trash2, TriangleAlert, RotateCcw, X, FolderOpen, Clock } from "lucide-react";
 
 interface ResourceDetailProps {
@@ -29,6 +31,8 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
         revealInFolder,
         toggleAutoDownload,
         preferOptimized,
+        setPreferOptimized,
+        hasOptimizedVariant,
         optimizedVideos,
         selectedVideoUrl,
         selectVideo
@@ -83,18 +87,14 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
     // before (single implicit URL, no picker rendered).
     const showVideoPicker = preferOptimized && optimizedVideos.length > 1;
 
-    const canShowSavingsWarning = !preferOptimized &&
-        optimizedSizeBytes && 
-        originalSizeBytes && 
-        optimizedSizeBytes < originalSizeBytes;
-
-    const potentialSavings = canShowSavingsWarning 
-        ? formatBytes(originalSizeBytes! - optimizedSizeBytes!)
-        : null;
-
-    const savingsPercentage = canShowSavingsWarning
-        ? Math.round(((originalSizeBytes! - optimizedSizeBytes!) / originalSizeBytes!) * 100)
-        : null;
+    // Intervento A: the callout appears whenever the user hasn't opted into
+    // optimized videos yet AND this resource actually offers one, regardless
+    // of whether the sizes are known — with numbers it shows the real saving,
+    // without it falls back to generic copy (see OptimizedPreferenceToggle).
+    const showOptimizedCallout = !preferOptimized && hasOptimizedVariant;
+    const savings = computeSavings(originalSizeBytes, optimizedSizeBytes);
+    const originalLabel = originalSizeBytes ? formatBytes(originalSizeBytes) : null;
+    const optimizedLabel = optimizedSizeBytes ? formatBytes(optimizedSizeBytes) : null;
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 backdrop-blur-xs" onClick={onClose}>
@@ -126,30 +126,23 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                                 {fileSize}
                                             </span>
                                         )}
-                                        {canShowSavingsWarning && (
-                                            <div className="group relative">
-                                                <div className="bg-yellow-500/90 text-white p-1 rounded-full cursor-help">
-                                                    <TriangleAlert className="h-4 w-4" />
-                                                </div>
-                                                {/* Tooltip */}
-                                                <div className="absolute right-0 top-full mt-2 w-64 p-3 bg-popover text-popover-foreground text-xs rounded-md shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 border border-border">
-                                                    <div className="font-semibold mb-1 text-yellow-600 dark:text-yellow-400">
-                                                        ⚡ Risparmio possibile: {potentialSavings} ({savingsPercentage}%)
-                                                    </div>
-                                                    <p className="mb-2">
-                                                        Attivando i video ottimizzati risparmieresti <strong>{potentialSavings}</strong> di spazio su questo download.
-                                                    </p>
-                                                    <p className="text-muted-foreground italic">
-                                                        Puoi cambiare questa preferenza nelle Impostazioni.
-                                                    </p>
-                                                    <div className="absolute -top-1 right-3 w-2 h-2 bg-popover transform rotate-45 border-t border-l border-border"></div>
-                                                </div>
-                                            </div>
-                                        )}
                                     </div>
                                 </div>
 
                                 <div className="flex flex-col gap-3">
+                                    {/* Intervento A: inline callout offering to switch prefer_optimized on,
+                                        replacing the former "check Settings" tooltip. Gate is on
+                                        hasOptimizedVariant (not on known sizes), so it shows generic
+                                        copy when sizes are unknown and real numbers when known. */}
+                                    {showOptimizedCallout && (
+                                        <OptimizedPreferenceToggle
+                                            savings={savings}
+                                            originalLabel={originalLabel}
+                                            optimizedLabel={optimizedLabel}
+                                            onEnable={() => void setPreferOptimized(true)}
+                                        />
+                                    )}
+
                                     {/* Optimized video picker (adr-0008): only when there's an actual choice */}
                                     {showVideoPicker && (
                                         <OptimizedVideoPicker

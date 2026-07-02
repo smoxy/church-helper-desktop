@@ -2,9 +2,10 @@ import {invoke} from '@tauri-apps/api/core';
 import {listen} from '@tauri-apps/api/event';
 import {create} from 'zustand';
 
+import {useCelebrationStore} from './celebrationStore';
 import {useToastStore} from './toastStore';
 import {errorMessage} from '../lib/utils';
-import {AppConfig, AppStatus, CategoryCount, ErrataDetectedPayload, Resource, ResourceListResponse, ResourceStatus, WeekIdentifier} from '../types';
+import {AppConfig, AppStatus, CategoryCount, DownloadCompletePayload, ErrataDetectedPayload, Resource, ResourceListResponse, ResourceStatus, WeekIdentifier} from '../types';
 
 export interface ActiveDownload {
   progress: number;
@@ -267,8 +268,8 @@ export const useAppStore = create<AppState>(
           });
 
           // Listen for download completion from auto-download queue
-          await listen<number>('download-complete', (event) => {
-            const resourceId = event.payload;
+          await listen<DownloadCompletePayload>('download-complete', (event) => {
+            const {id: resourceId, optimized} = event.payload;
             set(state => {
               const current = state.activeDownloads[resourceId];
               if (!current) {
@@ -287,6 +288,28 @@ export const useAppStore = create<AppState>(
             });
             debouncedFetchSummary();
             debouncedFetchStatuses();
+
+            // Intervento B: celebrate optimized completions (manual AND
+            // auto-download — the latter is the main "value delivered by
+            // Rinoova" case and never reaches activeDownloads above).
+            // Non-blocking: does not gate the synchronous state update.
+            if (optimized) {
+              void (async () => {
+                // Non-debounced refetch to maximize the chance the sizes are
+                // already known (best-effort; may still be null).
+                await get().fetchResourcesStatus();
+                const st = get().resourceStatuses[resourceId];
+                const title = get().resources.find(r => r.id === resourceId)
+                                  ?.title ??
+                    'Risorsa ottimizzata';
+                useCelebrationStore.getState().addCelebration({
+                  resourceId,
+                  title,
+                  originalBytes: st?.file_size ?? null,
+                  optimizedBytes: st?.optimized_file_size ?? null,
+                });
+              })();
+            }
           });
 
           // Listen for download failures

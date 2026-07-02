@@ -459,8 +459,24 @@ impl DownloadQueue {
                                                 path,
                                                 prefer_optimized,
                                             );
-                                            let _ =
-                                                app_clone.emit("download-complete", resource.id);
+                                            // The frontend needs to know whether the
+                                            // *actually downloaded* URL was an optimized
+                                            // variant (auto-downloads never enter the
+                                            // frontend's activeDownloads map, so it cannot
+                                            // derive this itself). `resource` here is the
+                                            // effective resource (manual variant picks
+                                            // included), so this also covers non-default
+                                            // picks.
+                                            let optimized = resource
+                                                .get_effective_download_url(prefer_optimized)
+                                                != resource.download_url;
+                                            let _ = app_clone.emit(
+                                                "download-complete",
+                                                serde_json::json!({
+                                                    "id": resource.id,
+                                                    "optimized": optimized
+                                                }),
+                                            );
                                         }
                                         Err(crate::error::DownloadError::Paused) => {
                                             tracing::info!("Download paused: {}", resource.title);

@@ -2,6 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { LayoutDashboard, Settings } from "lucide-react";
 import { cn } from "../lib/utils";
 import { ToastContainer } from "../components/ui/toast";
+import { CelebrationStack } from "../components/ui/CelebrationStack";
 import { RinoovaLogo } from "../components/ui/RinoovaLogo";
 
 export default function AppLayout() {
@@ -98,6 +99,7 @@ export default function AppLayout() {
                 </footer>
             </main>
             <ToastContainer />
+            <CelebrationStack />
         </div>
     );
 }

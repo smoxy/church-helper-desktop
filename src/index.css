@@ -152,3 +152,51 @@
     @apply bg-background text-foreground;
   }
 }
+
+/*
+  tailwindcss-animate / tw-animate-css is NOT installed in this project, so
+  the `animate-in` etc. utility classes elsewhere in the codebase are no-ops.
+  These explicit keyframes back the celebration panel (Intervento B) and are
+  the only way to honor prefers-reduced-motion, since no existing helper does.
+*/
+@layer utilities {
+  .celebrate-enter {
+    animation: celebrate-in .5s cubic-bezier(.22, 1, .36, 1);
+  }
+
+  .celebrate-bar-fill {
+    /* Final state, valid even without the animation running (reduced-motion). */
+    transform: scaleX(var(--opt-scale, 1));
+    transform-origin: left center;
+    animation: weight-drop 1.1s cubic-bezier(.22, 1, .36, 1);
+  }
+
+  .celebrate-spark {
+    animation: spark .9s ease-out forwards;
+  }
+}
+
+@keyframes celebrate-in {
+  from { opacity: 0; transform: translateY(-10px) scale(.96); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes weight-drop {
+  from { transform: scaleX(1); }                    /* full (original) weight */
+  to   { transform: scaleX(var(--opt-scale, 1)); }   /* optimized weight */
+}
+
+@keyframes spark {
+  0%   { opacity: 0; transform: translate(0, 0) scale(.4); }
+  30%  { opacity: 1; }
+  100% { opacity: 0; transform: translate(var(--spark-x, 0), var(--spark-y, -14px)) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .celebrate-enter, .celebrate-bar-fill, .celebrate-spark {
+    animation: none !important;
+  }
+  .celebrate-spark {
+    display: none;
+  }
+}

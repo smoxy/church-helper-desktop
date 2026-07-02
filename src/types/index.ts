@@ -102,6 +102,18 @@ export interface ErrataDetectedPayload {
   resourceIds: number[];
 }
 
+// Payload of the `download-complete` event. Mirrors the
+// `serde_json::json!({ "id", "optimized" })` payload emitted in
+// src-tauri/src/services/queue.rs when a download finishes: `optimized` is
+// true when the actually-downloaded URL was an optimized variant (computed
+// backend-side via Resource::get_effective_download_url, the only reliable
+// source — the frontend cannot derive this for auto-downloads, which never
+// enter activeDownloads).
+export interface DownloadCompletePayload {
+  id: number;
+  optimized: boolean;
+}
+
 // Batched per-resource status returned by the `get_resources_status` command.
 // Mirrors the Rust `ResourceStatus` struct (src-tauri/src/commands.rs). The
 // backing HashMap<i64, _> serializes its integer keys as strings, so the

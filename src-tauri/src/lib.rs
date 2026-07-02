@@ -410,6 +410,7 @@ pub fn run() {
             commands::get_resource_summary,
             commands::get_resources_status,
             commands::reveal_resource,
+            commands::open_work_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

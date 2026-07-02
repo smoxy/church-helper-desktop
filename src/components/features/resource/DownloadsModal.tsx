@@ -1,7 +1,10 @@
+import { invoke } from "@tauri-apps/api/core";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../../stores/appStore";
+import { useToastStore } from "../../../stores/toastStore";
+import { errorMessage } from "../../../lib/utils";
 import { Button } from "../../ui/button";
-import { Play, Pause, X, CloudDownload, CircleCheck } from "lucide-react";
+import { Play, Pause, X, CloudDownload, CircleCheck, FolderOpen } from "lucide-react";
 import { useEffect, useState, useRef } from "react";
 
 interface DownloadsModalProps {
@@ -48,6 +51,18 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
         resumeDownload: s.resumeDownload,
         cancelDownload: s.cancelDownload,
     })));
+
+    const addToast = useToastStore(s => s.addToast);
+
+    // Invoke directly (no store state needed): a one-shot side effect, not
+    // app state the rest of the UI reacts to.
+    const handleOpenWorkDirectory = async () => {
+        try {
+            await invoke('open_work_directory');
+        } catch (error) {
+            addToast(`Impossibile aprire la cartella: ${errorMessage(error)}`, 'error');
+        }
+    };
 
     // Local state for speed calculation
     const [downloadStats, setDownloadStats] = useState<Record<number, { speed: number, eta: number, lastBytes: number, lastTime: number }>>({});
@@ -153,9 +168,15 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
                         <h2 className="text-xl font-bold">Downloads</h2>
                         <p className="text-sm text-muted-foreground">Manage your active downloads and queue.</p>
                     </div>
-                    <button ref={closeButtonRef} onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground transition-colors">
-                        <X className="h-6 w-6" />
-                    </button>
+                    <div className="flex items-center gap-3 shrink-0">
+                        <Button variant="outline" size="sm" className="gap-1.5" onClick={handleOpenWorkDirectory}>
+                            <FolderOpen className="h-4 w-4" />
+                            Apri cartella
+                        </Button>
+                        <button ref={closeButtonRef} onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground transition-colors">
+                            <X className="h-6 w-6" />
+                        </button>
+                    </div>
                 </div>
 
                 {/* Content */}
