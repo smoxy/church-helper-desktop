@@ -527,6 +527,7 @@ mod tests {
             checksum: None,
             is_active: true,
             created_at,
+            week_date: None,
             optimized_video_url: None,
             optimized_videos: None,
         }

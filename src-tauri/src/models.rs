@@ -126,6 +126,22 @@ pub struct Resource {
     pub is_active: bool,
     #[serde(deserialize_with = "deserialize_naive_to_utc")]
     pub created_at: DateTime<Utc>,
+    /// True calendar week of this resource's content ("YYYY-MM-DD", from the
+    /// newsletter subject), as opposed to `created_at` which is the DB
+    /// *insert* timestamp. Additive field (adr-0003): the mail-parser ships
+    /// it in a parallel fix, so older/degraded payloads omit it entirely.
+    /// `week()` prefers this over `created_at` — during ingestion recovery
+    /// (mail-parser stalled for weeks, then backfills in one batch) every
+    /// recovered resource is inserted "today", so deriving the week from
+    /// `created_at` alone would put stale content in the current week and
+    /// `is_material_week_stale` would never fire.
+    ///
+    /// Uses `deserialize_lenient_week_date` rather than plain
+    /// `Option<NaiveDate>`: a malformed value here must degrade to `None`
+    /// instead of failing the whole `Vec<Resource>` deserialization — one bad
+    /// `week_date` must never take down the rest of the poll.
+    #[serde(default, deserialize_with = "deserialize_lenient_week_date")]
+    pub week_date: Option<NaiveDate>,
     pub optimized_video_url: Option<String>,
     /// All optimized video variants available for this resource (adr-0008).
     /// Additive field: a missing key or an explicit JSON `null` (older
@@ -160,15 +176,46 @@ where
         s
     )))
 }
+
+/// Lenient `Option<NaiveDate>` deserializer for `Resource::week_date`. Any
+/// value that isn't a valid "YYYY-MM-DD" string — the wrong JSON type (e.g. a
+/// stray number) or a string that fails to parse (e.g. "boh") — degrades to
+/// `None` rather than raising an error, so this best-effort field can never
+/// break deserialization of the surrounding resource list.
+///
+/// Goes through `serde_json::Value` instead of `Option<String>` on purpose:
+/// `Option<String>::deserialize` itself errors out on a non-string JSON
+/// value, which would propagate the same as a hard parse failure. Routing
+/// through `Value` first lets every "not a valid date" case — wrong type or
+/// unparsable string — fall through to `None` uniformly.
+fn deserialize_lenient_week_date<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .and_then(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok()))
+}
+
 impl Resource {
     /// Check if the download URL is a YouTube link
     pub fn is_youtube(&self) -> bool {
         is_youtube_url(&self.download_url)
     }
 
-    /// Get the week identifier for this resource
+    /// Get the week identifier for this resource: `week_date` (the true
+    /// content week, from the newsletter subject) when present, falling back
+    /// to `created_at` (the DB insert timestamp) otherwise. See the doc
+    /// comment on `Resource::week_date` for why the fallback alone isn't
+    /// enough during ingestion recovery. Every downstream consumer — week
+    /// folder naming, staleness, errata, retention — goes through this
+    /// method, so all of them benefit automatically.
     pub fn week(&self) -> WeekIdentifier {
-        WeekIdentifier::from_datetime(self.created_at)
+        match self.week_date {
+            Some(date) => WeekIdentifier::from_naive_date(date),
+            None => WeekIdentifier::from_datetime(self.created_at),
+        }
     }
 
     /// Get the effective download URL based on preference
@@ -255,6 +302,17 @@ impl WeekIdentifier {
     /// Get the current week (ISO calendar week of `Utc::now()`)
     pub fn current() -> Self {
         Self::from_datetime(Utc::now())
+    }
+
+    /// Create a WeekIdentifier from a NaiveDate (the ISO calendar week that
+    /// date falls in). Used by `Resource::week()` for `week_date`, which
+    /// carries no time-of-day/timezone component.
+    pub fn from_naive_date(date: NaiveDate) -> Self {
+        let iso_week: IsoWeek = date.iso_week();
+        Self {
+            year: iso_week.year(),
+            week_number: iso_week.week(),
+        }
     }
 
     /// Format as a self-explanatory directory name carrying the Saturday date
@@ -518,6 +576,7 @@ mod tests {
             checksum: None,
             is_active: true,
             created_at: Utc::now(),
+            week_date: None,
             optimized_video_url: None,
             optimized_videos: None,
         };
@@ -653,12 +712,141 @@ mod tests {
             checksum: None,
             is_active: true,
             created_at: dt,
+            week_date: None,
             optimized_video_url: None,
             optimized_videos: None,
         };
         let week = resource.week();
         assert_eq!(week.year, 2026);
         assert_eq!(week.week_number, 4);
+    }
+
+    /// Minimal JSON payload for a `Resource`, with `week_date` injected as
+    /// given by `week_date_json_fragment` (e.g. `"week_date": "2026-05-09"`,
+    /// `"week_date": null`, or `""` for an absent key). `created_at` is fixed
+    /// at 2026-07-01 (ISO week 27) so tests can assert whether `week()`
+    /// followed `week_date` or fell back to it.
+    fn resource_json_with_week_date(week_date_json_fragment: &str) -> String {
+        let week_date_field = if week_date_json_fragment.is_empty() {
+            String::new()
+        } else {
+            format!(r#""week_date": {},"#, week_date_json_fragment)
+        };
+        format!(
+            r#"{{
+                "id": 1,
+                "category": "video",
+                "title": "Test",
+                "download_url": "https://example.com/1.zip",
+                "is_active": true,
+                "created_at": "2026-07-01T00:00:00Z",
+                {week_date_field}
+                "optimized_video_url": null
+            }}"#
+        )
+    }
+
+    /// A resource whose newsletter subject dates it to May (week 19) but
+    /// that was only inserted into the DB in July (week 27, the ingestion
+    /// recovery scenario) must report its true content week, not the insert
+    /// week.
+    #[test]
+    fn test_week_date_present_and_valid_takes_precedence_over_created_at() {
+        let json = resource_json_with_week_date(r#""2026-05-09""#);
+        let resource: Resource =
+            serde_json::from_str(&json).expect("payload with a valid week_date must deserialize");
+
+        assert_eq!(resource.week_date, NaiveDate::from_ymd_opt(2026, 5, 9));
+        let week = resource.week();
+        assert_eq!(week.year, 2026);
+        assert_eq!(week.week_number, 19, "must use week_date, not created_at");
+    }
+
+    /// An explicit JSON `null` and an entirely absent `week_date` key must
+    /// both deserialize to `None` and fall back to `created_at` for `week()`
+    /// — the pre-mail-parser-fix behaviour, unchanged.
+    #[test]
+    fn test_week_date_null_or_missing_falls_back_to_created_at() {
+        for json in [
+            resource_json_with_week_date("null"),
+            resource_json_with_week_date(""),
+        ] {
+            let resource: Resource = serde_json::from_str(&json)
+                .expect("payload with null/absent week_date must deserialize");
+            assert_eq!(resource.week_date, None);
+            let week = resource.week();
+            assert_eq!(week.year, 2026);
+            assert_eq!(
+                week.week_number, 27,
+                "must fall back to created_at's ISO week"
+            );
+        }
+    }
+
+    /// A malformed `week_date` (wrong format, or the wrong JSON type
+    /// entirely) must never fail deserialization of the resource — it
+    /// degrades to `None` and `week()` falls back to `created_at`, exactly
+    /// like the null/missing case above.
+    #[test]
+    fn test_week_date_malformed_does_not_break_deserialization_and_falls_back() {
+        for json in [
+            resource_json_with_week_date(r#""boh""#),
+            resource_json_with_week_date("12345"),
+        ] {
+            let resource: Resource = serde_json::from_str(&json)
+                .expect("a malformed week_date must not break Resource deserialization");
+            assert_eq!(resource.week_date, None);
+            assert_eq!(resource.week().week_number, 27);
+        }
+    }
+
+    /// A malformed `week_date` on one resource in a batch must not take
+    /// down the rest of the poll: `ResourceListResponse` (the real payload
+    /// shape) must still deserialize fully.
+    #[test]
+    fn test_week_date_malformed_does_not_break_batch_deserialization() {
+        let json = format!(
+            r#"{{ "count": 1, "resources": [{}] }}"#,
+            resource_json_with_week_date(r#""boh""#)
+        );
+        let response: ResourceListResponse = serde_json::from_str(&json)
+            .expect("a malformed week_date must not break the whole resources list");
+        assert_eq!(response.resources.len(), 1);
+        assert_eq!(response.resources[0].week_date, None);
+    }
+
+    /// End-to-end (conceptual) staleness regression: a resource inserted
+    /// *today* (created_at = Utc::now()) but whose true content is from May
+    /// (week_date in the past) must still surface as stale via
+    /// `is_material_week_stale`/`latest_week`, because both go through
+    /// `week()`, which now prefers `week_date`. Before this feature, this
+    /// exact scenario (recovery batch dumped in one INSERT after the
+    /// mail-parser stalled) was invisible: `created_at` alone always looked
+    /// current.
+    #[test]
+    fn test_material_week_stale_true_when_week_date_is_old_but_created_at_is_today() {
+        let resource = Resource {
+            id: 1,
+            category: "test".to_string(),
+            title: "Test".to_string(),
+            description: None,
+            download_url: "https://example.com/file.zip".to_string(),
+            thumbnail_url: None,
+            file_type: None,
+            checksum: None,
+            is_active: true,
+            created_at: Utc::now(),
+            week_date: NaiveDate::from_ymd_opt(2026, 5, 9),
+            optimized_video_url: None,
+            optimized_videos: None,
+        };
+
+        let latest = latest_week(&[resource]);
+        assert_eq!(latest, Some(WeekIdentifier::new(2026, 19)));
+        assert!(
+            is_material_week_stale(latest.as_ref()),
+            "week_date must win over created_at for staleness, even though created_at is today"
+        );
     }
 
     #[test]

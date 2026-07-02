@@ -174,3 +174,67 @@ fn test_old_weeks_fixture_drives_archive_previous_weeks() {
         }
     }
 }
+
+/// week_date (mail-parser fix shipping in parallel, adr-0003): the REAL
+/// stub payloads captured so far predate the field, so it's absent on every
+/// resource — already exercised implicitly by every test above (they all
+/// deserialize fine). This confirms the *forward-compatible* shape too:
+/// takes a real captured payload and injects `week_date` the way the
+/// upgraded mail-parser will, without touching the fixture files themselves
+/// (adr-0003: additive, so a real future payload will look exactly like
+/// this).
+#[test]
+fn test_week_date_injected_into_real_payload_drives_week_and_tolerates_garbage() {
+    let mut value: serde_json::Value =
+        serde_json::from_str(NO_OPTIMIZED_JSON).expect("fixture must be valid JSON");
+    let resources = value["resources"]
+        .as_array_mut()
+        .expect("payload must carry a resources array");
+    assert!(
+        resources.len() >= 3,
+        "fixture must have at least 3 resources for this test"
+    );
+
+    // Resource 0: a valid week_date that must win over created_at.
+    resources[0]
+        .as_object_mut()
+        .expect("resource must be a JSON object")
+        .insert(
+            "week_date".to_string(),
+            serde_json::Value::String("2026-05-09".to_string()),
+        );
+    // Resource 1: a malformed week_date that must not break the batch.
+    resources[1]
+        .as_object_mut()
+        .expect("resource must be a JSON object")
+        .insert(
+            "week_date".to_string(),
+            serde_json::Value::String("boh".to_string()),
+        );
+    // Resource 2: left untouched (key absent), must keep falling back to
+    // created_at exactly as before this field existed.
+
+    let augmented = serde_json::to_string(&value).expect("re-serialization must succeed");
+    let response: ResourceListResponse = serde_json::from_str(&augmented)
+        .expect("a mix of valid/malformed/absent week_date must not break the whole poll");
+
+    let with_valid_week_date = &response.resources[0];
+    assert_eq!(
+        with_valid_week_date.week_date,
+        chrono::NaiveDate::from_ymd_opt(2026, 5, 9)
+    );
+    assert_eq!(with_valid_week_date.week().week_number, 19);
+
+    let with_garbage_week_date = &response.resources[1];
+    assert_eq!(with_garbage_week_date.week_date, None);
+    assert_eq!(
+        with_garbage_week_date.week(),
+        church_helper_desktop_lib::models::WeekIdentifier::from_datetime(
+            with_garbage_week_date.created_at
+        ),
+        "malformed week_date must degrade to the created_at fallback"
+    );
+
+    let with_absent_week_date = &response.resources[2];
+    assert_eq!(with_absent_week_date.week_date, None);
+}

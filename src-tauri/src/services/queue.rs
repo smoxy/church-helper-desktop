@@ -573,6 +573,7 @@ mod tests {
             checksum: None,
             is_active: true,
             created_at: Utc.with_ymd_and_hms(year, month, day, 12, 0, 0).unwrap(),
+            week_date: None,
             optimized_video_url: None,
             optimized_videos: None,
         }

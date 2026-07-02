@@ -34,6 +34,12 @@ export interface Resource {
   checksum?: string|null;
   is_active: boolean;
   created_at: string;  // ISO date string
+  // True calendar week of the content ("YYYY-MM-DD", from the newsletter
+  // subject), as opposed to created_at (the DB insert timestamp). Additive
+  // (adr-0003): absent/null on servers that predate the mail-parser field.
+  // Mirrors the backend's `week_date: Option<NaiveDate>` (src-tauri/src/models.rs);
+  // the UI only reads this, week derivation stays entirely backend-side.
+  week_date: string|null;
   optimized_video_url?: string|null;
   // Additive (adr-0008): absent/null on older servers. When present, ordered
   // by size_bytes desc by the producer; optimized_video_url is always the
