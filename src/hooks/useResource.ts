@@ -1,9 +1,10 @@
 import {invoke} from '@tauri-apps/api/core';
-import {useEffect, useState} from 'react';
+import {useEffect, useMemo, useState} from 'react';
 
+import {formatBytes} from '../lib/utils';
 import {useAppStore} from '../stores/appStore';
 import {useToastStore} from '../stores/toastStore';
-import {AppConfig, Resource} from '../types';
+import {AppConfig, OptimizedVideo, Resource} from '../types';
 
 export function useResource(resource: Resource) {
   const [isDownloaded, setIsDownloaded] = useState<boolean>(false);
@@ -13,6 +14,43 @@ export function useResource(resource: Resource) {
   const [originalSizeBytes, setOriginalSizeBytes] = useState<number|null>(null);
   const [optimizedSizeBytes, setOptimizedSizeBytes] = useState<number|null>(null);
   const [preferOptimized, setPreferOptimized] = useState<boolean>(true);
+
+  // adr-0008: when a resource offers multiple optimized video variants
+  // (e.g. several clips re-encoded from the same zip), the user must be
+  // able to pick which one to download instead of silently getting the
+  // producer's compat-default (the first/largest element). Selection state
+  // lives here (the hook), never in the presentational picker component.
+  const optimizedVideos: OptimizedVideo[] = resource.optimized_videos ?? [];
+  const [selectedVideoUrl, setSelectedVideoUrl] = useState<string|null>(
+      optimizedVideos[0]?.url ?? null);
+
+  // Reset the selection to the compat-default (first element) whenever the
+  // resource identity/choices change, so switching between resources (or a
+  // resource list refresh) never leaves a stale selection from a previous
+  // resource applied to a new one.
+  useEffect(
+      () => {
+        setSelectedVideoUrl(resource.optimized_videos?.[0]?.url ?? null);
+      },
+      [resource]);
+
+  // Only meaningful when the user actually wants optimized videos at all
+  // (prefer_optimized) AND there is more than one candidate to choose from;
+  // with 0 or 1 elements there is nothing to pick, so behavior must stay
+  // identical to the pre-existing single-URL logic below.
+  const hasVideoChoice = preferOptimized && optimizedVideos.length > 1;
+
+  // The Resource used for status checks / downloads: identical to the
+  // prop unless the user picked a non-default variant, in which case
+  // optimized_video_url is overridden to the selected one. This reuses the
+  // EXISTING download_resource command and get_effective_download_url logic
+  // unchanged (adr-0007: no new download path) — it just feeds them a
+  // different URL for this one call.
+  const effectiveResource: Resource = useMemo(
+      () => hasVideoChoice && selectedVideoUrl ?
+          {...resource, optimized_video_url: selectedVideoUrl} :
+          resource,
+      [resource, hasVideoChoice, selectedVideoUrl]);
 
   // Get download state from global store
   const activeDownloads = useAppStore(state => state.activeDownloads);
@@ -31,13 +69,24 @@ export function useResource(resource: Resource) {
   // Initial check for status and config
   useEffect(
       () => {
-        checkStatus();
         checkAutoDownload();
         fetchFileSize();
       },
       [
         resource
       ]);  // Re-check when resource changes
+
+  // Separate effect for the "is it downloaded?" check: also re-runs when
+  // the user picks a different optimized video (effectiveResource changes),
+  // so the downloaded/not-downloaded indicator tracks the variant that was
+  // actually selected instead of always the compat-default.
+  useEffect(
+      () => {
+        checkStatus();
+      },
+      [
+        effectiveResource
+      ]);
 
   // Update displayed file size when preference changes
   useEffect(
@@ -63,7 +112,8 @@ export function useResource(resource: Resource) {
 
   const checkStatus = async () => {
     try {
-      const status = await invoke<boolean>('check_resource_status', {resource});
+      const status = await invoke<boolean>(
+          'check_resource_status', {resource: effectiveResource});
       setIsDownloaded(status);
     } catch (error) {
       console.error('Failed to check resource status:', error);
@@ -79,17 +129,6 @@ export function useResource(resource: Resource) {
     } catch (error) {
       console.error('Failed to check auto-download config:', error);
     }
-  };
-
-  const formatBytes = (bytes: number): string => {
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let size = bytes;
-    let unitIndex = 0;
-    while (size >= 1024 && unitIndex < units.length - 1) {
-      size /= 1024;
-      unitIndex++;
-    }
-    return `${size.toFixed(1)} ${units[unitIndex]}`;
   };
 
   const fetchFileSize = async () => {
@@ -131,7 +170,7 @@ export function useResource(resource: Resource) {
     // If paused, we should call resume instead, but download() handles
     // start/resume too if we map it properly. However, store.startDownload
     // handles resumption if partial file exists.
-    await startDownload(resource);
+    await startDownload(effectiveResource);
   };
 
   const pause = async () => {
@@ -141,7 +180,17 @@ export function useResource(resource: Resource) {
 
   const resume = async () => {
     if (!isPaused) return;
-    await resumeDownloadAction(resource);
+    // Resume the same variant that was originally selected/started (not the
+    // compat-default), so the .part file (named after the URL) matches.
+    await resumeDownloadAction(effectiveResource);
+  };
+
+  /** Dumb-component callback: records which optimized video the user picked
+   *  when a resource offers more than one (adr-0008). Never invokes IPC
+   *  directly — the actual download still goes through download()/the
+   *  queue, unchanged. */
+  const selectVideo = (url: string) => {
+    setSelectedVideoUrl(url);
   };
 
   const cancel = async () => {
@@ -202,6 +251,9 @@ export function useResource(resource: Resource) {
     cancel,
     toggleAutoDownload,
     preferOptimized,
+    optimizedVideos,
+    selectedVideoUrl,
+    selectVideo,
     resource
   };
 }
