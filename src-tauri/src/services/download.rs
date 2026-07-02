@@ -41,11 +41,11 @@ impl DownloadService {
     pub fn check_file_exists(resource: &Resource, work_dir: &Path, prefer_optimized: bool) -> bool {
         let week_dir = resource.week().as_dir_name();
         let dest_dir = work_dir.join(week_dir);
-        
+
         let effective_url = resource.get_effective_download_url(prefer_optimized);
         let filename = extract_filename_from_url(effective_url)
             .unwrap_or_else(|| sanitize_filename(&resource.title));
-            
+
         let dest_path = dest_dir.join(filename);
         dest_path.exists()
     }
@@ -67,7 +67,8 @@ impl DownloadService {
             let path = self.create_youtube_shortcut(resource, dest_dir)?;
             Ok((path, "youtube-shortcut".to_string()))
         } else {
-            self.download_file(resource, dest_dir, app, signal, prefer_optimized).await
+            self.download_file(resource, dest_dir, app, signal, prefer_optimized)
+                .await
         }
     }
 
@@ -85,12 +86,19 @@ impl DownloadService {
 
         // Determine which URL to use
         let download_url = if prefer_optimized {
-            resource.optimized_video_url.as_ref().unwrap_or(&resource.download_url)
+            resource
+                .optimized_video_url
+                .as_ref()
+                .unwrap_or(&resource.download_url)
         } else {
             &resource.download_url
         };
 
-        tracing::debug!("Starting download_file for resource: {} ({})", resource.title, download_url);
+        tracing::debug!(
+            "Starting download_file for resource: {} ({})",
+            resource.title,
+            download_url
+        );
 
         // Extract filename
         let filename = extract_filename_from_url(download_url)
@@ -123,7 +131,11 @@ impl DownloadService {
 
         let response = request.send().await?;
         let status = response.status();
-        tracing::debug!("Download response status: {} for {}", status, resource.title);
+        tracing::debug!(
+            "Download response status: {} for {}",
+            status,
+            resource.title
+        );
 
         // If server doesn't support range (returns 200 instead of 206), we start over
         let is_partial = status == reqwest::StatusCode::PARTIAL_CONTENT;
@@ -154,8 +166,12 @@ impl DownloadService {
         let mut downloaded = resume_offset;
         let mut last_progress_emit = Instant::now();
         const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(100);
-        
-        tracing::debug!("Starting download stream for {} (total size: {:?})", resource.title, content_length);
+
+        tracing::debug!(
+            "Starting download stream for {} (total size: {:?})",
+            resource.title,
+            content_length
+        );
 
         while let Some(item) = stream.next().await {
             // Check cancellation signal
@@ -172,10 +188,11 @@ impl DownloadService {
             }
 
             let chunk = item?;
-            file.write_all(&chunk).map_err(|e| DownloadError::WriteError {
-                path: part_path.clone(),
-                source: e,
-            })?;
+            file.write_all(&chunk)
+                .map_err(|e| DownloadError::WriteError {
+                    path: part_path.clone(),
+                    source: e,
+                })?;
 
             downloaded += chunk.len() as u64;
 
@@ -200,7 +217,10 @@ impl DownloadService {
             }
         }
 
-        tracing::debug!("Download stream complete for {}, renaming .part file", resource.title);
+        tracing::debug!(
+            "Download stream complete for {}, renaming .part file",
+            resource.title
+        );
 
         // Emit final progress event to ensure 100% is shown
         if let Some(app) = app {
@@ -247,8 +267,7 @@ impl DownloadService {
         let (filename, content) = create_macos_webloc_shortcut(&safe_name, &resource.download_url);
 
         #[cfg(target_os = "linux")]
-        let (filename, content) =
-            create_linux_desktop_shortcut(&safe_name, &resource.download_url);
+        let (filename, content) = create_linux_desktop_shortcut(&safe_name, &resource.download_url);
 
         let dest_path = dest_dir.join(&filename);
 
@@ -363,9 +382,7 @@ pub(crate) fn extract_filename_from_url(url: &str) -> Option<String> {
             let without_query = s.split('?').next().unwrap_or(s);
 
             // Decode URL-encoded characters
-            let decoded = urlencoding::decode(without_query)
-                .ok()?
-                .into_owned();
+            let decoded = urlencoding::decode(without_query).ok()?.into_owned();
 
             // Reduce to the final path component and reject anything that could
             // traverse out of the destination directory. Note: on Linux `\` is
@@ -423,13 +440,15 @@ mod tests {
             extract_filename_from_url("https://example.com/gcv_05%20-%20USARE%20LE%20COSE.mp4"),
             Some("gcv_05 - USARE LE COSE.mp4".to_string())
         );
-        
+
         // Test URL-encoded special chars
         assert_eq!(
-            extract_filename_from_url("https://example.com/mis-05%20-%20SEMI%20CHE%20SI%20MOLTIPLICANO%20-%2001_2026.mp4"),
+            extract_filename_from_url(
+                "https://example.com/mis-05%20-%20SEMI%20CHE%20SI%20MOLTIPLICANO%20-%2001_2026.mp4"
+            ),
             Some("mis-05 - SEMI CHE SI MOLTIPLICANO - 01_2026.mp4".to_string())
         );
-        
+
         // Test with query parameters AND encoding
         assert_eq!(
             extract_filename_from_url("https://example.com/video%20name.mp4?token=abc&size=1080p"),
@@ -594,7 +613,7 @@ mod tests {
         // Verify that Paused and Cancelled are distinct error types
         let paused = DownloadError::Paused;
         let cancelled = DownloadError::Cancelled;
-        
+
         assert_ne!(paused.to_string(), cancelled.to_string());
     }
 
@@ -602,12 +621,12 @@ mod tests {
     async fn test_pause_signal_returns_paused_error() {
         use std::sync::atomic::{AtomicU8, Ordering};
         use std::sync::Arc;
-        
+
         let signal = Arc::new(AtomicU8::new(STATUS_RUNNING));
-        
+
         // Set signal to paused
         signal.store(STATUS_PAUSED, Ordering::Relaxed);
-        
+
         // Verify signal is paused
         assert_eq!(signal.load(Ordering::Relaxed), STATUS_PAUSED);
         assert_ne!(signal.load(Ordering::Relaxed), STATUS_CANCELLED);
@@ -617,12 +636,12 @@ mod tests {
     async fn test_cancel_signal_returns_cancelled_error() {
         use std::sync::atomic::{AtomicU8, Ordering};
         use std::sync::Arc;
-        
+
         let signal = Arc::new(AtomicU8::new(STATUS_RUNNING));
-        
+
         // Set signal to cancelled
         signal.store(STATUS_CANCELLED, Ordering::Relaxed);
-        
+
         // Verify signal is cancelled
         assert_eq!(signal.load(Ordering::Relaxed), STATUS_CANCELLED);
         assert_ne!(signal.load(Ordering::Relaxed), STATUS_PAUSED);

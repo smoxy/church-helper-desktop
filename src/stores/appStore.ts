@@ -59,7 +59,7 @@ interface AppState {
 }
 
 // Simple debounce helper
-function debounce<T extends (...args: any[]) => any>(
+function debounce<T extends (...args: never[]) => unknown>(
   func: T,
   wait: number
 ): (...args: Parameters<T>) => void {
@@ -471,10 +471,11 @@ export const useAppStore = create<AppState>(
           await invoke('download_resource', {resource});
           // The download-started, download-progress, and download-complete
           // events will update the state automatically
-        } catch (error: any) {
+        } catch (error: unknown) {
           const errorMessage = typeof error === 'string' ?
               error :
-              error.message || 'Download failed';
+              (error instanceof Error ? error.message : undefined) ||
+                  'Download failed';
 
           set(state => ({
                 activeDownloads: {

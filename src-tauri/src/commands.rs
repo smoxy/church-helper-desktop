@@ -640,11 +640,7 @@ pub async fn cancel_download(
     // A5: if the resource is still waiting in the queue, drop it there.
     // Setting the download signal would be a no-op for something not yet
     // active, so the item would otherwise reappear on the next status emit.
-    if state
-        .download_queue
-        .remove_queued(&app, resource_id)
-        .await
-    {
+    if state.download_queue.remove_queued(&app, resource_id).await {
         return Ok(());
     }
 

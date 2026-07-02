@@ -87,7 +87,9 @@ fn mark_superseded(registry: &mut [DownloadedFile], changes: &[ErrataChange]) ->
     let mut marked = Vec::new();
     for change in changes {
         if let Some(entry) = registry.iter_mut().find(|f| {
-            f.resource_id == change.resource_id && f.week == change.old_file.week && !f.is_superseded
+            f.resource_id == change.resource_id
+                && f.week == change.old_file.week
+                && !f.is_superseded
         }) {
             entry.is_superseded = true;
             marked.push(change.resource_id);
@@ -107,9 +109,7 @@ pub(crate) fn compute_has_superseded(
     current_week: Option<&WeekIdentifier>,
 ) -> bool {
     match current_week {
-        Some(week) => registry
-            .iter()
-            .any(|f| f.is_superseded && &f.week == week),
+        Some(week) => registry.iter().any(|f| f.is_superseded && &f.week == week),
         None => false,
     }
 }
@@ -560,7 +560,11 @@ mod tests {
         // Re-download promotes a fresh, non-superseded record in its place.
         upsert_downloaded_file(&mut registry, create_downloaded_file(1, week, later));
 
-        assert_eq!(registry.len(), 1, "same (resource_id, week) must not duplicate");
+        assert_eq!(
+            registry.len(),
+            1,
+            "same (resource_id, week) must not duplicate"
+        );
         assert!(!registry[0].is_superseded);
         assert_eq!(registry[0].downloaded_at, later);
     }

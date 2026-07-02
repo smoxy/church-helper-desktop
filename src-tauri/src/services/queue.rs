@@ -83,7 +83,7 @@ impl DownloadQueue {
         let mut current_mode = self.mode.lock().await;
         if *current_mode != mode {
             *current_mode = mode.clone();
-            
+
             // Adjust semaphore permits
             // Note: Semaphore::add_permits increases capacity.
             // Semaphore doesn't support reducing capacity easily dynamically in this crate?
@@ -167,14 +167,17 @@ impl DownloadQueue {
     async fn emit_queue_status(&self, app: &AppHandle) {
         let queue = self.queue.lock().await;
         let active = self.active_ids.lock().await;
-        
+
         // Create list of queued items with their position
-        let queued_items: Vec<serde_json::Value> = queue.iter()
+        let queued_items: Vec<serde_json::Value> = queue
+            .iter()
             .enumerate()
-            .map(|(i, r)| serde_json::json!({
-                "id": r.id,
-                "position": i + 1
-            }))
+            .map(|(i, r)| {
+                serde_json::json!({
+                    "id": r.id,
+                    "position": i + 1
+                })
+            })
             .collect();
 
         let payload = serde_json::json!({
@@ -190,12 +193,11 @@ impl DownloadQueue {
     /// Ensure the worker is started (called once)
     async fn ensure_worker_started(&self, app: AppHandle) {
         // Check if worker already started
-        if self.worker_started.compare_exchange(
-            false,
-            true,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        ).is_ok() {
+        if self
+            .worker_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
             // We successfully changed from false to true, so we start the worker
             self.start_worker(app).await;
         }
@@ -204,38 +206,50 @@ impl DownloadQueue {
 
     /// scan resources and add to queue if matching auto-download criteria
     pub async fn scan_and_queue(&self, app: AppHandle) {
-         let state = app.state::<crate::commands::AppState>();
-         
-         // Read config and resources
-         let (config, resources) = {
-             let config = state.config.read().unwrap().clone();
-             let resources = state.resources.read().unwrap().clone();
-             (config, resources)
-         };
+        let state = app.state::<crate::commands::AppState>();
 
-         tracing::debug!(
-             "Scanning {} resources for auto-download. Enabled categories: {:?}",
-             resources.len(),
-             config.auto_download_categories
-         );
+        // Read config and resources
+        let (config, resources) = {
+            let config = state.config.read().unwrap().clone();
+            let resources = state.resources.read().unwrap().clone();
+            (config, resources)
+        };
 
-         if let Some(work_dir) = &config.work_directory {
-             let mut queued_count = 0;
-             for resource in resources {
-                 if config.auto_download_categories.contains(&resource.category) {
-                     // Check if already downloaded
-                      let is_downloaded = crate::services::download::DownloadService::check_file_exists(&resource, work_dir, config.prefer_optimized);
-                     if !is_downloaded {
-                         tracing::trace!("Queuing for auto-download: {} ({})", resource.title, resource.category);
-                         self.add_task(app.clone(), resource).await;
-                         queued_count += 1;
-                     }
-                 }
-             }
-             tracing::info!("Auto-download scan complete: {} resources queued", queued_count);
-         } else {
-             tracing::debug!("Auto-download scan skipped: work directory not configured");
-         }
+        tracing::debug!(
+            "Scanning {} resources for auto-download. Enabled categories: {:?}",
+            resources.len(),
+            config.auto_download_categories
+        );
+
+        if let Some(work_dir) = &config.work_directory {
+            let mut queued_count = 0;
+            for resource in resources {
+                if config.auto_download_categories.contains(&resource.category) {
+                    // Check if already downloaded
+                    let is_downloaded =
+                        crate::services::download::DownloadService::check_file_exists(
+                            &resource,
+                            work_dir,
+                            config.prefer_optimized,
+                        );
+                    if !is_downloaded {
+                        tracing::trace!(
+                            "Queuing for auto-download: {} ({})",
+                            resource.title,
+                            resource.category
+                        );
+                        self.add_task(app.clone(), resource).await;
+                        queued_count += 1;
+                    }
+                }
+            }
+            tracing::info!(
+                "Auto-download scan complete: {} resources queued",
+                queued_count
+            );
+        } else {
+            tracing::debug!("Auto-download scan skipped: work directory not configured");
+        }
     }
 
     /// Start the queue worker (called once)
@@ -245,9 +259,9 @@ impl DownloadQueue {
         let active_count = self.active_count.clone();
         let active_ids = self.active_ids.clone();
         let active_weeks = self.active_weeks.clone();
-        
+
         tracing::info!("Download queue worker started");
-        
+
         // Spawn a detached task to manage coordination
         // This task never exits, continuously processing the queue
         tauri::async_runtime::spawn(async move {
@@ -263,7 +277,7 @@ impl DownloadQueue {
 
                 // Check if we can start more downloads
                 let current_active = active_count.load(Ordering::SeqCst);
-                
+
                 if current_active >= limit {
                     // At capacity, wait before checking again
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -309,12 +323,15 @@ impl DownloadQueue {
                     {
                         let q = queue.lock().await;
                         let a = active_ids.lock().await;
-                        let queued_items: Vec<serde_json::Value> = q.iter()
+                        let queued_items: Vec<serde_json::Value> = q
+                            .iter()
                             .enumerate()
-                            .map(|(i, r)| serde_json::json!({
-                                "id": r.id,
-                                "position": i + 1
-                            }))
+                            .map(|(i, r)| {
+                                serde_json::json!({
+                                    "id": r.id,
+                                    "position": i + 1
+                                })
+                            })
                             .collect();
                         let payload = serde_json::json!({
                             "queued": queued_items,
@@ -330,66 +347,100 @@ impl DownloadQueue {
                     // worker stalled once it hit the concurrency limit.
                     tauri::async_runtime::spawn(async move {
                         let body = tauri::async_runtime::spawn(async move {
-                         // Execute download
-                         // Resolve state at the top level of the task
-                         let state = app_clone.state::<crate::commands::AppState>();
+                            // Execute download
+                            // Resolve state at the top level of the task
+                            let state = app_clone.state::<crate::commands::AppState>();
 
-                         if let Ok(config) = crate::commands::get_config(state) {
-                             if let Some(work_dir) = config.work_directory {
-                                 let download_service = crate::services::DownloadService::new();
-                                 let week_dir = resource.week().as_dir_name();
-                                 let dest_dir = work_dir.join(week_dir);
-                                 let prefer_optimized = config.prefer_optimized;
-                                 
-                                 if !dest_dir.exists() {
-                                     let _ = std::fs::create_dir_all(&dest_dir);
-                                 }
-                                 
-                                 // Register signal
-                                 let signal = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(crate::services::download::STATUS_RUNNING));
-                                 
-                                 {
-                                     let signal_state = app_clone.state::<crate::commands::AppState>();
-                                     let signals_res = signal_state.download_signals.write();
-                                     if let Ok(mut signals) = signals_res {
-                                         signals.insert(resource.id, signal.clone());
-                                     }
-                                 }
+                            if let Ok(config) = crate::commands::get_config(state) {
+                                if let Some(work_dir) = config.work_directory {
+                                    let download_service = crate::services::DownloadService::new();
+                                    let week_dir = resource.week().as_dir_name();
+                                    let dest_dir = work_dir.join(week_dir);
+                                    let prefer_optimized = config.prefer_optimized;
 
-                                 tracing::info!("Queue starting download: {}", resource.title);
-                                 
-                                 // Emit download started event to frontend
-                                 if let Err(e) = app_clone.emit("download-started", resource.id) {
-                                     tracing::error!("Failed to emit download-started event for {}: {:?}", resource.id, e);
-                                 } else {
-                                     tracing::trace!("Emitted download-started event for resource {}", resource.id);
-                                 }
-                                 
-                                 match download_service.download_resource(&resource, &dest_dir, Some(&app_clone), Some(signal), prefer_optimized).await {
-                                    Ok((path, hash)) => {
-                                        tracing::info!("Download completed successfully: {} -> {:?} (hash: {})", resource.title, path, hash);
-                                        // adr-0007 step 2: record the file in the
-                                        // errata registry so a later poll can
-                                        // detect it being superseded.
-                                        crate::services::record_downloaded_file(&app_clone, &resource, path, prefer_optimized);
-                                        let _ = app_clone.emit("download-complete", resource.id);
-                                    },
-                                    Err(crate::error::DownloadError::Paused) => {
-                                        tracing::info!("Download paused: {}", resource.title);
-                                        let _ = app_clone.emit("download-paused", resource.id);
-                                    },
-                                    Err(crate::error::DownloadError::Cancelled) => {
-                                        tracing::info!("Download cancelled: {}", resource.title);
-                                        let _ = app_clone.emit("download-cancelled", resource.id);
-                                    },
-                                    Err(e) => {
-                                        tracing::error!("Download failed for {}: {}", resource.title, e);
-                                        let _ = app_clone.emit("download-failed", serde_json::json!({"id": resource.id, "error": e.to_string()}));
+                                    if !dest_dir.exists() {
+                                        let _ = std::fs::create_dir_all(&dest_dir);
                                     }
-                                 }
-                                 
-                             }
-                         }
+
+                                    // Register signal
+                                    let signal =
+                                        std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                                            crate::services::download::STATUS_RUNNING,
+                                        ));
+
+                                    {
+                                        let signal_state =
+                                            app_clone.state::<crate::commands::AppState>();
+                                        let signals_res = signal_state.download_signals.write();
+                                        if let Ok(mut signals) = signals_res {
+                                            signals.insert(resource.id, signal.clone());
+                                        }
+                                    }
+
+                                    tracing::info!("Queue starting download: {}", resource.title);
+
+                                    // Emit download started event to frontend
+                                    if let Err(e) = app_clone.emit("download-started", resource.id)
+                                    {
+                                        tracing::error!(
+                                            "Failed to emit download-started event for {}: {:?}",
+                                            resource.id,
+                                            e
+                                        );
+                                    } else {
+                                        tracing::trace!(
+                                            "Emitted download-started event for resource {}",
+                                            resource.id
+                                        );
+                                    }
+
+                                    match download_service
+                                        .download_resource(
+                                            &resource,
+                                            &dest_dir,
+                                            Some(&app_clone),
+                                            Some(signal),
+                                            prefer_optimized,
+                                        )
+                                        .await
+                                    {
+                                        Ok((path, hash)) => {
+                                            tracing::info!("Download completed successfully: {} -> {:?} (hash: {})", resource.title, path, hash);
+                                            // adr-0007 step 2: record the file in the
+                                            // errata registry so a later poll can
+                                            // detect it being superseded.
+                                            crate::services::record_downloaded_file(
+                                                &app_clone,
+                                                &resource,
+                                                path,
+                                                prefer_optimized,
+                                            );
+                                            let _ =
+                                                app_clone.emit("download-complete", resource.id);
+                                        }
+                                        Err(crate::error::DownloadError::Paused) => {
+                                            tracing::info!("Download paused: {}", resource.title);
+                                            let _ = app_clone.emit("download-paused", resource.id);
+                                        }
+                                        Err(crate::error::DownloadError::Cancelled) => {
+                                            tracing::info!(
+                                                "Download cancelled: {}",
+                                                resource.title
+                                            );
+                                            let _ =
+                                                app_clone.emit("download-cancelled", resource.id);
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "Download failed for {}: {}",
+                                                resource.title,
+                                                e
+                                            );
+                                            let _ = app_clone.emit("download-failed", serde_json::json!({"id": resource.id, "error": e.to_string()}));
+                                        }
+                                    }
+                                }
+                            }
                         });
 
                         // A4: this cleanup runs unconditionally — including when
@@ -397,7 +448,8 @@ impl DownloadQueue {
                         if let Err(join_err) = body.await {
                             tracing::error!(
                                 "Download task for resource {} panicked: {:?}",
-                                resource_id, join_err
+                                resource_id,
+                                join_err
                             );
                             let _ = app_super.emit(
                                 "download-failed",
@@ -406,7 +458,11 @@ impl DownloadQueue {
                         }
 
                         let previous = active_count_clone.fetch_sub(1, Ordering::SeqCst);
-                        tracing::trace!("Download worker finished. Active count decremented from {} to {}", previous, previous.saturating_sub(1));
+                        tracing::trace!(
+                            "Download worker finished. Active count decremented from {} to {}",
+                            previous,
+                            previous.saturating_sub(1)
+                        );
 
                         // Remove from active IDs
                         {
@@ -430,7 +486,7 @@ impl DownloadQueue {
                             }
                         }
                     });
-                    
+
                     // In parallel mode, immediately check for more tasks
                     // In queue mode, the limit check will prevent starting another
                     continue;
