@@ -93,6 +93,7 @@ export default function Dashboard() {
                             className="h-8 w-8 text-muted-foreground hover:text-primary transition-colors"
                             onClick={handleRefresh}
                             disabled={isLoading}
+                            aria-label="Refresh"
                         >
                             <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
                         </Button>
