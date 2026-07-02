@@ -41,7 +41,7 @@ impl Default for AppConfig {
             retention_days: Some(7),      // Default: 7 days
             auto_download_categories: Vec::new(),
             download_mode: DownloadMode::Queue,
-            prefer_optimized: true,        // Default: prefer optimized videos
+            prefer_optimized: true, // Default: prefer optimized videos
         }
     }
 }
@@ -118,7 +118,9 @@ impl Resource {
     /// Otherwise returns the standard download_url.
     pub fn get_effective_download_url(&self, prefer_optimized: bool) -> &str {
         if prefer_optimized {
-            self.optimized_video_url.as_deref().unwrap_or(&self.download_url)
+            self.optimized_video_url
+                .as_deref()
+                .unwrap_or(&self.download_url)
         } else {
             &self.download_url
         }
@@ -298,8 +300,10 @@ mod tests {
             download_url: "https://youtube.com/watch?v=abc".to_string(),
             thumbnail_url: None,
             file_type: None,
+            checksum: None,
             is_active: true,
             created_at: Utc::now(),
+            optimized_video_url: None,
         };
         assert!(youtube_resource.is_youtube());
 
@@ -345,8 +349,10 @@ mod tests {
             download_url: "https://example.com/file.zip".to_string(),
             thumbnail_url: None,
             file_type: None,
+            checksum: None,
             is_active: true,
             created_at: dt,
+            optimized_video_url: None,
         };
         let week = resource.week();
         assert_eq!(week.year, 2026);
@@ -360,6 +366,9 @@ mod tests {
             polling_enabled: false,
             polling_interval_minutes: 120,
             retention_days: None, // Keep forever
+            auto_download_categories: vec!["decime".to_string(), "video".to_string()],
+            download_mode: DownloadMode::Parallel,
+            prefer_optimized: false,
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: AppConfig = serde_json::from_str(&json).unwrap();

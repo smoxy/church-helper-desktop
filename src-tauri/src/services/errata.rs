@@ -67,8 +67,10 @@ mod tests {
             download_url: format!("https://example.com/file_{}.zip", id),
             thumbnail_url: None,
             file_type: None,
+            checksum: None,
             is_active: true,
             created_at,
+            optimized_video_url: None,
         }
     }
 
@@ -151,9 +153,9 @@ mod tests {
             create_downloaded_file(3, week.clone(), original_dt),
         ];
         let remote = vec![
-            create_resource(1, updated_dt),         // Updated
-            create_resource(2, original_dt),        // Not updated
-            create_resource(3, updated_dt),         // Updated
+            create_resource(1, updated_dt),  // Updated
+            create_resource(2, original_dt), // Not updated
+            create_resource(3, updated_dt),  // Updated
         ];
 
         let changes = detect_errata_changes(&local, &remote);
@@ -182,10 +184,7 @@ mod tests {
     #[test]
     fn test_find_new_resources_empty_local() {
         let dt = Utc.with_ymd_and_hms(2026, 1, 19, 12, 0, 0).unwrap();
-        let remote = vec![
-            create_resource(1, dt),
-            create_resource(2, dt),
-        ];
+        let remote = vec![create_resource(1, dt), create_resource(2, dt)];
 
         let new = find_new_resources(&[], &remote);
         assert_eq!(new.len(), 2);
