@@ -1,5 +1,6 @@
 import { Resource } from '../../../types';
 import { useResource } from '../../../hooks/useResource';
+import { useI18n } from '../../../lib/i18n';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card';
 import { FileHeadphone, FilePlay, FileText, MonitorPlay, Check, Download, LoaderCircle, Zap, Clock } from "lucide-react";
 
@@ -9,6 +10,7 @@ interface ResourceCardProps {
 }
 
 export function ResourceCard({ resource, onClick }: ResourceCardProps) {
+    const { t, lang } = useI18n();
     const { isDownloaded, isDownloading, isPending, queuePosition, revealInFolder } = useResource(resource);
 
     const getFileIcon = (type: string | null, isYoutube: boolean) => {
@@ -40,18 +42,18 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
             {/* Download Status Indicator (Top Right of Card) */}
             <div className="absolute top-2 right-2 z-20 flex gap-1">
                 {resource.optimized_video_url && (
-                    <div className="bg-green-500/90 text-white p-1.5 rounded-full shadow-xs" title="Video ottimizzato disponibile">
+                    <div className="bg-green-500/90 text-white p-1.5 rounded-full shadow-xs" title={t('resourceCard.optimizedAvailable')}>
                         <Zap className="h-3 w-3" />
                     </div>
                 )}
                 {isDownloading ? (
-                    <div className="bg-muted text-muted-foreground p-1.5 rounded-full shadow-xs" title="Downloading...">
+                    <div className="bg-muted text-muted-foreground p-1.5 rounded-full shadow-xs" title={t('resourceCard.downloading')}>
                         <LoaderCircle className="h-3 w-3 animate-spin" />
                     </div>
                 ) : isPending ? (
                     <div
                         className="bg-amber-500/90 text-white p-1.5 rounded-full shadow-xs"
-                        title={queuePosition ? `In coda, posizione ${queuePosition}` : "In coda"}
+                        title={queuePosition ? t('resourceCard.queuedAt', { position: queuePosition }) : t('resourceCard.queued')}
                     >
                         <Clock className="h-3 w-3" />
                     </div>
@@ -60,13 +62,13 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
                         type="button"
                         onClick={() => void revealInFolder()}
                         className="bg-success text-success-foreground p-1.5 rounded-full shadow-xs hover:bg-success/90 transition-colors cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                        title="Apri nella cartella"
-                        aria-label="Apri nella cartella"
+                        title={t('resourceCard.openInFolder')}
+                        aria-label={t('resourceCard.openInFolder')}
                     >
                         <Check className="h-3 w-3" />
                     </button>
                 ) : (
-                    <div className="bg-black/30 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" title="Click to view">
+                    <div className="bg-black/30 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" title={t('resourceCard.clickToView')}>
                         <Download className="h-3 w-3" />
                     </div>
                 )}
@@ -94,7 +96,7 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
                 </CardTitle>
                 <CardDescription className="flex items-center gap-2 text-xs">
                     {getFileIcon(resource.file_type, isYoutube)}
-                    <span className="text-muted-foreground">{new Date(resource.created_at).toLocaleDateString()}</span>
+                    <span className="text-muted-foreground">{new Date(resource.created_at).toLocaleDateString(lang === 'it' ? 'it-IT' : 'en-US')}</span>
                 </CardDescription>
             </CardHeader>
             <CardContent>

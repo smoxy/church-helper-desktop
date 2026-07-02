@@ -165,6 +165,30 @@ pub fn run() {
                 }
             }
 
+            // Load the persisted savings counter (A2). Lives in the `stats`
+            // key of `settings.json` (not `cache.json`, which the rest of
+            // this file treats as disposable/derived): the total must survive
+            // across app version upgrades. Missing key (pre-A2 install) or a
+            // corrupt value both fall back to 0 rather than failing startup.
+            let stats_total = match store.get("stats") {
+                Some(json) => match serde_json::from_value::<models::SavingsStats>(json.clone()) {
+                    Ok(stats) => stats.total_saved_bytes,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse persisted stats, starting total_saved_bytes at 0: {}",
+                            e
+                        );
+                        0
+                    }
+                },
+                None => 0,
+            };
+            *app_state
+                .stats
+                .write()
+                .map_err(|e| format!("Failed to write initial stats: {}", e))? = stats_total;
+            tracing::info!("Loaded savings stats: {} bytes saved total", stats_total);
+
             // Try to load cached file sizes
             if let Some(json) = cache_store.get("file_size_cache") {
                 if let Ok(cached_sizes) =
@@ -412,6 +436,7 @@ pub fn run() {
             commands::get_resources_status,
             commands::reveal_resource,
             commands::open_work_directory,
+            commands::get_savings_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

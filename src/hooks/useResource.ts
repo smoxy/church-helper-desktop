@@ -4,9 +4,11 @@ import {useEffect, useMemo, useState} from 'react';
 import {useAppStore} from '../stores/appStore';
 import {useToastStore} from '../stores/toastStore';
 import {errorMessage, isCommandError} from '../lib/utils';
+import {useI18n} from '../lib/i18n';
 import {OptimizedVideo, Resource} from '../types';
 
 export function useResource(resource: Resource) {
+  const {t} = useI18n();
   // Config and batched status come from the global store: no per-card IPC.
   const config = useAppStore(state => state.config);
   const updateConfig = useAppStore(state => state.updateConfig);
@@ -124,9 +126,7 @@ export function useResource(resource: Resource) {
                   useAppStore.getState();
               if (!resourceStatuses[resource.id]?.downloaded) return;
               patchResourceStatus(resource.id, {downloaded: false});
-              useToastStore.getState().addToast(
-                  'Il file non è più presente sul disco. Puoi scaricarlo di nuovo.',
-                  'info');
+              useToastStore.getState().addToast(t('toast.fileGone'), 'info');
             })
             .catch(err => {
               console.error('Failed to check resource downloaded state:', err);
@@ -135,7 +135,7 @@ export function useResource(resource: Resource) {
           cancelled = true;
         };
       },
-      [resource, isNonDefaultVariant]);
+      [resource, isNonDefaultVariant, t]);
 
   const isDownloaded = isNonDefaultVariant ?
       (variantDownloaded ?? false) :
@@ -191,10 +191,10 @@ export function useResource(resource: Resource) {
         if (isNonDefaultVariant) setVariantDownloaded(false);
         useAppStore.getState().patchResourceStatus(
             resource.id, {downloaded: false});
-        addToast('File non trovato sul disco — scaricalo di nuovo', 'error');
+        addToast(t('toast.fileMissingRedownload'), 'error');
         return;
       }
-      addToast(`Impossibile aprire la cartella: ${errorMessage(error)}`, 'error');
+      addToast(t('toast.openFolderError', {error: errorMessage(error)}), 'error');
     }
   };
 
@@ -208,11 +208,14 @@ export function useResource(resource: Resource) {
     try {
       await updateConfig({auto_download_categories: newCategories});
       addToast(
-          `Auto-download ${!wasEnabled ? 'enabled' : 'disabled'} for "${
-              resource.category}"`,
+          t(!wasEnabled ? 'settings.toast.autoDownloadEnabled' :
+                          'settings.toast.autoDownloadDisabled',
+            {category: resource.category}),
           'success');
     } catch (error) {
-      addToast(`Failed to toggle auto-download: ${errorMessage(error)}`, 'error');
+      addToast(
+          t('toast.autoDownloadToggleError', {error: errorMessage(error)}),
+          'error');
     }
   };
 
@@ -226,13 +229,12 @@ export function useResource(resource: Resource) {
     try {
       await updateConfig({prefer_optimized: next});
       addToast(
-          next ?
-              'Video ottimizzati attivati — li preferirai d’ora in poi.' :
-              'Preferenza aggiornata: userai i video originali.',
+          t(next ? 'toast.preferOptimizedEnabled' :
+                    'toast.preferOptimizedDisabled'),
           'success');
     } catch (error) {
       addToast(
-          `Impossibile aggiornare la preferenza: ${errorMessage(error)}`,
+          t('toast.preferOptimizedError', {error: errorMessage(error)}),
           'error');
     }
   };

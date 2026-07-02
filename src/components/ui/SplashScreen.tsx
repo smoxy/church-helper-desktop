@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import { cn } from "../../lib/utils"
+import { useI18n } from "../../lib/i18n"
 import { RinoovaLogo } from "./RinoovaLogo"
 
 /**
@@ -20,6 +21,7 @@ const FADE_DURATION_MS = 400
  * Rendered unconditionally on every launch by App.tsx.
  */
 export function SplashScreen() {
+    const { t } = useI18n()
     const [visible, setVisible] = useState(true)
     const [fadingOut, setFadingOut] = useState(false)
     const [reduceMotion] = useState(
@@ -67,7 +69,7 @@ export function SplashScreen() {
                     <span className="text-foreground">Helper</span>
                 </h1>
                 <p className="max-w-sm text-base text-foreground/80">
-                    I materiali della settimana, scaricati per te
+                    {t('splash.subtitle')}
                 </p>
             </div>
 
@@ -75,7 +77,7 @@ export function SplashScreen() {
 
             <div className="flex flex-col items-center gap-3">
                 <span className="text-xs font-medium uppercase tracking-wide text-foreground/80">
-                    Sponsorizzato da
+                    {t('splash.sponsoredBy')}
                 </span>
                 <RinoovaLogo className="h-12 sm:h-14" />
             </div>

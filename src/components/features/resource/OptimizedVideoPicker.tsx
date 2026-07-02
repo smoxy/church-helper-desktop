@@ -1,6 +1,7 @@
 import { Check, Film } from "lucide-react";
 
 import { formatBytes } from "../../../lib/utils";
+import { useI18n } from "../../../lib/i18n";
 import { OptimizedVideo } from "../../../types";
 
 interface OptimizedVideoPickerProps {
@@ -22,14 +23,15 @@ interface OptimizedVideoPickerProps {
  * `useResource` (adr-0007: download still goes through the queue).
  */
 export function OptimizedVideoPicker({ videos, selectedUrl, onSelect, disabled }: OptimizedVideoPickerProps) {
+    const { t } = useI18n();
     if (videos.length < 2) return null;
 
     return (
         <div className="flex flex-col gap-2">
             <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                Scegli il video da scaricare
+                {t('optimizedPicker.chooseVideo')}
             </span>
-            <div role="radiogroup" aria-label="Video ottimizzati disponibili" className="flex flex-col gap-1.5">
+            <div role="radiogroup" aria-label={t('optimizedPicker.ariaLabel')} className="flex flex-col gap-1.5">
                 {videos.map((video) => {
                     const isSelected = video.url === selectedUrl;
                     return (

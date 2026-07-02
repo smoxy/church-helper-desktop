@@ -45,6 +45,10 @@ pub struct AppConfig {
     /// predating this field deserializes to `System` instead of failing.
     #[serde(default)]
     pub theme: ThemeSetting,
+    /// UI language. `#[serde(default)]` so a settings.json from a build
+    /// predating this field deserializes to `System` instead of failing.
+    #[serde(default)]
+    pub language: LanguageSetting,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -61,6 +65,26 @@ pub enum ThemeSetting {
     Dark,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub enum LanguageSetting {
+    #[default]
+    System,
+    Italian,
+    English,
+}
+
+/// Global counter of bytes saved by downloading the optimized video variant
+/// instead of the original (A1/A2: computed backend-side per download, see
+/// `services::queue`). Persisted as the `stats` key of `settings.json` —
+/// deliberately the settings store rather than `cache.json`, since the latter
+/// is treated elsewhere as disposable/derived data and this counter must
+/// survive both app restarts and version upgrades.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SavingsStats {
+    pub total_saved_bytes: u64,
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -74,6 +98,7 @@ impl Default for AppConfig {
             autostart_enabled: false, // Default: disabled (opt-in)
             tray_close_os_notice_shown: false, // Default: not shown yet
             theme: ThemeSetting::System, // Default: follow the OS
+            language: LanguageSetting::System, // Default: follow the OS
         }
     }
 }
@@ -862,6 +887,7 @@ mod tests {
             autostart_enabled: true,
             tray_close_os_notice_shown: true,
             theme: ThemeSetting::Dark,
+            language: LanguageSetting::Italian,
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: AppConfig = serde_json::from_str(&json).unwrap();
@@ -887,6 +913,44 @@ mod tests {
 
         let config: AppConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.theme, ThemeSetting::System);
+    }
+
+    /// A settings.json written before the `language` field existed must
+    /// deserialize to `LanguageSetting::System` (the `#[serde(default)]`
+    /// default) rather than failing to parse.
+    #[test]
+    fn test_language_missing_key_deserializes_to_system() {
+        let json = r#"{
+            "work_directory": null,
+            "polling_enabled": true,
+            "polling_interval_minutes": 60,
+            "retention_days": 7,
+            "auto_download_categories": [],
+            "download_mode": "Queue",
+            "prefer_optimized": true,
+            "autostart_enabled": false,
+            "tray_close_os_notice_shown": false,
+            "theme": "System"
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.language, LanguageSetting::System);
+    }
+
+    /// serde roundtrip for each `LanguageSetting` variant individually, so a
+    /// regression that breaks one specific variant's (de)serialization isn't
+    /// masked by the others in the full-config roundtrip test above.
+    #[test]
+    fn test_language_setting_serde_roundtrip_all_variants() {
+        for variant in [
+            LanguageSetting::System,
+            LanguageSetting::Italian,
+            LanguageSetting::English,
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            let deserialized: LanguageSetting = serde_json::from_str(&json).unwrap();
+            assert_eq!(variant, deserialized);
+        }
     }
 
     #[test]

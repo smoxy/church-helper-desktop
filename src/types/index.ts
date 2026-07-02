@@ -51,6 +51,9 @@ export interface Resource {
 // UI colour theme. Mirrors the Rust `ThemeSetting` enum (src-tauri/src/models.rs).
 export type ThemeSetting = 'System'|'Light'|'Dark';
 
+// UI language. Mirrors the Rust `LanguageSetting` enum (src-tauri/src/models.rs).
+export type LanguageSetting = 'System'|'Italian'|'English';
+
 export interface AppConfig {
   work_directory: string|null;
   polling_enabled: boolean;
@@ -64,6 +67,7 @@ export interface AppConfig {
   // already been shown (backend-owned; set once in lib.rs on first close-to-tray).
   tray_close_os_notice_shown: boolean;
   theme: ThemeSetting;
+  language: LanguageSetting;
 }
 
 export interface AppStatus {
@@ -103,15 +107,60 @@ export interface ErrataDetectedPayload {
 }
 
 // Payload of the `download-complete` event. Mirrors the
-// `serde_json::json!({ "id", "optimized" })` payload emitted in
+// `serde_json::json!({ "id", "optimized", ... })` payload emitted in
 // src-tauri/src/services/queue.rs when a download finishes: `optimized` is
 // true when the actually-downloaded URL was an optimized variant (computed
 // backend-side via Resource::get_effective_download_url, the only reliable
 // source — the frontend cannot derive this for auto-downloads, which never
 // enter activeDownloads).
+//
+// The size/savings fields are only ever populated when `optimized` is true
+// (savings are computed against the original size, so a non-optimized
+// download has nothing to compare against), and `original_bytes` is
+// deliberately CACHE-ONLY here (never a network request) so this event is
+// never delayed by a HEAD request: it's `null` whenever the original size
+// wasn't already cached at completion time. `saved_bytes` is `null`
+// whenever either size is unknown, or when the original isn't actually
+// larger than what was downloaded. `total_saved_bytes` is the persistent
+// global counter's value *after* this download's contribution (if any) was
+// applied, so the UI never needs a separate fetch to stay in sync. When
+// `original_bytes` is `null` for an optimized download, a later
+// `savings-resolved` event (see `SavingsResolvedPayload`) fills it in.
 export interface DownloadCompletePayload {
   id: number;
   optimized: boolean;
+  optimized_bytes: number|null;
+  original_bytes: number|null;
+  saved_bytes: number|null;
+  total_saved_bytes: number;
+}
+
+// Payload of the `savings-resolved` event, emitted by a task DETACHED from
+// the download body (src-tauri/src/services/queue.rs::start_worker) when a
+// `download-complete` event reported `original_bytes: null` (the size wasn't
+// cached yet): a best-effort HEAD request (5s timeout) resolves it in the
+// background, without delaying the worker slot or the completion event.
+// Mirrors the `serde_json::json!({ "id", "saved_bytes", ... })` payload.
+// Upgrades the matching celebration panel (by `id` === `Celebration.resourceId`)
+// from its generic "no savings info" copy to the full savings layout. The
+// backend guarantees this download's `saved_bytes` is folded into
+// `total_saved_bytes` exactly once across the two events — either in the
+// preceding `download-complete` (when already known) or here, never both.
+export interface SavingsResolvedPayload {
+  id: number;
+  saved_bytes: number|null;
+  original_bytes: number|null;
+  total_saved_bytes: number;
+}
+
+// Result of the `get_savings_stats` command. Mirrors the Rust `SavingsStats`
+// struct (src-tauri/src/models.rs): the persistent, cross-session running
+// total of bytes saved by optimized downloads (see `add_saved_bytes` in
+// src-tauri/src/commands.rs). Used to seed `celebrationStore`'s
+// `totalSavedBytes` on startup; subsequent updates arrive via each
+// `download-complete` event's `total_saved_bytes` field, no re-fetch needed.
+export interface SavingsStats {
+  total_saved_bytes: number;
 }
 
 // Batched per-resource status returned by the `get_resources_status` command.

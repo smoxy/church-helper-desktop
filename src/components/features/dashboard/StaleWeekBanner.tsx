@@ -1,5 +1,6 @@
 import { TriangleAlert } from "lucide-react";
 import { WeekIdentifier } from "../../../types";
+import { useI18n } from "../../../lib/i18n";
 
 interface StaleWeekBannerProps {
     currentWeek: WeekIdentifier | null;
@@ -12,6 +13,7 @@ interface StaleWeekBannerProps {
 // what it's told. Not dismissible by design — it must reflect live state,
 // so it can only disappear once the backend reports fresh data again.
 export function StaleWeekBanner({ currentWeek }: StaleWeekBannerProps) {
+    const { t } = useI18n();
     return (
         <div
             role="status"
@@ -19,9 +21,9 @@ export function StaleWeekBanner({ currentWeek }: StaleWeekBannerProps) {
         >
             <TriangleAlert className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
             <p className="text-sm font-medium">
-                Material not up to date
+                {t('staleWeekBanner.title')}
                 {currentWeek && (
-                    <> — latest available week: {currentWeek.year}-W{currentWeek.week_number}</>
+                    t('staleWeekBanner.latestWeek', { week: `${currentWeek.year}-W${currentWeek.week_number}` })
                 )}
             </p>
         </div>

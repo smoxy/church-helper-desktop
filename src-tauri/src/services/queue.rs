@@ -60,6 +60,87 @@ fn concurrency_limit(mode: &DownloadMode) -> usize {
     }
 }
 
+/// Pure savings computation (A1): bytes saved by downloading the optimized
+/// variant instead of the original. `None` whenever either size is unknown,
+/// or when the "original" doesn't actually turn out larger (a stale/wrong
+/// cached size, or a "optimized" variant that isn't actually smaller) — a
+/// saving is never reported as negative or zero. Free-standing so it's
+/// unit-testable without an `AppHandle`.
+fn compute_saved_bytes(original_bytes: Option<u64>, optimized_bytes: Option<u64>) -> Option<u64> {
+    match (original_bytes, optimized_bytes) {
+        (Some(original), Some(optimized)) if original > optimized => Some(original - optimized),
+        _ => None,
+    }
+}
+
+/// Cache-only read of the *original* (non-optimized) file's size, for the
+/// immediate A1 savings computation at `download-complete` time. Never makes
+/// a network request — a cache miss returns `None` rather than blocking the
+/// event on a HEAD request; see `resolve_original_size_bytes` for the
+/// network-fallback used by the detached `savings-resolved` follow-up.
+/// Filters out the `u64::MAX` negative-cache sentinel (see
+/// `AppState::file_size_cache`'s doc comment), since that means "never
+/// successfully HEAD-ed", not "known to be 0 bytes".
+fn cached_original_size_bytes(app: &AppHandle, url: &str) -> Option<u64> {
+    let state = app.state::<crate::commands::AppState>();
+    state
+        .file_size_cache
+        .read()
+        .ok()
+        .and_then(|cache| cache.get(url).copied())
+        .filter(|&size| size != u64::MAX)
+}
+
+/// Best-effort resolution of the *original* (non-optimized) file's size, for
+/// A1 savings reporting.
+///
+/// Checks `AppState::file_size_cache` first (filtering out its `u64::MAX`
+/// negative-cache sentinel — see the field's doc comment — since that means
+/// "never successfully HEAD-ed", not "known to be 0 bytes"). On a miss, falls
+/// back to a HEAD request bounded by a short timeout so a slow/unreachable
+/// origin can never stall the caller. Only a successful outcome is written
+/// back to the cache: unlike `get_file_size`, this path deliberately does NOT
+/// negative-cache a failure here, since a transient blip shouldn't poison a
+/// future on-demand lookup (e.g. the resource detail view opening moments
+/// later). Called only from the DETACHED `savings-resolved` background task
+/// (see `start_worker`), never inline in the download body, so its up-to-5s
+/// latency never delays `download-complete` or holds a worker slot.
+async fn resolve_original_size_bytes(app: &AppHandle, url: &str) -> Option<u64> {
+    let state = app.state::<crate::commands::AppState>();
+
+    if let Ok(cache) = state.file_size_cache.read() {
+        if let Some(&size) = cache.get(url) {
+            if size != u64::MAX {
+                return Some(size);
+            }
+        }
+    }
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.shared_http_client.head(url).send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let size = response
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())?;
+
+    if let Ok(mut cache) = state.file_size_cache.write() {
+        cache.insert(url.to_string(), size);
+    }
+
+    Some(size)
+}
+
 impl Default for DownloadQueue {
     fn default() -> Self {
         Self::new()
@@ -450,15 +531,7 @@ impl DownloadQueue {
                                     {
                                         Ok((path, hash)) => {
                                             tracing::info!("Download completed successfully: {} -> {:?} (hash: {})", resource.title, path, hash);
-                                            // adr-0007 step 2: record the file in the
-                                            // errata registry so a later poll can
-                                            // detect it being superseded.
-                                            crate::services::record_downloaded_file(
-                                                &app_clone,
-                                                &resource,
-                                                path,
-                                                prefer_optimized,
-                                            );
+
                                             // The frontend needs to know whether the
                                             // *actually downloaded* URL was an optimized
                                             // variant (auto-downloads never enter the
@@ -470,13 +543,145 @@ impl DownloadQueue {
                                             let optimized = resource
                                                 .get_effective_download_url(prefer_optimized)
                                                 != resource.download_url;
+
+                                            // A1: savings are only meaningful when the
+                                            // optimized variant is what actually landed
+                                            // on disk — a non-optimized download has
+                                            // nothing to compare against. Read before
+                                            // `record_downloaded_file` moves `path`.
+                                            let optimized_bytes = if optimized {
+                                                tokio::fs::metadata(&path)
+                                                    .await
+                                                    .ok()
+                                                    .map(|m| m.len())
+                                            } else {
+                                                None
+                                            };
+
+                                            // adr-0007 step 2: record the file in the
+                                            // errata registry so a later poll can
+                                            // detect it being superseded.
+                                            crate::services::record_downloaded_file(
+                                                &app_clone,
+                                                &resource,
+                                                path,
+                                                prefer_optimized,
+                                            );
+
+                                            // A1: the original size is only ever read
+                                            // from the shared HEAD-size cache here — NOT
+                                            // fetched over the network. A blocking HEAD
+                                            // request (up to 5s) used to run inline in
+                                            // this task body, delaying both the
+                                            // `download-complete` event and the worker
+                                            // slot freeing (active_count isn't
+                                            // decremented until this body returns). When
+                                            // the size isn't cached yet, the event below
+                                            // reports `original_bytes`/`saved_bytes` as
+                                            // `null` and a DETACHED task (spawned further
+                                            // down) resolves it in the background and
+                                            // emits `savings-resolved` once it lands.
+                                            let original_bytes = if optimized {
+                                                cached_original_size_bytes(
+                                                    &app_clone,
+                                                    &resource.download_url,
+                                                )
+                                            } else {
+                                                None
+                                            };
+
+                                            let saved_bytes = compute_saved_bytes(
+                                                original_bytes,
+                                                optimized_bytes,
+                                            );
+
+                                            // A2: fold this download's savings (if any)
+                                            // into the persistent running total; when
+                                            // there's nothing to add, still report its
+                                            // current value so the UI's counter never
+                                            // goes stale relative to the backend. Only
+                                            // counted here when already known — a `None`
+                                            // saved_bytes with `optimized` true is folded
+                                            // in later by the detached resolution task
+                                            // below instead, never both (no double count).
+                                            let total_saved_bytes = match saved_bytes {
+                                                Some(bytes) => crate::commands::add_saved_bytes(
+                                                    &app_clone, bytes,
+                                                ),
+                                                None => crate::commands::current_saved_bytes(
+                                                    &app_clone.state::<crate::commands::AppState>(),
+                                                ),
+                                            };
+
                                             let _ = app_clone.emit(
                                                 "download-complete",
                                                 serde_json::json!({
                                                     "id": resource.id,
-                                                    "optimized": optimized
+                                                    "optimized": optimized,
+                                                    "optimized_bytes": optimized_bytes,
+                                                    "original_bytes": original_bytes,
+                                                    "saved_bytes": saved_bytes,
+                                                    "total_saved_bytes": total_saved_bytes,
                                                 }),
                                             );
+
+                                            // Original size wasn't cached: resolve it in
+                                            // a task detached from this body (never
+                                            // awaited here), so the up-to-5s HEAD request
+                                            // cannot delay the worker slot freeing above.
+                                            // Needs optimized_bytes too (already known) to
+                                            // ever compute a saving.
+                                            if optimized && original_bytes.is_none() {
+                                                if let Some(optimized_bytes) = optimized_bytes {
+                                                    let app_detached = app_clone.clone();
+                                                    let download_url =
+                                                        resource.download_url.clone();
+                                                    let resource_id = resource.id;
+                                                    tauri::async_runtime::spawn(async move {
+                                                        let Some(resolved_original) =
+                                                            resolve_original_size_bytes(
+                                                                &app_detached,
+                                                                &download_url,
+                                                            )
+                                                            .await
+                                                        else {
+                                                            return;
+                                                        };
+                                                        let resolved_saved = compute_saved_bytes(
+                                                            Some(resolved_original),
+                                                            Some(optimized_bytes),
+                                                        );
+                                                        // Counted exactly once: the
+                                                        // immediate emission above only
+                                                        // added to the total when
+                                                        // saved_bytes was already known,
+                                                        // which is not the branch we're
+                                                        // in (original_bytes was None).
+                                                        let resolved_total =
+                                                            match resolved_saved {
+                                                                Some(bytes) => {
+                                                                    crate::commands::add_saved_bytes(
+                                                                        &app_detached, bytes,
+                                                                    )
+                                                                }
+                                                                None => {
+                                                                    crate::commands::current_saved_bytes(
+                                                                        &app_detached.state::<crate::commands::AppState>(),
+                                                                    )
+                                                                }
+                                                            };
+                                                        let _ = app_detached.emit(
+                                                            "savings-resolved",
+                                                            serde_json::json!({
+                                                                "id": resource_id,
+                                                                "saved_bytes": resolved_saved,
+                                                                "original_bytes": resolved_original,
+                                                                "total_saved_bytes": resolved_total,
+                                                            }),
+                                                        );
+                                                    });
+                                                }
+                                            }
                                         }
                                         Err(crate::error::DownloadError::Paused) => {
                                             tracing::info!("Download paused: {}", resource.title);
@@ -653,6 +858,36 @@ mod tests {
         queue.push_back(make_resource(1, 2026, 1, 19));
         let active = vec![2_i64];
         assert!(can_enqueue(&queue, &active, 3));
+    }
+
+    #[test]
+    fn test_compute_saved_bytes_both_known_and_original_larger() {
+        assert_eq!(compute_saved_bytes(Some(1000), Some(600)), Some(400));
+    }
+
+    #[test]
+    fn test_compute_saved_bytes_original_missing_is_none() {
+        // The A1 bug this guards against: no cached/HEAD-able original size
+        // must not panic or fabricate a saving, just report unknown.
+        assert_eq!(compute_saved_bytes(None, Some(600)), None);
+    }
+
+    #[test]
+    fn test_compute_saved_bytes_optimized_missing_is_none() {
+        assert_eq!(compute_saved_bytes(Some(1000), None), None);
+    }
+
+    #[test]
+    fn test_compute_saved_bytes_both_missing_is_none() {
+        assert_eq!(compute_saved_bytes(None, None), None);
+    }
+
+    #[test]
+    fn test_compute_saved_bytes_original_not_larger_is_none() {
+        // A stale/wrong cached "original" size that is actually smaller (or
+        // equal) than what was downloaded must never report a saving.
+        assert_eq!(compute_saved_bytes(Some(600), Some(600)), None);
+        assert_eq!(compute_saved_bytes(Some(500), Some(600)), None);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 use crate::error::{CommandError, FileError};
 use crate::models::{
     AppConfig, AppStatus, CategoryCount, DownloadedFile, Resource, ResourceListResponse,
-    WeekIdentifier,
+    SavingsStats, WeekIdentifier,
 };
 use crate::services::download::{STATUS_CANCELLED, STATUS_PAUSED};
 use crate::services::{DownloadQueue, PollingService, RetentionScheduler};
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 /// Application state managed by Tauri
 pub struct AppState {
@@ -40,6 +40,13 @@ pub struct AppState {
     /// Cache for file sizes (keyed by download_url)
     /// Note: u64::MAX is used as a sentinel value for failed requests (negative cache)
     pub file_size_cache: RwLock<HashMap<String, u64>>,
+    /// Persistent global counter of bytes saved by optimized downloads (A2).
+    /// Loaded from the `stats` key of `settings.json` at setup (`lib.rs`) and
+    /// incremented/persisted by `add_saved_bytes` as each optimized download
+    /// completes (`services::queue`). Deliberately just the running total
+    /// (not the full `SavingsStats` struct) so incrementing never needs to
+    /// hold the lock across a struct rebuild.
+    pub stats: RwLock<u64>,
     /// Shared HTTP client for all requests (connection pooling)
     pub shared_http_client: reqwest::Client,
     /// Handle to the background polling scheduler (`None` if
@@ -87,6 +94,7 @@ impl Default for AppState {
             downloaded_files: RwLock::new(Vec::new()),
             download_queue: Arc::new(DownloadQueue::new()),
             file_size_cache: RwLock::new(HashMap::new()),
+            stats: RwLock::new(0),
             shared_http_client: reqwest::Client::new(),
             polling_service: RwLock::new(None),
             retention_scheduler: RwLock::new(None),
@@ -161,6 +169,90 @@ pub async fn set_config(
 pub fn get_status(state: State<'_, AppState>) -> Result<AppStatus, CommandError> {
     let status = state.status.read()?;
     Ok(status.clone())
+}
+
+/// Persist `stats` to the `stats` key of `settings.json` (A2). Mirrors
+/// `persist_config`'s best-effort pattern: logs on failure, never propagates
+/// an error — a lost persist must not break the download completion event
+/// that triggered it, only the next successful one will retry the write.
+fn persist_stats(app: &AppHandle, stats: &SavingsStats) {
+    use tauri_plugin_store::StoreExt;
+    let store = match app.store("settings.json") {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::error!("Stats: failed to access store: {}", e);
+            return;
+        }
+    };
+    match serde_json::to_value(stats) {
+        Ok(json) => {
+            store.set("stats", json);
+            if let Err(e) = store.save() {
+                tracing::error!("Stats: failed to persist total_saved_bytes: {}", e);
+            }
+        }
+        Err(e) => tracing::error!("Stats: failed to serialize total_saved_bytes: {}", e),
+    }
+}
+
+/// Pure accumulation step for the running savings total: saturates instead of
+/// overflowing/panicking on pathological inputs. Free-standing so it's
+/// unit-testable without an `AppHandle`/store, mirroring `queue.rs`'s
+/// `can_enqueue`/`drain_queued` pattern for state-adjacent pure logic.
+fn accumulate_saved_bytes(current: u64, bytes: u64) -> u64 {
+    current.saturating_add(bytes)
+}
+
+/// Add `bytes` to the running savings total and persist it, returning the new
+/// total. Called by the queue worker (`services::queue`) once per completed
+/// download whose `saved_bytes` is known — potentially concurrently, with
+/// parallel download mode or a same-download detached `savings-resolved`
+/// resolution racing a later download's own completion. Best-effort on a
+/// poisoned lock: logs and returns 0 rather than panicking — the download's
+/// own completion event must never fail because of this bookkeeping.
+///
+/// The write guard is held across `persist_stats` (mirrors
+/// `errata.rs::record_downloaded_file`'s pattern for the same reason):
+/// releasing it before persisting would let a concurrent caller's newer
+/// snapshot reach disk first and then be silently overwritten by this call's
+/// older snapshot, regressing the persisted total on the next restart.
+/// `persist_stats` is fully synchronous (no `.await`), so holding the guard
+/// across it never blocks the async runtime.
+pub(crate) fn add_saved_bytes(app: &AppHandle, bytes: u64) -> u64 {
+    let state = app.state::<AppState>();
+    let mut total = match state.stats.write() {
+        Ok(total) => total,
+        Err(e) => {
+            tracing::error!("Stats: failed to write total_saved_bytes: {}", e);
+            return 0;
+        }
+    };
+    *total = accumulate_saved_bytes(*total, bytes);
+    let snapshot = *total;
+    persist_stats(
+        app,
+        &SavingsStats {
+            total_saved_bytes: snapshot,
+        },
+    );
+    drop(total);
+    snapshot
+}
+
+/// Read-only snapshot of the running savings total, without touching disk.
+/// Used when a completed download has no `saved_bytes` of its own to add, but
+/// the `download-complete` payload still needs the current running total.
+pub(crate) fn current_saved_bytes(state: &AppState) -> u64 {
+    state.stats.read().map(|total| *total).unwrap_or(0)
+}
+
+/// Get the persisted savings stats, for the UI's initial load (subsequent
+/// updates arrive via `download-complete`'s `total_saved_bytes` field).
+#[tauri::command]
+pub fn get_savings_stats(state: State<'_, AppState>) -> Result<SavingsStats, CommandError> {
+    Ok(SavingsStats {
+        total_saved_bytes: current_saved_bytes(&state),
+    })
 }
 
 /// Get the currently loaded resources
@@ -1087,6 +1179,41 @@ mod tests {
 
         let out = compute_resources_status(&[r], &registry, None, true, &HashMap::new());
         assert!(!out[&7].downloaded);
+    }
+
+    #[test]
+    fn test_accumulate_saved_bytes_adds_to_running_total() {
+        assert_eq!(accumulate_saved_bytes(1_000, 500), 1_500);
+        assert_eq!(accumulate_saved_bytes(0, 0), 0);
+    }
+
+    /// A single download's saved bytes can never realistically overflow
+    /// `u64`, but the running total must not panic if it somehow did —
+    /// saturate instead.
+    #[test]
+    fn test_accumulate_saved_bytes_saturates_on_overflow() {
+        assert_eq!(accumulate_saved_bytes(u64::MAX, 10), u64::MAX);
+        assert_eq!(accumulate_saved_bytes(u64::MAX - 5, 10), u64::MAX);
+    }
+
+    #[test]
+    fn test_savings_stats_serde_roundtrip() {
+        let stats = SavingsStats {
+            total_saved_bytes: 123_456_789,
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        let deserialized: SavingsStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(stats, deserialized);
+    }
+
+    /// A `settings.json` written before the `stats` key existed must load as
+    /// zero (see `lib.rs`'s setup: `store.get("stats")` returning `None`),
+    /// covered here at the pure-deserialization boundary since the actual
+    /// load requires a live store/`AppHandle`.
+    #[test]
+    fn test_savings_stats_missing_key_defaults_to_zero() {
+        let stats: SavingsStats = serde_json::from_str("{}").unwrap();
+        assert_eq!(stats.total_saved_bytes, 0);
     }
 
     #[test]

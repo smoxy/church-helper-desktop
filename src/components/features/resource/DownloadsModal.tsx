@@ -3,6 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../../stores/appStore";
 import { useToastStore } from "../../../stores/toastStore";
 import { errorMessage } from "../../../lib/utils";
+import { useI18n } from "../../../lib/i18n";
 import { Button } from "../../ui/button";
 import { Play, Pause, X, CloudDownload, CircleCheck, FolderOpen } from "lucide-react";
 import { useEffect, useState, useRef } from "react";
@@ -38,6 +39,7 @@ function formatDuration(seconds: number): string {
 }
 
 export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
+    const { t } = useI18n();
     const {
         activeDownloads,
         resources,
@@ -60,7 +62,7 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
         try {
             await invoke('open_work_directory');
         } catch (error) {
-            addToast(`Impossibile aprire la cartella: ${errorMessage(error)}`, 'error');
+            addToast(t('downloadsModal.toast.openFolderError', { error: errorMessage(error) }), 'error');
         }
     };
 
@@ -160,20 +162,20 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
 
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-200" onClick={onClose}>
-            <div role="dialog" aria-modal="true" aria-label="Downloads" className="bg-card text-card-foreground rounded-xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+            <div role="dialog" aria-modal="true" aria-label={t('downloadsModal.title')} className="bg-card text-card-foreground rounded-xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
 
                 {/* Header */}
                 <div className="p-6 border-b flex justify-between items-start">
                     <div>
-                        <h2 className="text-xl font-bold">Downloads</h2>
-                        <p className="text-sm text-muted-foreground">Manage your active downloads and queue.</p>
+                        <h2 className="text-xl font-bold">{t('downloadsModal.title')}</h2>
+                        <p className="text-sm text-muted-foreground">{t('downloadsModal.subtitle')}</p>
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
                         <Button variant="outline" size="sm" className="gap-1.5" onClick={handleOpenWorkDirectory}>
                             <FolderOpen className="h-4 w-4" />
-                            Apri cartella
+                            {t('downloadsModal.openFolder')}
                         </Button>
-                        <button ref={closeButtonRef} onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground transition-colors">
+                        <button ref={closeButtonRef} onClick={onClose} aria-label={t('downloadsModal.close')} className="text-muted-foreground hover:text-foreground transition-colors">
                             <X className="h-6 w-6" />
                         </button>
                     </div>
@@ -183,12 +185,12 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
                 <div className="flex-1 overflow-y-auto p-6 space-y-6">
                     {/* Active & Queued */}
                     <div className="space-y-3">
-                        <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Active & Queued</h3>
+                        <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('downloadsModal.activeAndQueued')}</h3>
 
                         {activeList.length === 0 && (
                             <div className="text-center py-12 text-muted-foreground bg-muted/20 rounded-xl border-2 border-dashed">
                                 <CloudDownload className="h-10 w-10 mx-auto mb-3 opacity-30" />
-                                <p className="text-sm font-medium">No active downloads</p>
+                                <p className="text-sm font-medium">{t('downloadsModal.noActiveDownloads')}</p>
                             </div>
                         )}
 
@@ -213,12 +215,12 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
                                                         <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
                                                         <span className="font-mono">{formatSpeed(stats.speed)}</span>
                                                         <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
-                                                        <span>ETA: {formatDuration(stats.eta)}</span>
+                                                        <span>{t('downloadsModal.eta', { duration: formatDuration(stats.eta) })}</span>
                                                     </>
                                                 )}
                                                 {download.status === 'pending' && (
                                                     <span className="text-amber-500 font-bold bg-amber-500/10 px-2 py-0.5 rounded-full text-[10px]">
-                                                        QUEUED #{download.queuePosition}
+                                                        {t('downloadsModal.queuedBadge', { position: download.queuePosition ?? '' })}
                                                     </span>
                                                 )}
                                             </div>
@@ -264,7 +266,7 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
                     {/* Recently Completed */}
                     {completedList.length > 0 && (
                         <div className="space-y-3">
-                            <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Recently Completed</h3>
+                            <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{t('downloadsModal.recentlyCompleted')}</h3>
                             <div className="grid gap-2">
                                 {completedList.map(([idStr, _download]) => {
                                     const id = parseInt(idStr);
@@ -278,7 +280,7 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
                                             </div>
                                             <div className="flex-1 min-w-0">
                                                 <h4 className="text-sm font-bold truncate">{resource.title}</h4>
-                                                <p className="text-xs text-muted-foreground">Download successfully complete</p>
+                                                <p className="text-xs text-muted-foreground">{t('downloadsModal.completedSuccessfully')}</p>
                                             </div>
                                             <Button variant="ghost" size="icon" className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => cancelDownload(id)}>
                                                 <X className="h-4 w-4" />
@@ -293,7 +295,7 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
 
                 {/* Footer */}
                 <div className="p-4 border-t bg-muted/10 text-center">
-                    <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-tighter opacity-50">Church Helper Queue System</p>
+                    <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-tighter opacity-50">{t('downloadsModal.footer')}</p>
                 </div>
             </div>
         </div>

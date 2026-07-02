@@ -10,16 +10,25 @@ import { Switch } from "../components/ui/switch";
 import { FolderOpen } from "lucide-react";
 import rinoovaIcon from "../assets/sponsor/logo-rinoova-icon.svg";
 import { errorMessage } from "../lib/utils";
-import type { ThemeSetting } from "../types";
+import { useI18n } from "../lib/i18n";
+import type { TKey } from "../lib/i18n";
+import type { LanguageSetting, ThemeSetting } from "../types";
 
-const THEME_OPTIONS: { value: ThemeSetting; label: string }[] = [
-    { value: "System", label: "Sistema" },
-    { value: "Light", label: "Chiaro" },
-    { value: "Dark", label: "Scuro" },
+const THEME_OPTIONS: { value: ThemeSetting; labelKey: TKey }[] = [
+    { value: "System", labelKey: "settings.theme.system" },
+    { value: "Light", labelKey: "settings.theme.light" },
+    { value: "Dark", labelKey: "settings.theme.dark" },
+];
+
+const LANGUAGE_OPTIONS: { value: LanguageSetting; labelKey: TKey }[] = [
+    { value: "System", labelKey: "settings.language.system" },
+    { value: "Italian", labelKey: "settings.language.italian" },
+    { value: "English", labelKey: "settings.language.english" },
 ];
 
 
 export default function Settings() {
+    const { t } = useI18n();
     const {
         config,
         resources,
@@ -99,9 +108,9 @@ export default function Settings() {
 
         try {
             await updateConfig({ auto_download_categories: newCats });
-            addToast(`Auto-download ${checked ? 'enabled' : 'disabled'} for "${category}"`, "success");
+            addToast(t(checked ? 'settings.toast.autoDownloadEnabled' : 'settings.toast.autoDownloadDisabled', { category }), "success");
         } catch (e) {
-            addToast(`Failed to update category: ${errorMessage(e)}`, "error");
+            addToast(t('settings.toast.autoDownloadUpdateError', { error: errorMessage(e) }), "error");
             // Revert to config state on error
             if (config) setLocalAutoDownloadCats(config.auto_download_categories);
         }
@@ -112,9 +121,9 @@ export default function Settings() {
         setLocalDownloadMode(mode);
         try {
             await updateConfig({ download_mode: mode });
-            addToast(`Download mode set to ${mode}`, "success");
+            addToast(t('settings.toast.downloadModeSet', { mode: t(mode === 'Queue' ? 'settings.automation.modeQueue' : 'settings.automation.modeParallel') }), "success");
         } catch (e) {
-            addToast(`Failed to update mode: ${errorMessage(e)}`, "error");
+            addToast(t('settings.toast.downloadModeError', { error: errorMessage(e) }), "error");
             if (config) setLocalDownloadMode(config.download_mode);
         }
     };
@@ -123,9 +132,21 @@ export default function Settings() {
         if (!config || theme === config.theme) return;
         try {
             await updateConfig({ theme });
-            addToast(`Tema impostato su ${THEME_OPTIONS.find(o => o.value === theme)?.label}`, "success");
+            const labelKey = THEME_OPTIONS.find(o => o.value === theme)?.labelKey;
+            addToast(t('settings.toast.themeSet', { theme: labelKey ? t(labelKey) : theme }), "success");
         } catch (e) {
-            addToast(`Impossibile aggiornare il tema: ${errorMessage(e)}`, "error");
+            addToast(t('settings.toast.themeError', { error: errorMessage(e) }), "error");
+        }
+    };
+
+    const updateLanguage = async (language: LanguageSetting) => {
+        if (!config || language === config.language) return;
+        try {
+            await updateConfig({ language });
+            const labelKey = LANGUAGE_OPTIONS.find(o => o.value === language)?.labelKey;
+            addToast(t('settings.toast.languageSet', { language: labelKey ? t(labelKey) : language }), "success");
+        } catch (e) {
+            addToast(t('settings.toast.languageError', { error: errorMessage(e) }), "error");
         }
     };
 
@@ -134,9 +155,9 @@ export default function Settings() {
         setLocalPreferOptimized(checked);
         try {
             await updateConfig({ prefer_optimized: checked });
-            addToast(checked ? "Video ottimizzati preferiti" : "Video originali preferiti", "success");
+            addToast(t(checked ? 'settings.toast.preferOptimizedOn' : 'settings.toast.preferOptimizedOff'), "success");
         } catch (e) {
-            addToast(`Failed to update preference: ${errorMessage(e)}`, "error");
+            addToast(t('settings.toast.preferOptimizedError', { error: errorMessage(e) }), "error");
             if (config) setLocalPreferOptimized(config.prefer_optimized);
         }
     };
@@ -146,7 +167,7 @@ export default function Settings() {
         if (localInterval === config.polling_interval_minutes) return;
 
         if (isNaN(localInterval) || localInterval < 1 || localInterval > 1440) {
-            addToast("Polling interval must be between 1 and 1440 minutes", "error");
+            addToast(t('settings.toast.intervalRange'), "error");
             // Reset to last valid config value
             setLocalInterval(config.polling_interval_minutes);
             return;
@@ -154,9 +175,9 @@ export default function Settings() {
 
         try {
             await setPollingInterval(localInterval);
-            addToast("Polling interval updated", "success");
+            addToast(t('settings.toast.intervalUpdated'), "success");
         } catch (e) {
-            addToast(`Failed to update interval: ${errorMessage(e)}`, "error");
+            addToast(t('settings.toast.intervalError', { error: errorMessage(e) }), "error");
         }
     };
 
@@ -165,34 +186,34 @@ export default function Settings() {
         if (localRetention === config.retention_days) return;
 
         if (localRetention !== null && localRetention < 0) {
-            addToast("Retention days cannot be negative", "error");
+            addToast(t('settings.toast.retentionNegative'), "error");
             setLocalRetention(config.retention_days);
             return;
         }
 
         try {
             await setRetentionDays(localRetention);
-            addToast("Retention policy updated", "success");
+            addToast(t('settings.toast.retentionUpdated'), "success");
         } catch (e) {
-            addToast(`Failed to update retention: ${errorMessage(e)}`, "error");
+            addToast(t('settings.toast.retentionError', { error: errorMessage(e) }), "error");
         }
     };
 
     const togglePolling = async (enabled: boolean) => {
         try {
             await togglePollingAction(enabled);
-            addToast(enabled ? "Polling enabled" : "Polling paused", "success");
+            addToast(t(enabled ? 'settings.toast.pollingEnabled' : 'settings.toast.pollingPaused'), "success");
         } catch (e) {
-            addToast(`Failed to toggle polling: ${errorMessage(e)}`, "error");
+            addToast(t('settings.toast.pollingError', { error: errorMessage(e) }), "error");
         }
     };
 
     const toggleAutostart = async (enabled: boolean) => {
         try {
             await setAutostartEnabled(enabled);
-            addToast(enabled ? "Avvio automatico abilitato" : "Avvio automatico disabilitato", "success");
+            addToast(t(enabled ? 'settings.toast.autostartEnabled' : 'settings.toast.autostartDisabled'), "success");
         } catch (e) {
-            addToast(`Impossibile aggiornare l'avvio automatico: ${errorMessage(e)}`, "error");
+            addToast(t('settings.toast.autostartError', { error: errorMessage(e) }), "error");
         }
     };
 
@@ -203,57 +224,57 @@ export default function Settings() {
             // check store to see if it changed (the action in store updates the state)
             // But selectWorkDirAction is async, so we should wait or check return if it returned something
             // currently selectWorkDirectory in appStore doesn't return anything but updates state.
-            addToast("Work directory updated", "success");
+            addToast(t('settings.toast.workDirUpdated'), "success");
         } catch (e) {
-            addToast(`Failed to select directory: ${errorMessage(e)}`, "error");
+            addToast(t('settings.toast.workDirError', { error: errorMessage(e) }), "error");
         }
     }
 
-    if (!config) return <div>Loading settings...</div>;
+    if (!config) return <div>{t('settings.loading')}</div>;
 
     return (
         <div className="space-y-6 max-w-4xl">
             <div>
-                <h2 className="text-3xl font-bold tracking-tight">Settings</h2>
+                <h2 className="text-3xl font-bold tracking-tight">{t('settings.title')}</h2>
                 <p className="text-muted-foreground mt-1">
-                    Manage how the application downloads and manages files.
+                    {t('settings.subtitle')}
                 </p>
             </div>
 
             <Card>
                 <CardHeader>
-                    <CardTitle>Storage</CardTitle>
+                    <CardTitle>{t('settings.storage.title')}</CardTitle>
                     <CardDescription>
-                        Where files will be downloaded and stored.
+                        {t('settings.storage.description')}
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                     <div className="flex flex-col gap-2">
-                        <label className="text-sm font-medium">Work Directory</label>
+                        <label className="text-sm font-medium">{t('settings.storage.workDirectory')}</label>
                         <div className="flex gap-2">
                             <Input
                                 readOnly
-                                value={config.work_directory || "Not configured"}
+                                value={config.work_directory || t('settings.storage.notConfigured')}
                                 className={!config.work_directory ? "text-muted-foreground italic" : ""}
                             />
                             <Button variant="outline" onClick={selectWorkDirectory}>
                                 <FolderOpen className="mr-2 h-4 w-4" />
-                                Select
+                                {t('settings.storage.select')}
                             </Button>
                         </div>
                         <p className="text-xs text-muted-foreground">
-                            All downloaded resources and archives will be stored here.
+                            {t('settings.storage.workDirectoryHint')}
                         </p>
                     </div>
 
                     <div className="flex flex-col gap-2 pt-4 border-t">
-                        <label className="text-sm font-medium">Retention Policy</label>
+                        <label className="text-sm font-medium">{t('settings.storage.retentionPolicy')}</label>
                         <div className="flex flex-wrap items-center gap-4">
                             <div className="flex items-center gap-2 w-48 min-w-[140px]">
                                 <Input
                                     type="number"
                                     min="0"
-                                    placeholder="Days"
+                                    placeholder={t('settings.storage.daysPlaceholder')}
                                     className="flex-1 min-w-0"
                                     value={localRetention === null ? "" : localRetention}
                                     onChange={(e) => {
@@ -262,10 +283,10 @@ export default function Settings() {
                                     }}
                                     onBlur={handleRetentionBlur}
                                 />
-                                <span className="text-sm shrink-0">days</span>
+                                <span className="text-sm shrink-0">{t('settings.storage.days')}</span>
                             </div>
                             <span className="text-sm text-muted-foreground">
-                                (0 = delete immediately, empty = keep forever)
+                                {t('settings.storage.retentionHint')}
                             </span>
                         </div>
                     </div>
@@ -274,15 +295,15 @@ export default function Settings() {
 
             <Card>
                 <CardHeader>
-                    <CardTitle>Auto-Download</CardTitle>
+                    <CardTitle>{t('settings.autoDownload.title')}</CardTitle>
                     <CardDescription>
-                        Automatically download new resources for these categories.
+                        {t('settings.autoDownload.description')}
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
                     {availableCategories.length === 0 ? (
                         <div className="text-sm text-muted-foreground italic">
-                            No categories discovered yet. Visit the Dashboard to load resources.
+                            {t('settings.autoDownload.empty')}
                         </div>
                     ) : (
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
@@ -305,17 +326,17 @@ export default function Settings() {
 
             <Card>
                 <CardHeader>
-                    <CardTitle>Automation</CardTitle>
+                    <CardTitle>{t('settings.automation.title')}</CardTitle>
                     <CardDescription>
-                        Configure automatic background checking for new resources.
+                        {t('settings.automation.description')}
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                     <div className="flex items-center justify-between gap-4">
                         <div className="space-y-0.5">
-                            <label className="text-base font-medium">Enable Background Polling</label>
+                            <label className="text-base font-medium">{t('settings.automation.pollingEnable')}</label>
                             <p className="text-sm text-muted-foreground">
-                                Automatically check for new content periodically.
+                                {t('settings.automation.pollingEnableHint')}
                             </p>
                         </div>
                         <Switch
@@ -326,9 +347,9 @@ export default function Settings() {
 
                     <div className="flex items-center justify-between gap-4 pt-4 border-t">
                         <div className="space-y-0.5">
-                            <label className="text-base font-medium">Avvio Automatico</label>
+                            <label className="text-base font-medium">{t('settings.automation.autostart')}</label>
                             <p className="text-sm text-muted-foreground">
-                                Avvia l'app automaticamente all'accensione del computer.
+                                {t('settings.automation.autostartHint')}
                             </p>
                         </div>
                         <Switch
@@ -338,7 +359,7 @@ export default function Settings() {
                     </div>
 
                     <div className="flex flex-col gap-2 pt-4 border-t">
-                        <label className="text-sm font-medium">Download Strategy</label>
+                        <label className="text-sm font-medium">{t('settings.automation.downloadStrategy')}</label>
                         <div className="flex gap-6">
                             <div className="flex items-center space-x-2">
                                 <input
@@ -349,7 +370,7 @@ export default function Settings() {
                                     onChange={() => updateDownloadMode('Queue')}
                                     className="accent-primary h-4 w-4"
                                 />
-                                <label htmlFor="mode-queue" className="text-sm cursor-pointer select-none">Queue (Sequential)</label>
+                                <label htmlFor="mode-queue" className="text-sm cursor-pointer select-none">{t('settings.automation.modeQueue')}</label>
                             </div>
                             <div className="flex items-center space-x-2">
                                 <input
@@ -360,19 +381,19 @@ export default function Settings() {
                                     onChange={() => updateDownloadMode('Parallel')}
                                     className="accent-primary h-4 w-4"
                                 />
-                                <label htmlFor="mode-parallel" className="text-sm cursor-pointer select-none">Parallel (4x)</label>
+                                <label htmlFor="mode-parallel" className="text-sm cursor-pointer select-none">{t('settings.automation.modeParallel')}</label>
                             </div>
                         </div>
                         <p className="text-xs text-muted-foreground">
-                            Queue downloads one file at a time. Parallel downloads up to 4 files simultaneously.
+                            {t('settings.automation.downloadStrategyHint')}
                         </p>
                     </div>
 
                     <div className="flex items-center justify-between gap-4 pt-4 border-t">
                         <div className="space-y-0.5">
-                            <label className="text-base font-medium">Preferisci Video Ottimizzati</label>
+                            <label className="text-base font-medium">{t('settings.automation.preferOptimized')}</label>
                             <p className="text-sm text-muted-foreground">
-                                Il file ottimizzato ha la stessa qualità percepita ma pesa fino a 10 volte di meno. Ogni risorsa ottimizzata è fornita grazie al lavoro dei volontari.
+                                {t('settings.automation.preferOptimizedHint')}
                             </p>
                         </div>
                         <Switch
@@ -382,7 +403,7 @@ export default function Settings() {
                     </div>
 
                     <div className="flex flex-col gap-2 pt-4 border-t">
-                        <label className="text-sm font-medium">Polling Interval</label>
+                        <label className="text-sm font-medium">{t('settings.automation.pollingInterval')}</label>
                         <div className="flex flex-wrap items-center gap-4">
                             <div className="flex items-center gap-2 w-48 min-w-[140px]">
                                 <Input
@@ -394,10 +415,10 @@ export default function Settings() {
                                     onChange={(e) => setLocalInterval(parseInt(e.target.value))}
                                     onBlur={handleIntervalBlur}
                                 />
-                                <span className="text-sm shrink-0">min</span>
+                                <span className="text-sm shrink-0">{t('settings.automation.pollingIntervalUnit')}</span>
                             </div>
                             <span className="text-sm text-muted-foreground">
-                                (1 - 1440 minutes)
+                                {t('settings.automation.pollingIntervalHint')}
                             </span>
                         </div>
                     </div>
@@ -406,20 +427,20 @@ export default function Settings() {
 
             <Card>
                 <CardHeader>
-                    <CardTitle>Aspetto</CardTitle>
+                    <CardTitle>{t('settings.appearance.title')}</CardTitle>
                     <CardDescription>
-                        Scegli il tema dell'interfaccia.
+                        {t('settings.appearance.description')}
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
                     <div className="flex flex-wrap gap-2">
-                        {THEME_OPTIONS.map(({ value, label }) => (
+                        {THEME_OPTIONS.map(({ value, labelKey }) => (
                             <Button
                                 key={value}
                                 variant={config.theme === value ? "default" : "outline"}
                                 onClick={() => updateTheme(value)}
                             >
-                                {label}
+                                {t(labelKey)}
                             </Button>
                         ))}
                     </div>
@@ -428,11 +449,33 @@ export default function Settings() {
 
             <Card>
                 <CardHeader>
-                    <CardTitle>System Information</CardTitle>
+                    <CardTitle>{t('settings.language.title')}</CardTitle>
+                    <CardDescription>
+                        {t('settings.language.description')}
+                    </CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <div className="flex flex-wrap gap-2">
+                        {LANGUAGE_OPTIONS.map(({ value, labelKey }) => (
+                            <Button
+                                key={value}
+                                variant={config.language === value ? "default" : "outline"}
+                                onClick={() => updateLanguage(value)}
+                            >
+                                {t(labelKey)}
+                            </Button>
+                        ))}
+                    </div>
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardHeader>
+                    <CardTitle>{t('settings.systemInfo.title')}</CardTitle>
                 </CardHeader>
                 <CardContent className="text-sm space-y-2">
                     <div className="flex justify-between">
-                        <span className="text-muted-foreground">App Version</span>
+                        <span className="text-muted-foreground">{t('settings.systemInfo.appVersion')}</span>
                         <span>{appVersion}</span>
                     </div>
 
@@ -440,7 +483,7 @@ export default function Settings() {
                         <img src={rinoovaIcon} alt="Rinoova" className="h-10 w-auto shrink-0" />
                         <div className="space-y-1">
                             <p className="text-foreground">
-                                Rinoova sostiene questo progetto fornendo server, sviluppatori e know-how.
+                                {t('settings.systemInfo.rinoovaBlurb')}
                             </p>
                             <a
                                 href="https://rinoova.com"

@@ -2,6 +2,7 @@ import React from 'react';
 import { useToastStore, ToastType } from '../../stores/toastStore';
 import { CircleCheckBig, CircleAlert, Info, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { useI18n } from '../../lib/i18n';
 
 export const ToastContainer: React.FC = () => {
     const { toasts } = useToastStore();
@@ -24,6 +25,7 @@ interface ToastItemProps {
 }
 
 const ToastItem: React.FC<ToastItemProps> = ({ toast }) => {
+    const { t } = useI18n();
     const { removeToast } = useToastStore();
 
     const icons = {
@@ -52,7 +54,7 @@ const ToastItem: React.FC<ToastItemProps> = ({ toast }) => {
             <button
                 onClick={() => removeToast(toast.id)}
                 className="hover:bg-white/20 p-1 rounded-full transition-colors"
-                aria-label="Close"
+                aria-label={t('toastUi.close')}
             >
                 <X className="h-4 w-4 text-white" />
             </button>

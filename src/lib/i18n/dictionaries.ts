@@ -1,0 +1,468 @@
+// Zero-dependency i18n dictionaries. `en` is the source of truth: its keys
+// define `TKey`, and `it` is typed as `Record<TKey, string>` so a missing (or
+// misspelled) Italian translation is a *compile-time* error, not a silent
+// fallback at runtime. Keep both maps alphabetically grouped by feature/file
+// so a reviewer can diff them side by side.
+//
+// Interpolation: values may contain `{placeholder}` tokens, filled in by
+// `t(key, {placeholder: value})` (see ./index.ts). Placeholder names must
+// match between the two languages for a given key.
+const en = {
+  // --- src/layouts/AppLayout.tsx ---
+  'nav.dashboard': 'Dashboard',
+  'nav.settings': 'Settings',
+  'layout.footer.license': 'Open Source under MIT License',
+  'layout.footer.tagline': 'Built with heart for the community.',
+  'layout.footer.support': 'Support:',
+  'layout.footer.buyMeCoffee': '☕ Help me paying the server',
+  'layout.footer.sponsoredBy': 'Sponsored by Rinoova',
+
+  // --- src/pages/Dashboard.tsx ---
+  'dashboard.title': 'Dashboard',
+  'dashboard.subtitle': "Overview of this week's resources and application status.",
+  'dashboard.currentWeek': 'Current Week',
+  'dashboard.currentWeek.hint': 'Latest available content',
+  'dashboard.pollingStatus': 'Polling Status',
+  'dashboard.refresh': 'Refresh',
+  'dashboard.pollingActive': 'Active',
+  'dashboard.pollingPaused': 'Paused',
+  'dashboard.lastUpdate': 'Last update: {time}',
+  'dashboard.noUpdatesYet': 'No updates yet',
+  'dashboard.weeklyMaterial': 'Weekly Material',
+  'dashboard.noResourcesFound': 'No resources found for the current week.',
+  'dashboard.toast.refreshSuccess': 'Week Material updated',
+  'dashboard.toast.refreshError': 'Refresh failed: {error}',
+  'dashboard.toast.genericError': 'Error: {error}',
+
+  // --- src/pages/Settings.tsx ---
+  'settings.loading': 'Loading settings…',
+  'settings.title': 'Settings',
+  'settings.subtitle': 'Manage how the application downloads and manages files.',
+  'settings.storage.title': 'Storage',
+  'settings.storage.description': 'Where files will be downloaded and stored.',
+  'settings.storage.workDirectory': 'Work Directory',
+  'settings.storage.notConfigured': 'Not configured',
+  'settings.storage.select': 'Select',
+  'settings.storage.workDirectoryHint': 'All downloaded resources and archives will be stored here.',
+  'settings.storage.retentionPolicy': 'Retention Policy',
+  'settings.storage.days': 'days',
+  'settings.storage.daysPlaceholder': 'Days',
+  'settings.storage.retentionHint': '(0 = delete immediately, empty = keep forever)',
+  'settings.autoDownload.title': 'Auto-Download',
+  'settings.autoDownload.description': 'Automatically download new resources for these categories.',
+  'settings.autoDownload.empty': 'No categories discovered yet. Visit the Dashboard to load resources.',
+  'settings.automation.title': 'Automation',
+  'settings.automation.description': 'Configure automatic background checking for new resources.',
+  'settings.automation.pollingEnable': 'Enable Background Polling',
+  'settings.automation.pollingEnableHint': 'Automatically check for new content periodically.',
+  'settings.automation.autostart': 'Autostart',
+  'settings.automation.autostartHint': "Automatically launch the app when your computer starts.",
+  'settings.automation.downloadStrategy': 'Download Strategy',
+  'settings.automation.modeQueue': 'Queue (Sequential)',
+  'settings.automation.modeParallel': 'Parallel (4x)',
+  'settings.automation.downloadStrategyHint': 'Queue downloads one file at a time. Parallel downloads up to 4 files simultaneously.',
+  'settings.automation.preferOptimized': 'Prefer Optimized Videos',
+  'settings.automation.preferOptimizedHint': 'The optimized file has the same perceived quality but is up to 10 times smaller. Every optimized resource is made possible thanks to the work of volunteers.',
+  'settings.automation.pollingInterval': 'Polling Interval',
+  'settings.automation.pollingIntervalUnit': 'min',
+  'settings.automation.pollingIntervalHint': '(1 - 1440 minutes)',
+  'settings.appearance.title': 'Appearance',
+  'settings.appearance.description': 'Choose the interface theme.',
+  'settings.theme.system': 'System',
+  'settings.theme.light': 'Light',
+  'settings.theme.dark': 'Dark',
+  'settings.language.title': 'Lingua / Language',
+  'settings.language.description': "Choose your preferred language, or follow your system's setting.",
+  'settings.language.system': 'System',
+  'settings.language.italian': 'Italian',
+  'settings.language.english': 'English',
+  'settings.systemInfo.title': 'System Information',
+  'settings.systemInfo.appVersion': 'App Version',
+  'settings.systemInfo.rinoovaBlurb': 'Rinoova supports this project by providing servers, developers, and expertise.',
+  'settings.toast.autoDownloadEnabled': 'Auto-download enabled for "{category}"',
+  'settings.toast.autoDownloadDisabled': 'Auto-download disabled for "{category}"',
+  'settings.toast.autoDownloadUpdateError': 'Failed to update category: {error}',
+  'settings.toast.downloadModeSet': 'Download mode set to {mode}',
+  'settings.toast.downloadModeError': 'Failed to update mode: {error}',
+  'settings.toast.themeSet': 'Theme set to {theme}',
+  'settings.toast.themeError': 'Failed to update theme: {error}',
+  'settings.toast.languageSet': 'Language set to {language}',
+  'settings.toast.languageError': 'Failed to update language: {error}',
+  'settings.toast.preferOptimizedOn': 'Optimized videos preferred',
+  'settings.toast.preferOptimizedOff': 'Original videos preferred',
+  'settings.toast.preferOptimizedError': 'Failed to update preference: {error}',
+  'settings.toast.intervalRange': 'Polling interval must be between 1 and 1440 minutes',
+  'settings.toast.intervalUpdated': 'Polling interval updated',
+  'settings.toast.intervalError': 'Failed to update interval: {error}',
+  'settings.toast.retentionNegative': 'Retention days cannot be negative',
+  'settings.toast.retentionUpdated': 'Retention policy updated',
+  'settings.toast.retentionError': 'Failed to update retention: {error}',
+  'settings.toast.pollingEnabled': 'Polling enabled',
+  'settings.toast.pollingPaused': 'Polling paused',
+  'settings.toast.pollingError': 'Failed to toggle polling: {error}',
+  'settings.toast.autostartEnabled': 'Autostart enabled',
+  'settings.toast.autostartDisabled': 'Autostart disabled',
+  'settings.toast.autostartError': 'Failed to update autostart: {error}',
+  'settings.toast.workDirUpdated': 'Work directory updated',
+  'settings.toast.workDirError': 'Failed to select directory: {error}',
+
+  // --- src/components/features/resource/ResourceCard.tsx ---
+  'resourceCard.optimizedAvailable': 'Optimized video available',
+  'resourceCard.downloading': 'Downloading…',
+  'resourceCard.queuedAt': 'Queued, position {position}',
+  'resourceCard.queued': 'Queued',
+  'resourceCard.openInFolder': 'Open in folder',
+  'resourceCard.clickToView': 'Click to view',
+
+  // --- src/components/features/resource/ResourceDetail.tsx ---
+  'resourceDetail.download': 'Download',
+  'resourceDetail.noThumbnail': 'No Thumbnail',
+  'resourceDetail.retryHint': 'File corrupted. Click to retry.',
+  'resourceDetail.queuedAtPosition': 'Queued (position {position})',
+  'resourceDetail.queued': 'Queued',
+  'resourceDetail.downloadedAriaLabel': 'Downloaded. Open in folder',
+  'resourceDetail.resumeProgress': 'Resume ({progress}%)',
+  'resourceDetail.retryDownload': 'Retry Download',
+  'resourceDetail.downloaded': 'Downloaded',
+  'resourceDetail.downloadNow': 'Download Now',
+  'resourceDetail.removeFromQueue': 'Remove from queue',
+  'resourceDetail.stopAndDelete': 'Stop and Delete',
+  'resourceDetail.openInFolder': 'Open in folder',
+  'resourceDetail.corruptedWarning': 'Hashes do not match source. File may be corrupted.',
+  'resourceDetail.workDirNotConfigured': 'Please set a download folder in Settings.',
+  'resourceDetail.category': 'Category',
+  'resourceDetail.autoDownload': 'Auto-download',
+  'resourceDetail.autoDownloadTooltipPrefix': 'Automatically download future resources in the ',
+  'resourceDetail.autoDownloadTooltipSuffix': ' category.',
+  'resourceDetail.date': 'Date',
+  'resourceDetail.description': 'Description',
+  'resourceDetail.noDescription': 'No description available.',
+  'resourceDetail.close': 'Close',
+
+  // --- src/components/features/resource/OptimizedVideoPicker.tsx ---
+  'optimizedPicker.chooseVideo': 'Choose the video to download',
+  'optimizedPicker.ariaLabel': 'Available optimized videos',
+
+  // --- src/components/features/resource/OptimizedPreferenceToggle.tsx ---
+  'optimizedToggle.title': 'Switch to the optimized version',
+  'optimizedToggle.withSavings': 'Same quality, much lighter:',
+  'optimizedToggle.sizeComparison': ' — {optimizedLabel} instead of {originalLabel}.',
+  'optimizedToggle.withoutSavings': 'Same perceived quality, but up to 10 times lighter.',
+  'optimizedToggle.ariaLabel': 'Always prefer optimized videos',
+
+  // --- src/components/features/resource/OptimizedActiveNotice.tsx ---
+  // Shown instead of OptimizedPreferenceToggle when prefer_optimized is
+  // already ON for a resource that has an optimized variant: positive
+  // confirmation of the saving already in effect, never shown together with
+  // the toggle callout above (mutually exclusive on preferOptimized).
+  'optimizedActive.title': 'Optimized version active',
+  'optimizedActive.savingsPrefix': 'Thanks to Rinoova services you save ',
+  'optimizedActive.savingsMiddle': ' on this video: the file is ',
+  'optimizedActive.savingsSuffix': ' smaller.',
+  'optimizedActive.withoutSavings': 'Thanks to Rinoova services you download the lightweight version: same quality, much less space.',
+
+  // --- src/components/features/resource/ResourcesFoundCard.tsx ---
+  'resourcesFoundCard.loadingTitle': 'Resources Found',
+  'resourcesFoundCard.title': 'Material Summary',
+  'resourcesFoundCard.found': 'Found',
+  'resourcesFoundCard.ready': 'Ready',
+  'resourcesFoundCard.downloading': 'Downloading',
+
+  // --- src/components/features/resource/DownloadsModal.tsx ---
+  'downloadsModal.title': 'Downloads',
+  'downloadsModal.subtitle': 'Manage your active downloads and queue.',
+  'downloadsModal.openFolder': 'Open folder',
+  'downloadsModal.close': 'Close',
+  'downloadsModal.activeAndQueued': 'Active & Queued',
+  'downloadsModal.noActiveDownloads': 'No active downloads',
+  'downloadsModal.queuedBadge': 'QUEUED #{position}',
+  'downloadsModal.eta': 'ETA: {duration}',
+  'downloadsModal.recentlyCompleted': 'Recently Completed',
+  'downloadsModal.completedSuccessfully': 'Download successfully complete',
+  'downloadsModal.footer': 'Church Helper Queue System',
+  'downloadsModal.toast.openFolderError': 'Could not open the folder: {error}',
+
+  // --- src/components/features/dashboard/StaleWeekBanner.tsx ---
+  'staleWeekBanner.title': 'Material not up to date',
+  'staleWeekBanner.latestWeek': ' — latest available week: {week}',
+
+  // --- src/components/ui/SplashScreen.tsx ---
+  'splash.subtitle': "This week's materials, downloaded for you",
+  'splash.sponsoredBy': 'Sponsored by',
+
+  // --- src/components/ui/toast.tsx ---
+  'toastUi.close': 'Close',
+
+  // --- src/components/ui/CelebrationStack.tsx ---
+  'celebration.regionAriaLabel': 'Rinoova Savings',
+  'celebration.sessionSavedPrefix': 'This session: ',
+  'celebration.sessionSavedSuffix': ' saved',
+  // The running historical total (persisted across app restarts), shown
+  // alongside the session figure on the same header card.
+  'celebration.totalSavedPrefix': 'All-time total: ',
+  'celebration.totalSavedSuffix': '',
+  'celebration.closeAll': 'Close all',
+  // Singular/plural split for languages where "more" inflects (Italian:
+  // "altro"/"altri"); English is invariant across both but keeps its own key
+  // for symmetry, per src/components/ui/CelebrationStack.tsx's count check.
+  'celebration.andMoreOne': '+{count} more',
+  'celebration.andMoreMany': '+{count} more',
+  'celebration.title': 'Optimized download complete',
+  'celebration.close': 'Close',
+  'celebration.sizeComparison': '{optimizedLabel} instead of {originalLabel}',
+  'celebration.savedAmountPrefix': 'You saved ',
+  'celebration.savedAmountSuffix': '.',
+  'celebration.noSavingsInfo': 'You downloaded the lightweight version: same quality, much less space.',
+  'celebration.providedBy': 'Optimized version provided by',
+  'celebration.fallbackTitle': 'Optimized resource',
+
+  // --- src/hooks/useResource.ts ---
+  'toast.fileGone': 'The file is no longer on disk. You can download it again.',
+  'toast.fileMissingRedownload': 'File not found on disk — download it again',
+  'toast.openFolderError': 'Could not open the folder: {error}',
+  'toast.autoDownloadToggleError': 'Failed to toggle auto-download: {error}',
+  'toast.preferOptimizedEnabled': "Optimized videos enabled — they'll be preferred from now on.",
+  'toast.preferOptimizedDisabled': "Preference updated: original videos will be used.",
+  'toast.preferOptimizedError': 'Failed to update the preference: {error}',
+
+  // --- src/stores/appStore.ts (non-React: consumed via tGlobal) ---
+  'store.toast.errataSingle': 'A correction was detected (errata corrige): the updated file is downloading.',
+  'store.toast.errataMultiple': '{count} corrections were detected (errata corrige): the updated files are downloading.',
+  'store.error.initFailed': 'Initialization failed: {error}',
+  'store.error.configUpdateFailed': 'Failed to update config: {error}',
+  'store.error.pollFailed': 'Manual poll failed: {error}',
+  'store.error.selectDirFailed': 'Failed to select directory: {error}',
+  'store.error.togglePollingFailed': 'Failed to toggle polling: {error}',
+  'store.error.setIntervalFailed': 'Failed to set interval: {error}',
+  'store.error.setRetentionFailed': 'Failed to set retention: {error}',
+  'store.error.setAutostartFailed': 'Failed to set autostart: {error}',
+} as const;
+
+export type TKey = keyof typeof en;
+
+// Every key in `en` must be present here too — TypeScript rejects the file
+// otherwise, which is the whole point: a missing Italian string is a build
+// failure, not a silent English fallback in the UI.
+const it: Record<TKey, string> = {
+  // --- src/layouts/AppLayout.tsx ---
+  'nav.dashboard': 'Dashboard',
+  'nav.settings': 'Impostazioni',
+  'layout.footer.license': 'Open source con licenza MIT',
+  'layout.footer.tagline': 'Fatto con il cuore per la comunità.',
+  'layout.footer.support': 'Supporto:',
+  'layout.footer.buyMeCoffee': '☕ Aiutami a pagare il server',
+  'layout.footer.sponsoredBy': 'Sponsorizzato da Rinoova',
+
+  // --- src/pages/Dashboard.tsx ---
+  'dashboard.title': 'Dashboard',
+  'dashboard.subtitle': 'Panoramica dei materiali di questa settimana e dello stato dell’applicazione.',
+  'dashboard.currentWeek': 'Settimana Corrente',
+  'dashboard.currentWeek.hint': 'Ultimo contenuto disponibile',
+  'dashboard.pollingStatus': 'Stato Controllo',
+  'dashboard.refresh': 'Aggiorna',
+  'dashboard.pollingActive': 'Attivo',
+  'dashboard.pollingPaused': 'In pausa',
+  'dashboard.lastUpdate': 'Ultimo aggiornamento: {time}',
+  'dashboard.noUpdatesYet': 'Nessun aggiornamento ancora',
+  'dashboard.weeklyMaterial': 'Materiale Settimanale',
+  'dashboard.noResourcesFound': 'Nessuna risorsa trovata per la settimana corrente.',
+  'dashboard.toast.refreshSuccess': 'Materiale settimanale aggiornato',
+  'dashboard.toast.refreshError': 'Aggiornamento fallito: {error}',
+  'dashboard.toast.genericError': 'Errore: {error}',
+
+  // --- src/pages/Settings.tsx ---
+  'settings.loading': 'Caricamento impostazioni…',
+  'settings.title': 'Impostazioni',
+  'settings.subtitle': 'Gestisci come l’applicazione scarica e organizza i file.',
+  'settings.storage.title': 'Archiviazione',
+  'settings.storage.description': 'Dove i file verranno scaricati e conservati.',
+  'settings.storage.workDirectory': 'Cartella di lavoro',
+  'settings.storage.notConfigured': 'Non configurata',
+  'settings.storage.select': 'Seleziona',
+  'settings.storage.workDirectoryHint': 'Tutte le risorse scaricate e gli archivi saranno conservati qui.',
+  'settings.storage.retentionPolicy': 'Politica di conservazione',
+  'settings.storage.days': 'giorni',
+  'settings.storage.daysPlaceholder': 'Giorni',
+  'settings.storage.retentionHint': '(0 = elimina subito, vuoto = conserva per sempre)',
+  'settings.autoDownload.title': 'Download Automatico',
+  'settings.autoDownload.description': 'Scarica automaticamente le nuove risorse per queste categorie.',
+  'settings.autoDownload.empty': 'Nessuna categoria trovata. Visita la Dashboard per caricare le risorse.',
+  'settings.automation.title': 'Automazione',
+  'settings.automation.description': 'Configura il controllo automatico in background per nuove risorse.',
+  'settings.automation.pollingEnable': 'Abilita Controllo Automatico',
+  'settings.automation.pollingEnableHint': 'Controlla periodicamente la presenza di nuovi contenuti.',
+  'settings.automation.autostart': 'Avvio Automatico',
+  'settings.automation.autostartHint': 'Avvia l’app automaticamente all’accensione del computer.',
+  'settings.automation.downloadStrategy': 'Strategia di Download',
+  'settings.automation.modeQueue': 'Coda (Sequenziale)',
+  'settings.automation.modeParallel': 'Parallelo (4x)',
+  'settings.automation.downloadStrategyHint': 'La coda scarica un file alla volta. Il parallelo scarica fino a 4 file contemporaneamente.',
+  'settings.automation.preferOptimized': 'Preferisci Video Ottimizzati',
+  'settings.automation.preferOptimizedHint': 'Il file ottimizzato ha la stessa qualità percepita ma pesa fino a 10 volte di meno. Ogni risorsa ottimizzata è resa possibile grazie al lavoro dei volontari.',
+  'settings.automation.pollingInterval': 'Intervallo di Controllo',
+  'settings.automation.pollingIntervalUnit': 'min',
+  'settings.automation.pollingIntervalHint': '(1 - 1440 minuti)',
+  'settings.appearance.title': 'Aspetto',
+  'settings.appearance.description': 'Scegli il tema dell’interfaccia.',
+  'settings.theme.system': 'Sistema',
+  'settings.theme.light': 'Chiaro',
+  'settings.theme.dark': 'Scuro',
+  'settings.language.title': 'Lingua / Language',
+  'settings.language.description': 'Scegli la lingua preferita, oppure segui l’impostazione di sistema.',
+  'settings.language.system': 'Sistema',
+  'settings.language.italian': 'Italiano',
+  'settings.language.english': 'English',
+  'settings.systemInfo.title': 'Informazioni di Sistema',
+  'settings.systemInfo.appVersion': 'Versione App',
+  'settings.systemInfo.rinoovaBlurb': 'Rinoova sostiene questo progetto fornendo server, sviluppatori e know-how.',
+  'settings.toast.autoDownloadEnabled': 'Download automatico attivato per "{category}"',
+  'settings.toast.autoDownloadDisabled': 'Download automatico disattivato per "{category}"',
+  'settings.toast.autoDownloadUpdateError': 'Impossibile aggiornare la categoria: {error}',
+  'settings.toast.downloadModeSet': 'Modalità di download impostata su {mode}',
+  'settings.toast.downloadModeError': 'Impossibile aggiornare la modalità: {error}',
+  'settings.toast.themeSet': 'Tema impostato su {theme}',
+  'settings.toast.themeError': 'Impossibile aggiornare il tema: {error}',
+  'settings.toast.languageSet': 'Lingua impostata su {language}',
+  'settings.toast.languageError': 'Impossibile aggiornare la lingua: {error}',
+  'settings.toast.preferOptimizedOn': 'Video ottimizzati preferiti',
+  'settings.toast.preferOptimizedOff': 'Video originali preferiti',
+  'settings.toast.preferOptimizedError': 'Impossibile aggiornare la preferenza: {error}',
+  'settings.toast.intervalRange': 'L’intervallo di controllo deve essere tra 1 e 1440 minuti',
+  'settings.toast.intervalUpdated': 'Intervallo di controllo aggiornato',
+  'settings.toast.intervalError': 'Impossibile aggiornare l’intervallo: {error}',
+  'settings.toast.retentionNegative': 'I giorni di conservazione non possono essere negativi',
+  'settings.toast.retentionUpdated': 'Politica di conservazione aggiornata',
+  'settings.toast.retentionError': 'Impossibile aggiornare la conservazione: {error}',
+  'settings.toast.pollingEnabled': 'Controllo automatico abilitato',
+  'settings.toast.pollingPaused': 'Controllo automatico sospeso',
+  'settings.toast.pollingError': 'Impossibile modificare il controllo automatico: {error}',
+  'settings.toast.autostartEnabled': 'Avvio automatico abilitato',
+  'settings.toast.autostartDisabled': 'Avvio automatico disabilitato',
+  'settings.toast.autostartError': 'Impossibile aggiornare l’avvio automatico: {error}',
+  'settings.toast.workDirUpdated': 'Cartella di lavoro aggiornata',
+  'settings.toast.workDirError': 'Impossibile selezionare la cartella: {error}',
+
+  // --- src/components/features/resource/ResourceCard.tsx ---
+  'resourceCard.optimizedAvailable': 'Video ottimizzato disponibile',
+  'resourceCard.downloading': 'Scaricamento…',
+  'resourceCard.queuedAt': 'In coda, posizione {position}',
+  'resourceCard.queued': 'In coda',
+  'resourceCard.openInFolder': 'Apri nella cartella',
+  'resourceCard.clickToView': 'Clicca per visualizzare',
+
+  // --- src/components/features/resource/ResourceDetail.tsx ---
+  'resourceDetail.download': 'Download',
+  'resourceDetail.noThumbnail': 'Nessuna Anteprima',
+  'resourceDetail.retryHint': 'File corrotto. Clicca per riprovare.',
+  'resourceDetail.queuedAtPosition': 'In coda (posizione {position})',
+  'resourceDetail.queued': 'In coda',
+  'resourceDetail.downloadedAriaLabel': 'Scaricato. Apri nella cartella',
+  'resourceDetail.resumeProgress': 'Riprendi ({progress}%)',
+  'resourceDetail.retryDownload': 'Riprova Download',
+  'resourceDetail.downloaded': 'Scaricato',
+  'resourceDetail.downloadNow': 'Scarica Ora',
+  'resourceDetail.removeFromQueue': 'Rimuovi dalla coda',
+  'resourceDetail.stopAndDelete': 'Ferma ed Elimina',
+  'resourceDetail.openInFolder': 'Apri nella cartella',
+  'resourceDetail.corruptedWarning': 'Gli hash non corrispondono alla sorgente. Il file potrebbe essere corrotto.',
+  'resourceDetail.workDirNotConfigured': 'Imposta una cartella di download nelle Impostazioni.',
+  'resourceDetail.category': 'Categoria',
+  'resourceDetail.autoDownload': 'Download automatico',
+  'resourceDetail.autoDownloadTooltipPrefix': 'Scarica automaticamente le future risorse della categoria ',
+  'resourceDetail.autoDownloadTooltipSuffix': '.',
+  'resourceDetail.date': 'Data',
+  'resourceDetail.description': 'Descrizione',
+  'resourceDetail.noDescription': 'Nessuna descrizione disponibile.',
+  'resourceDetail.close': 'Chiudi',
+
+  // --- src/components/features/resource/OptimizedVideoPicker.tsx ---
+  'optimizedPicker.chooseVideo': 'Scegli il video da scaricare',
+  'optimizedPicker.ariaLabel': 'Video ottimizzati disponibili',
+
+  // --- src/components/features/resource/OptimizedPreferenceToggle.tsx ---
+  'optimizedToggle.title': 'Passa alla versione ottimizzata',
+  'optimizedToggle.withSavings': 'Stessa qualità, molto più leggera:',
+  'optimizedToggle.sizeComparison': ' — {optimizedLabel} invece di {originalLabel}.',
+  'optimizedToggle.withoutSavings': 'Stessa qualità percepita, ma pesa fino a 10 volte di meno.',
+  'optimizedToggle.ariaLabel': 'Preferisci sempre i video ottimizzati',
+
+  // --- src/components/features/resource/OptimizedActiveNotice.tsx ---
+  'optimizedActive.title': 'Versione ottimizzata attiva',
+  'optimizedActive.savingsPrefix': 'Grazie ai servizi Rinoova risparmi ',
+  'optimizedActive.savingsMiddle': ' su questo video: il file pesa il ',
+  'optimizedActive.savingsSuffix': ' in meno.',
+  'optimizedActive.withoutSavings': 'Grazie ai servizi Rinoova scarichi la versione leggera: stessa qualità, molto meno spazio.',
+
+  // --- src/components/features/resource/ResourcesFoundCard.tsx ---
+  'resourcesFoundCard.loadingTitle': 'Risorse Trovate',
+  'resourcesFoundCard.title': 'Riepilogo Materiale',
+  'resourcesFoundCard.found': 'Trovate',
+  'resourcesFoundCard.ready': 'Pronte',
+  'resourcesFoundCard.downloading': 'In Download',
+
+  // --- src/components/features/resource/DownloadsModal.tsx ---
+  'downloadsModal.title': 'Download',
+  'downloadsModal.subtitle': 'Gestisci i download attivi e la coda.',
+  'downloadsModal.openFolder': 'Apri cartella',
+  'downloadsModal.close': 'Chiudi',
+  'downloadsModal.activeAndQueued': 'Attivi e in Coda',
+  'downloadsModal.noActiveDownloads': 'Nessun download attivo',
+  'downloadsModal.queuedBadge': 'IN CODA #{position}',
+  'downloadsModal.eta': 'ETA: {duration}',
+  'downloadsModal.recentlyCompleted': 'Completati di Recente',
+  'downloadsModal.completedSuccessfully': 'Download completato con successo',
+  'downloadsModal.footer': 'Church Helper — Sistema di Download',
+  'downloadsModal.toast.openFolderError': 'Impossibile aprire la cartella: {error}',
+
+  // --- src/components/features/dashboard/StaleWeekBanner.tsx ---
+  'staleWeekBanner.title': 'Materiale non aggiornato',
+  'staleWeekBanner.latestWeek': ' — ultima settimana disponibile: {week}',
+
+  // --- src/components/ui/SplashScreen.tsx ---
+  'splash.subtitle': 'I materiali della settimana, scaricati per te',
+  'splash.sponsoredBy': 'Sponsorizzato da',
+
+  // --- src/components/ui/toast.tsx ---
+  'toastUi.close': 'Chiudi',
+
+  // --- src/components/ui/CelebrationStack.tsx ---
+  'celebration.regionAriaLabel': 'Risparmi Rinoova',
+  'celebration.sessionSavedPrefix': 'In questa sessione: ',
+  'celebration.sessionSavedSuffix': ' risparmiati',
+  'celebration.totalSavedPrefix': 'Totale complessivo: ',
+  'celebration.totalSavedSuffix': '',
+  'celebration.closeAll': 'Chiudi tutte',
+  'celebration.andMoreOne': '+{count} altro',
+  'celebration.andMoreMany': '+{count} altri',
+  'celebration.title': 'Download ottimizzato completato',
+  'celebration.close': 'Chiudi',
+  'celebration.sizeComparison': '{optimizedLabel} invece di {originalLabel}',
+  'celebration.savedAmountPrefix': 'Hai risparmiato ',
+  'celebration.savedAmountSuffix': '.',
+  'celebration.noSavingsInfo': 'Hai scaricato la versione leggera: stessa qualità, molto meno spazio.',
+  'celebration.providedBy': 'Versione ottimizzata offerta da',
+  'celebration.fallbackTitle': 'Risorsa ottimizzata',
+
+  // --- src/hooks/useResource.ts ---
+  'toast.fileGone': 'Il file non è più presente sul disco. Puoi scaricarlo di nuovo.',
+  'toast.fileMissingRedownload': 'File non trovato sul disco — scaricalo di nuovo',
+  'toast.openFolderError': 'Impossibile aprire la cartella: {error}',
+  'toast.autoDownloadToggleError': 'Impossibile modificare il download automatico: {error}',
+  'toast.preferOptimizedEnabled': 'Video ottimizzati attivati — li preferirai d’ora in poi.',
+  'toast.preferOptimizedDisabled': 'Preferenza aggiornata: userai i video originali.',
+  'toast.preferOptimizedError': 'Impossibile aggiornare la preferenza: {error}',
+
+  // --- src/stores/appStore.ts (non-React: consumed via tGlobal) ---
+  'store.toast.errataSingle': 'Rilevata una correzione (errata corrige): il file aggiornato è in scaricamento.',
+  'store.toast.errataMultiple': 'Rilevate {count} correzioni (errata corrige): i file aggiornati sono in scaricamento.',
+  'store.error.initFailed': 'Inizializzazione fallita: {error}',
+  'store.error.configUpdateFailed': 'Impossibile aggiornare la configurazione: {error}',
+  'store.error.pollFailed': 'Controllo manuale fallito: {error}',
+  'store.error.selectDirFailed': 'Impossibile selezionare la cartella: {error}',
+  'store.error.togglePollingFailed': 'Impossibile modificare il controllo automatico: {error}',
+  'store.error.setIntervalFailed': 'Impossibile impostare l’intervallo: {error}',
+  'store.error.setRetentionFailed': 'Impossibile impostare la conservazione: {error}',
+  'store.error.setAutostartFailed': 'Impossibile impostare l’avvio automatico: {error}',
+};
+
+export {en, it};

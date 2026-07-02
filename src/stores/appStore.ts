@@ -5,7 +5,8 @@ import {create} from 'zustand';
 import {useCelebrationStore} from './celebrationStore';
 import {useToastStore} from './toastStore';
 import {errorMessage} from '../lib/utils';
-import {AppConfig, AppStatus, CategoryCount, DownloadCompletePayload, ErrataDetectedPayload, Resource, ResourceListResponse, ResourceStatus, WeekIdentifier} from '../types';
+import {tGlobal} from '../lib/i18n';
+import {AppConfig, AppStatus, CategoryCount, DownloadCompletePayload, ErrataDetectedPayload, Resource, ResourceListResponse, ResourceStatus, SavingsResolvedPayload, SavingsStats, WeekIdentifier} from '../types';
 
 export interface ActiveDownload {
   progress: number;
@@ -115,7 +116,7 @@ export const useAppStore = create<AppState>(
 
           const
               [config, status, resources, summary, resourceStatuses,
-               allCategories] =
+               allCategories, savingsStats] =
                   await Promise.all([
                     invoke<AppConfig>('get_config'),
                     invoke<AppStatus>('get_status'),
@@ -124,7 +125,14 @@ export const useAppStore = create<AppState>(
                     invoke<Record<number, ResourceStatus>>(
                         'get_resources_status'),
                     invoke<CategoryCount[]>('get_all_categories'),
+                    invoke<SavingsStats>('get_savings_stats'),
                   ]);
+
+          // Seed the persistent cross-session savings total once at startup;
+          // every subsequent download-complete event keeps it in sync via its
+          // own total_saved_bytes field (no re-fetch needed).
+          useCelebrationStore.getState().setTotalSavedBytes(
+              savingsStats.total_saved_bytes);
 
           // If work directory is set, fetch archived weeks
           let archivedWeeks: WeekIdentifier[] = [];
@@ -270,7 +278,14 @@ export const useAppStore = create<AppState>(
 
           // Listen for download completion from auto-download queue
           await listen<DownloadCompletePayload>('download-complete', (event) => {
-            const {id: resourceId, optimized} = event.payload;
+            const {
+              id: resourceId,
+              optimized,
+              optimized_bytes: optimizedBytes,
+              original_bytes: originalBytes,
+              saved_bytes: savedBytes,
+              total_saved_bytes: totalSavedBytes,
+            } = event.payload;
             set(state => {
               const current = state.activeDownloads[resourceId];
               if (!current) {
@@ -292,25 +307,35 @@ export const useAppStore = create<AppState>(
 
             // Intervento B: celebrate optimized completions (manual AND
             // auto-download — the latter is the main "value delivered by
-            // Rinoova" case and never reaches activeDownloads above).
-            // Non-blocking: does not gate the synchronous state update.
+            // Rinoova" case and never reaches activeDownloads above). The
+            // payload is now the authoritative, backend-computed source for
+            // the sizes/savings (a best-effort HEAD on the backend side), so
+            // no frontend refetch/cache lookup is needed and the celebration
+            // never goes out with missing data just because the frontend
+            // hadn't cached the sizes yet (collaudo bug).
             if (optimized) {
-              void (async () => {
-                // Non-debounced refetch to maximize the chance the sizes are
-                // already known (best-effort; may still be null).
-                await get().fetchResourcesStatus();
-                const st = get().resourceStatuses[resourceId];
-                const title = get().resources.find(r => r.id === resourceId)
-                                  ?.title ??
-                    'Risorsa ottimizzata';
-                useCelebrationStore.getState().addCelebration({
-                  resourceId,
-                  title,
-                  originalBytes: st?.file_size ?? null,
-                  optimizedBytes: st?.optimized_file_size ?? null,
-                });
-              })();
+              const title = get().resources.find(r => r.id === resourceId)
+                                ?.title ??
+                  tGlobal('celebration.fallbackTitle');
+              useCelebrationStore.getState().addCelebration({
+                resourceId,
+                title,
+                originalBytes,
+                optimizedBytes,
+                savedBytes,
+                totalSavedBytes,
+              });
             }
+          });
+
+          // Backend resolved an original file size that wasn't cached yet at
+          // download-complete time (see queue.rs's detached background
+          // task): upgrade the matching celebration panel from its generic
+          // "no savings info" copy to the full savings layout, and fold the
+          // saving into the session/total counters (counted exactly once
+          // across download-complete + savings-resolved, never both).
+          await listen<SavingsResolvedPayload>('savings-resolved', (event) => {
+            useCelebrationStore.getState().resolveSavings(event.payload);
           });
 
           // Listen for download failures
@@ -393,13 +418,16 @@ export const useAppStore = create<AppState>(
             const count = event.payload.resourceIds.length;
             useToastStore.getState().addToast(
                 count === 1 ?
-                    'Rilevata una correzione (errata corrige): il file aggiornato è in scaricamento.' :
-                    `Rilevate ${count} correzioni (errata corrige): i file aggiornati sono in scaricamento.`,
+                    tGlobal('store.toast.errataSingle') :
+                    tGlobal('store.toast.errataMultiple', {count}),
                 'info');
           });
 
         } catch (e) {
-          set({error: `Initialization failed: ${errorMessage(e)}`, isLoading: false});
+          set({
+            error: tGlobal('store.error.initFailed', {error: errorMessage(e)}),
+            isLoading: false
+          });
         }
       },
 
@@ -445,7 +473,10 @@ export const useAppStore = create<AppState>(
                   field as keyof AppConfig));
           if (affectsStatuses) debouncedFetchStatuses();
         } catch (e) {
-          set({error: `Failed to update config: ${errorMessage(e)}`});
+          set({
+            error: tGlobal(
+                'store.error.configUpdateFailed', {error: errorMessage(e)})
+          });
           throw e;
         }
       },
@@ -458,7 +489,10 @@ export const useAppStore = create<AppState>(
           set({resources: response.resources, status, isLoading: false});
           debouncedFetchStatuses();
         } catch (e) {
-          set({error: `Manual poll failed: ${errorMessage(e)}`, isLoading: false});
+          set({
+            error: tGlobal('store.error.pollFailed', {error: errorMessage(e)}),
+            isLoading: false
+          });
         }
       },
 
@@ -474,7 +508,10 @@ export const useAppStore = create<AppState>(
             set({config, archivedWeeks});
           }
         } catch (e) {
-          set({error: `Failed to select directory: ${errorMessage(e)}`});
+          set({
+            error: tGlobal(
+                'store.error.selectDirFailed', {error: errorMessage(e)})
+          });
         }
       },
 
@@ -488,7 +525,10 @@ export const useAppStore = create<AppState>(
           ]);
           set({config, status});
         } catch (e) {
-          set({error: `Failed to toggle polling: ${errorMessage(e)}`});
+          set({
+            error: tGlobal(
+                'store.error.togglePollingFailed', {error: errorMessage(e)})
+          });
         }
       },
 
@@ -498,7 +538,10 @@ export const useAppStore = create<AppState>(
           const config = await invoke<AppConfig>('get_config');
           set({config});
         } catch (e) {
-          set({error: `Failed to set interval: ${errorMessage(e)}`});
+          set({
+            error: tGlobal(
+                'store.error.setIntervalFailed', {error: errorMessage(e)})
+          });
         }
       },
 
@@ -508,7 +551,10 @@ export const useAppStore = create<AppState>(
           const config = await invoke<AppConfig>('get_config');
           set({config});
         } catch (e) {
-          set({error: `Failed to set retention: ${errorMessage(e)}`});
+          set({
+            error: tGlobal(
+                'store.error.setRetentionFailed', {error: errorMessage(e)})
+          });
         }
       },
 
@@ -522,7 +568,10 @@ export const useAppStore = create<AppState>(
           const config = await invoke<AppConfig>('get_config');
           set({config});
         } catch (e) {
-          set({error: `Failed to set autostart: ${errorMessage(e)}`});
+          set({
+            error: tGlobal(
+                'store.error.setAutostartFailed', {error: errorMessage(e)})
+          });
           throw e;
         }
       },

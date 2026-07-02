@@ -1,11 +1,13 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { LayoutDashboard, Settings } from "lucide-react";
 import { cn } from "../lib/utils";
+import { useI18n } from "../lib/i18n";
 import { ToastContainer } from "../components/ui/toast";
 import { CelebrationStack } from "../components/ui/CelebrationStack";
 import { RinoovaLogo } from "../components/ui/RinoovaLogo";
 
 export default function AppLayout() {
+    const { t } = useI18n();
     return (
         <div className="flex h-screen bg-background text-foreground overflow-hidden">
             {/* Sidebar */}
@@ -29,7 +31,7 @@ export default function AppLayout() {
                         }
                     >
                         <LayoutDashboard className="h-4 w-4" />
-                        Dashboard
+                        {t('nav.dashboard')}
                     </NavLink>
 
                     <NavLink
@@ -44,7 +46,7 @@ export default function AppLayout() {
                         }
                     >
                         <Settings className="h-4 w-4" />
-                        Settings
+                        {t('nav.settings')}
                     </NavLink>
                 </nav>
             </aside>
@@ -60,10 +62,10 @@ export default function AppLayout() {
                             <p className="flex items-center justify-center md:justify-start gap-1">
                                 <span>© 2026 ChurchHelper</span>
                                 <span className="opacity-50">|</span>
-                                <span>Open Source under MIT License</span>
+                                <span>{t('layout.footer.license')}</span>
                             </p>
                             <p className="text-xs opacity-70">
-                                Built with heart for the community.
+                                {t('layout.footer.tagline')}
                             </p>
                         </div>
 
@@ -72,7 +74,7 @@ export default function AppLayout() {
                                 href="mailto:dev@adventistyouth.it"
                                 className="hover:text-primary transition-colors flex items-center gap-1.5"
                             >
-                                <span className="text-xs">Support:</span>
+                                <span className="text-xs">{t('layout.footer.support')}</span>
                                 <span className="font-medium">dev@adventistyouth.it</span>
                             </a>
                             <div className="flex flex-wrap items-center justify-center gap-3">
@@ -82,7 +84,7 @@ export default function AppLayout() {
                                     rel="noopener noreferrer"
                                     className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-orange-500/10 text-orange-600 hover:bg-orange-500/20 transition-all font-semibold text-xs border border-orange-500/20"
                                 >
-                                    ☕ Help me paying the server
+                                    {t('layout.footer.buyMeCoffee')}
                                 </a>
                                 <a
                                     href="https://rinoova.com"
@@ -91,7 +93,7 @@ export default function AppLayout() {
                                     className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-card text-foreground hover:bg-muted hover:text-primary transition-all font-semibold text-xs border border-border"
                                 >
                                     <RinoovaLogo className="h-4" />
-                                    Sponsored by Rinoova
+                                    {t('layout.footer.sponsoredBy')}
                                 </a>
                             </div>
                         </div>

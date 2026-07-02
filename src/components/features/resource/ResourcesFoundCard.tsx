@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "../../ui/card";
 import { FileText, Download, CircleCheck, CloudDownload } from "lucide-react";
 import { useAppStore, ResourceSummary } from "../../../stores/appStore";
+import { useI18n } from "../../../lib/i18n";
 
 interface ResourcesFoundCardProps {
     summary: ResourceSummary | null;
@@ -11,12 +12,13 @@ export function ResourcesFoundCard({
     summary,
     onClick
 }: ResourcesFoundCardProps) {
+    const { t } = useI18n();
     const activeDownloads = useAppStore(s => s.activeDownloads);
 
     if (!summary) return (
         <Card className="hover:bg-accent/50 transition-colors animate-pulse">
             <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium opacity-50">Resources Found</CardTitle>
+                <CardTitle className="text-sm font-medium opacity-50">{t('resourcesFoundCard.loadingTitle')}</CardTitle>
             </CardHeader>
             <CardContent>
                 <div className="h-8 w-24 bg-muted rounded"></div>
@@ -66,7 +68,7 @@ export function ResourcesFoundCard({
             }}
         >
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-semibold tracking-tight text-muted-foreground uppercase">Material Summary</CardTitle>
+                <CardTitle className="text-sm font-semibold tracking-tight text-muted-foreground uppercase">{t('resourcesFoundCard.title')}</CardTitle>
                 <FileText className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
             </CardHeader>
             <CardContent>
@@ -75,7 +77,7 @@ export function ResourcesFoundCard({
                     <div className="flex flex-col">
                         <div className="flex items-baseline gap-1">
                             <span className="text-2xl font-black text-foreground tracking-tighter">{summary.total}</span>
-                            <span className="text-[10px] font-bold text-muted-foreground uppercase opacity-70">Found</span>
+                            <span className="text-[10px] font-bold text-muted-foreground uppercase opacity-70">{t('resourcesFoundCard.found')}</span>
                         </div>
                     </div>
 
@@ -90,7 +92,7 @@ export function ResourcesFoundCard({
                                 </span>
                                 <CircleCheck className={`h-4 w-4 ${summary.downloaded === summary.total && summary.total > 0 ? 'text-green-600' : 'text-green-600/50'}`} />
                             </div>
-                            <span className="text-[10px] font-bold text-muted-foreground uppercase opacity-70">Ready</span>
+                            <span className="text-[10px] font-bold text-muted-foreground uppercase opacity-70">{t('resourcesFoundCard.ready')}</span>
                         </div>
                     </div>
 
@@ -109,7 +111,7 @@ export function ResourcesFoundCard({
                                     <CloudDownload className="h-4 w-4 text-muted-foreground/30" />
                                 )}
                             </div>
-                            <span className="text-[10px] font-bold text-muted-foreground uppercase opacity-70">Downloading</span>
+                            <span className="text-[10px] font-bold text-muted-foreground uppercase opacity-70">{t('resourcesFoundCard.downloading')}</span>
                         </div>
                     </div>
                 </div>
