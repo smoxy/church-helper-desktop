@@ -29,7 +29,7 @@
     "@tauri-apps/cli": "^2.11",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^4.6.0",
+    "@vitejs/plugin-react": "^6",
     "autoprefixer": "^10.5.0",
     "eslint": "^10.6.0",
     "eslint-plugin-react-hooks": "^7.1.1",
@@ -38,6 +38,6 @@
     "tailwindcss": "^3.4.17",
     "typescript": "^6.0",
     "typescript-eslint": "^8.62.1",
-    "vite": "^7.0.4"
+    "vite": "^8"
   }
 }
