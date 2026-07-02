@@ -25,3 +25,7 @@ dist-ssr
 .pa11yci
 src-tauri/Cargo.lock
 .tessera/
+
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
