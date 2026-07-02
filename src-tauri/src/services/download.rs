@@ -283,11 +283,19 @@ impl DownloadService {
 
 /// Calculate SHA-256 hash of a file
 fn calculate_file_hash(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher)?;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
     let hash = hasher.finalize();
-    Ok(format!("{:x}", hash))
+    Ok(hex::encode(hash))
 }
 
 impl Default for DownloadService {
