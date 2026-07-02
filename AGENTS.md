@@ -58,7 +58,7 @@ export function ResourceCard({ title, onDownload }: Props) {
 
 ### Tauri Commands (IPC)
 ```rust
-// src-tauri/src/commands/resources.rs
+// src-tauri/src/commands.rs
 #[tauri::command]
 async fn get_resources() -> Result<Vec<Resource>, String> {
     resource_service::fetch_all().await.map_err(|e| e.to_string())
@@ -104,8 +104,10 @@ src/                    # React frontend
 
 src-tauri/              # Rust backend
 ├── src/
-│   ├── commands/       # IPC handlers
-│   ├── services/       # Business logic
-│   └── models/         # Domain types
+│   ├── lib.rs          # Tauri bootstrap, IPC command registry
+│   ├── commands.rs     # IPC handlers + AppState (single file)
+│   ├── models.rs       # Domain types (single file)
+│   ├── error.rs        # Error types
+│   └── services/       # Business logic (folder: download, queue, polling, retention, errata)
 └── Cargo.toml
 ```

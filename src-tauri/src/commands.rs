@@ -2,6 +2,7 @@
 //!
 //! These commands implement the "Dumb UI, Smart Backend" architecture.
 
+use crate::constants::API_BASE_URL;
 use crate::models::{AppConfig, AppStatus, Resource, ResourceListResponse, WeekIdentifier};
 use crate::services::download::{STATUS_CANCELLED, STATUS_PAUSED};
 use crate::services::DownloadQueue;
@@ -61,9 +62,6 @@ impl Default for AppState {
     }
 }
 
-/// API base URL
-const API_BASE_URL: &str = "https://api.adventistyouth.it";
-
 /// Get the current configuration
 #[tauri::command]
 pub fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
@@ -78,7 +76,11 @@ pub fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
 /// Update the configuration
 /// Update the configuration
 #[tauri::command]
-pub async fn set_config(state: State<'_, AppState>, app: AppHandle, config: AppConfig) -> Result<(), String> {
+pub async fn set_config(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    config: AppConfig,
+) -> Result<(), String> {
     // Validate before saving
     config
         .validate()
@@ -89,10 +91,10 @@ pub async fn set_config(state: State<'_, AppState>, app: AppHandle, config: AppC
     let store = app
         .store("settings.json")
         .map_err(|e| format!("Failed to access store: {}", e))?;
-    
-    let json = serde_json::to_value(&config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    
+
+    let json =
+        serde_json::to_value(&config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+
     store.set("config", json);
     store
         .save()
@@ -143,7 +145,8 @@ pub async fn force_poll(
     // Fetch from API
     let url = format!("{}/api/resources/latest-week", API_BASE_URL);
 
-    let response = state.shared_http_client
+    let response = state
+        .shared_http_client
         .get(&url)
         .send()
         .await
@@ -156,7 +159,9 @@ pub async fn force_poll(
 
     // Get old resources for cache invalidation
     let old_resources = {
-        let resources = state.resources.read()
+        let resources = state
+            .resources
+            .read()
             .map_err(|e| format!("Failed to read resources: {}", e))?;
         resources.clone()
     };
@@ -172,21 +177,24 @@ pub async fn force_poll(
 
     // Invalidate cache for changed/removed URLs
     {
-        let mut cache = state.file_size_cache.write()
+        let mut cache = state
+            .file_size_cache
+            .write()
             .map_err(|e| format!("Failed to write cache: {}", e))?;
-        
+
         // Build a map of old URLs by resource ID
         let old_url_map: std::collections::HashMap<i64, String> = old_resources
             .iter()
             .map(|r| (r.id, r.download_url.clone()))
             .collect();
-        
+
         // Build a set of current URLs
-        let current_urls: std::collections::HashSet<String> = api_response.resources
+        let current_urls: std::collections::HashSet<String> = api_response
+            .resources
             .iter()
             .map(|r| r.download_url.clone())
             .collect();
-        
+
         // Remove cache entries for URLs that changed
         for new_resource in &api_response.resources {
             if let Some(old_url) = old_url_map.get(&new_resource.id) {
@@ -196,18 +204,18 @@ pub async fn force_poll(
                 }
             }
         }
-        
+
         // Remove cache entries for URLs that no longer exist
         let keys_to_remove: Vec<String> = cache
             .keys()
             .filter(|url| !current_urls.contains(*url))
             .cloned()
             .collect();
-        
+
         for key in &keys_to_remove {
             cache.remove(key);
         }
-        
+
         if !keys_to_remove.is_empty() {
             tracing::debug!("Removed {} stale cache entries", keys_to_remove.len());
         }
@@ -236,18 +244,19 @@ pub async fn force_poll(
     let store = app.store("cache.json").map_err(|e| e.to_string())?;
     let json = serde_json::to_value(&api_response.resources).map_err(|e| e.to_string())?;
     store.set("resources", json);
-    
+
     // Save file size cache (exclude negative cache entries from persistence)
     let cache_snapshot = {
         let cache = state.file_size_cache.read().map_err(|e| e.to_string())?;
-        cache.iter()
-            .filter(|(_, &size)| size != u64::MAX)  // Exclude negative cache
+        cache
+            .iter()
+            .filter(|(_, &size)| size != u64::MAX) // Exclude negative cache
             .map(|(k, v)| (k.clone(), *v))
             .collect::<std::collections::HashMap<String, u64>>()
     };
     let cache_json = serde_json::to_value(&cache_snapshot).map_err(|e| e.to_string())?;
     store.set("file_size_cache", cache_json);
-    
+
     store.save().map_err(|e| e.to_string())?;
 
     // Check for auto-downloads after force poll
@@ -287,10 +296,10 @@ pub fn set_work_directory(
     let store = app
         .store("settings.json")
         .map_err(|e| format!("Failed to access store: {}", e))?;
-    
-    let json = serde_json::to_value(&*config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    
+
+    let json =
+        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+
     store.set("config", json);
     store
         .save()
@@ -324,10 +333,10 @@ pub fn set_polling_enabled(
     let store = app
         .store("settings.json")
         .map_err(|e| format!("Failed to access store: {}", e))?;
-    
-    let json = serde_json::to_value(&*config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    
+
+    let json =
+        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+
     store.set("config", json);
     store
         .save()
@@ -359,10 +368,10 @@ pub fn set_polling_interval(
     let store = app
         .store("settings.json")
         .map_err(|e| format!("Failed to access store: {}", e))?;
-    
-    let json = serde_json::to_value(&*config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    
+
+    let json =
+        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+
     store.set("config", json);
     store
         .save()
@@ -390,10 +399,10 @@ pub fn set_retention_days(
     let store = app
         .store("settings.json")
         .map_err(|e| format!("Failed to access store: {}", e))?;
-    
-    let json = serde_json::to_value(&*config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    
+
+    let json =
+        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+
     store.set("config", json);
     store
         .save()
@@ -438,7 +447,7 @@ pub async fn download_resource(
     let work_dir = config
         .work_directory
         .ok_or("Work directory not configured")?;
-    
+
     let week_dir = resource.week().as_dir_name();
     let dest_dir = work_dir.join(week_dir);
 
@@ -447,7 +456,10 @@ pub async fn download_resource(
     }
 
     // Add to queue with priority (manual downloads go first)
-    state.download_queue.add_task_priority(app.clone(), resource).await;
+    state
+        .download_queue
+        .add_task_priority(app.clone(), resource)
+        .await;
 
     Ok(())
 }
@@ -456,7 +468,9 @@ pub async fn download_resource(
 #[tauri::command]
 pub fn pause_download(state: State<'_, AppState>, resource_id: i64) -> Result<(), String> {
     // Use try_read to avoid blocking if a write lock is held
-    let signals = state.download_signals.try_read()
+    let signals = state
+        .download_signals
+        .try_read()
         .map_err(|_| "Download signals locked, try again".to_string())?;
     if let Some(signal) = signals.get(&resource_id) {
         signal.store(STATUS_PAUSED, Ordering::Relaxed);
@@ -468,7 +482,9 @@ pub fn pause_download(state: State<'_, AppState>, resource_id: i64) -> Result<()
 #[tauri::command]
 pub fn cancel_download(state: State<'_, AppState>, resource_id: i64) -> Result<(), String> {
     // Use try_read to avoid blocking if a write lock is held
-    let signals = state.download_signals.try_read()
+    let signals = state
+        .download_signals
+        .try_read()
         .map_err(|_| "Download signals locked, try again".to_string())?;
     if let Some(signal) = signals.get(&resource_id) {
         signal.store(STATUS_CANCELLED, Ordering::Relaxed);
@@ -478,9 +494,14 @@ pub fn cancel_download(state: State<'_, AppState>, resource_id: i64) -> Result<(
 
 /// Check if a resource is already downloaded
 #[tauri::command]
-pub fn check_resource_status(state: State<'_, AppState>, resource: Resource) -> Result<bool, String> {
+pub fn check_resource_status(
+    state: State<'_, AppState>,
+    resource: Resource,
+) -> Result<bool, String> {
     // Use try_read to avoid blocking if a write lock is held
-    let config = state.config.try_read()
+    let config = state
+        .config
+        .try_read()
         .map_err(|_| "Config locked, try again".to_string())?;
 
     if let Some(work_dir) = &config.work_directory {
@@ -503,7 +524,9 @@ pub fn check_resource_status(state: State<'_, AppState>, resource: Resource) -> 
 pub async fn get_file_size(state: State<'_, AppState>, url: String) -> Result<u64, String> {
     // Check cache first
     {
-        let cache = state.file_size_cache.read()
+        let cache = state
+            .file_size_cache
+            .read()
             .map_err(|e| format!("Failed to read cache: {}", e))?;
         if let Some(&size) = cache.get(&url) {
             if size == u64::MAX {
@@ -518,7 +541,8 @@ pub async fn get_file_size(state: State<'_, AppState>, url: String) -> Result<u6
 
     // Cache miss - fetch from remote
     tracing::debug!("Cache miss for file size, fetching: {}", url);
-    let response = state.shared_http_client
+    let response = state
+        .shared_http_client
         .head(&url)
         .send()
         .await
@@ -535,7 +559,11 @@ pub async fn get_file_size(state: State<'_, AppState>, url: String) -> Result<u6
         // Cache negative result for non-success status
         let _ = state.file_size_cache.write().map(|mut cache| {
             cache.insert(url.clone(), u64::MAX);
-            tracing::debug!("Cached negative result (status {}) for: {}", response.status(), url);
+            tracing::debug!(
+                "Cached negative result (status {}) for: {}",
+                response.status(),
+                url
+            );
         });
         return Err(format!("Request failed with status: {}", response.status()));
     }
@@ -549,7 +577,9 @@ pub async fn get_file_size(state: State<'_, AppState>, url: String) -> Result<u6
     match content_length {
         Some(size) => {
             // Save successful result to cache
-            let mut cache = state.file_size_cache.write()
+            let mut cache = state
+                .file_size_cache
+                .write()
                 .map_err(|e| format!("Failed to write cache: {}", e))?;
             cache.insert(url.clone(), size);
             tracing::debug!("Cached file size for: {}", url);
@@ -583,14 +613,14 @@ pub async fn get_resource_summary(state: State<'_, AppState>) -> Result<Resource
         let config = state.config.read().map_err(|e| e.to_string())?.clone();
         (resources, config)
     };
-    
+
     // Now we can await without holding the lock guards
     let active = state.download_queue.active_count();
     let queued = state.download_queue.queue_len().await;
     let total = resources.len();
-    
+
     let mut downloaded = 0;
-    
+
     // We need to clone the work directory and prefer_optimized to move them into the 'static closure
     if let Some(work_dir) = config.work_directory.clone() {
         let prefer_optimized = config.prefer_optimized;
@@ -602,17 +632,21 @@ pub async fn get_resource_summary(state: State<'_, AppState>) -> Result<Resource
                 let dest_dir = work_dir.join(week_dir);
                 let effective_url = resource.get_effective_download_url(prefer_optimized);
                 let filename = crate::services::download::extract_filename_from_url(effective_url)
-                    .unwrap_or_else(|| crate::services::download::sanitize_filename(&resource.title));
+                    .unwrap_or_else(|| {
+                        crate::services::download::sanitize_filename(&resource.title)
+                    });
                 let dest_path = dest_dir.join(filename);
-                
+
                 if dest_path.exists() {
                     count += 1;
                 }
             }
             count
-        }).await.map_err(|e| e.to_string())?;
+        })
+        .await
+        .map_err(|e| e.to_string())?;
     }
-    
+
     Ok(ResourceSummary {
         total,
         downloaded,

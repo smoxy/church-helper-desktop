@@ -3,6 +3,7 @@
 //! A cross-platform desktop application for managing weekly church resources.
 
 pub mod commands;
+pub mod constants;
 pub mod error;
 pub mod models;
 pub mod services;
@@ -32,7 +33,7 @@ pub fn run() {
             // Load config from store
             use tauri_plugin_store::StoreExt;
             let store = app.store("settings.json")?;
-            
+
             // Try to load existing config
             let mut config = AppConfig::default();
             if let Some(json) = store.get("config") {
@@ -43,38 +44,65 @@ pub fn run() {
             } else {
                 // Save default config if not exists
                 tracing::info!("Initializing default configuration");
-                let json = serde_json::to_value(&config).expect("Failed to serialize default config");
+                let json =
+                    serde_json::to_value(&config).expect("Failed to serialize default config");
                 store.set("config", json);
                 store.save()?;
             }
 
             // Set config in state
-            *app_state.config.write().unwrap() = config.clone();
-            
+            *app_state
+                .config
+                .write()
+                .map_err(|e| format!("Failed to write initial config: {}", e))? = config.clone();
+
             // Sync status with config
-            app_state.status.write().unwrap().polling_active = config.polling_enabled;
+            app_state
+                .status
+                .write()
+                .map_err(|e| format!("Failed to write initial status: {}", e))?
+                .polling_active = config.polling_enabled;
 
             // Try to load cached resources
             let cache_store = app.store("cache.json")?;
             if let Some(json) = cache_store.get("resources") {
-                if let Ok(cached_resources) = serde_json::from_value::<Vec<Resource>>(json.clone()) {
-                    *app_state.resources.write().unwrap() = cached_resources.clone();
+                if let Ok(cached_resources) = serde_json::from_value::<Vec<Resource>>(json.clone())
+                {
+                    *app_state
+                        .resources
+                        .write()
+                        .map_err(|e| format!("Failed to write cached resources: {}", e))? =
+                        cached_resources.clone();
                     tracing::info!("Loaded {} cached resources", cached_resources.len());
-                    
+
                     // Update status with cached data
-                    let mut status = app_state.status.write().unwrap();
+                    let mut status = app_state
+                        .status
+                        .write()
+                        .map_err(|e| format!("Failed to write status: {}", e))?;
                     status.total_resources = cached_resources.len();
                     if let Some(resource) = cached_resources.first() {
-                         status.current_week = Some(resource.week());
+                        status.current_week = Some(resource.week());
                     }
                 }
             }
-            
+
             // Try to load cached file sizes
             if let Some(json) = cache_store.get("file_size_cache") {
-                if let Ok(cached_sizes) = serde_json::from_value::<std::collections::HashMap<String, u64>>(json.clone()) {
-                    *app_state.file_size_cache.write().unwrap() = cached_sizes;
-                    tracing::info!("Loaded {} cached file sizes", app_state.file_size_cache.read().unwrap().len());
+                if let Ok(cached_sizes) =
+                    serde_json::from_value::<std::collections::HashMap<String, u64>>(json.clone())
+                {
+                    *app_state
+                        .file_size_cache
+                        .write()
+                        .map_err(|e| format!("Failed to write cached file sizes: {}", e))? =
+                        cached_sizes;
+                    let cached_file_sizes_len = app_state
+                        .file_size_cache
+                        .read()
+                        .map_err(|e| format!("Failed to read cached file sizes: {}", e))?
+                        .len();
+                    tracing::info!("Loaded {} cached file sizes", cached_file_sizes_len);
                 }
             }
 
@@ -89,9 +117,14 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     // Delay to give frontend time to register event listeners
                     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                    tracing::debug!("Starting auto-download scan after frontend initialization delay");
+                    tracing::debug!(
+                        "Starting auto-download scan after frontend initialization delay"
+                    );
                     let state = app_handle.state::<AppState>();
-                    state.download_queue.scan_and_queue(app_handle.clone()).await;
+                    state
+                        .download_queue
+                        .scan_and_queue(app_handle.clone())
+                        .await;
                 });
             }
 
