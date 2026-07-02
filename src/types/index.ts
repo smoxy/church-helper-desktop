@@ -67,6 +67,11 @@ export interface AppStatus {
   total_resources: number;
   pending_downloads: number;
   has_superseded_files: boolean;
+  // True when the material currently available belongs to a week earlier
+  // than the calendar's current week (i.e. the backend hasn't found this
+  // week's resources yet). Drives the "material not up to date" banner on
+  // the Dashboard; the UI only reads this flag, it never derives it.
+  material_week_stale: boolean;
 }
 
 export interface ResourceListResponse {

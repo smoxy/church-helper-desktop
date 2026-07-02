@@ -373,6 +373,8 @@ pub async fn poll_once(app: &AppHandle) -> Result<ResourceListResponse, String> 
             }
             status.current_week = Some(week);
         }
+        status.material_week_stale =
+            crate::models::is_material_week_stale(status.current_week.as_ref());
     }
 
     // Emit event to frontend

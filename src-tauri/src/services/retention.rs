@@ -4,7 +4,7 @@
 
 use crate::error::FileError;
 use crate::models::WeekIdentifier;
-use chrono::{Duration, Utc};
+use chrono::{Datelike, Duration, NaiveDate, Utc};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -122,8 +122,14 @@ impl FileRetentionService {
         Ok(dest_path)
     }
 
-    /// Get all archived weeks
-    pub fn get_archived_weeks(&self) -> Vec<WeekIdentifier> {
+    /// Archived week directories currently on disk, as `(week, actual_path)`
+    /// pairs. Single scan shared by `get_archived_weeks` (weeks only) and
+    /// `enforce_retention`, which needs the *actual* on-disk path: for a
+    /// directory written by an older build in the legacy format, that path
+    /// differs from `week_archive_path(&week)`'s new-format reconstruction,
+    /// so re-deriving it from the parsed `WeekIdentifier` (as `enforce_retention`
+    /// used to) would silently miss it.
+    fn archived_week_dirs(&self) -> Vec<(WeekIdentifier, PathBuf)> {
         let archive_dir = self.archive_dir();
 
         if !archive_dir.exists() {
@@ -136,10 +142,21 @@ impl FileRetentionService {
                 entries
                     .filter_map(Result::ok)
                     .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                    .filter_map(|e| parse_week_dir_name(e.file_name().to_str()?))
+                    .filter_map(|e| {
+                        let week = parse_week_dir_name(e.file_name().to_str()?)?;
+                        Some((week, e.path()))
+                    })
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Get all archived weeks
+    pub fn get_archived_weeks(&self) -> Vec<WeekIdentifier> {
+        self.archived_week_dirs()
+            .into_iter()
+            .map(|(week, _)| week)
+            .collect()
     }
 
     /// Enforce retention policy
@@ -159,7 +176,7 @@ impl FileRetentionService {
         };
 
         let cutoff_date = Utc::now() - Duration::days(retention_days as i64);
-        let archived_weeks = self.get_archived_weeks();
+        let archived_weeks = self.archived_week_dirs();
         tracing::debug!(
             "Enforcing retention policy: {} archived week(s) found in {:?}, retention_days={}, cutoff={}",
             archived_weeks.len(),
@@ -169,9 +186,7 @@ impl FileRetentionService {
         );
         let mut deleted_count = 0;
 
-        for week in archived_weeks {
-            let week_path = self.week_archive_path(&week);
-
+        for (week, week_path) in archived_weeks {
             // Check if the week is old enough to delete
             if let Ok(metadata) = fs::metadata(&week_path) {
                 if let Ok(modified) = metadata.modified() {
@@ -383,8 +398,47 @@ impl FileRetentionService {
     }
 }
 
-/// Parse a directory name in format "YYYY-WNN" to WeekIdentifier
+/// Parse a week-named directory to a `WeekIdentifier`, recognizing both the
+/// current self-explanatory format ("W{week}-{year}-{MM}-{DD}", the Saturday
+/// of that ISO week — see `WeekIdentifier::as_dir_name`) and the legacy
+/// format ("{year}-W{week}") written by older builds, so archived/retained
+/// weeks from before the naming migration are still found. Tries the new
+/// format first, then falls back to legacy.
 fn parse_week_dir_name(name: &str) -> Option<WeekIdentifier> {
+    parse_new_week_dir_name(name).or_else(|| parse_legacy_week_dir_name(name))
+}
+
+/// Parse "W{week:02}-{year}-{MM}-{DD}" (or its dateless fallback
+/// "W{week:02}-{year}", written when `as_dir_name` couldn't compute a
+/// Saturday for an invalid week/year combination). When a date is present,
+/// the returned `WeekIdentifier.year` is recomputed from that date's own ISO
+/// week-year (via `NaiveDate::iso_week`) rather than taken from the embedded
+/// `{year}` component, so this round-trips correctly even across an ISO
+/// year boundary, where the Saturday's Gregorian year can differ from the
+/// ISO week-year embedded by `as_dir_name`.
+fn parse_new_week_dir_name(name: &str) -> Option<WeekIdentifier> {
+    let rest = name.strip_prefix('W')?;
+    let (week_str, tail) = rest.split_once('-')?;
+    if week_str.len() != 2 {
+        return None;
+    }
+    let week: u32 = week_str.parse().ok()?;
+    if !(1..=53).contains(&week) {
+        return None;
+    }
+
+    if let Ok(date) = NaiveDate::parse_from_str(tail, "%Y-%m-%d") {
+        let iso = date.iso_week();
+        return (iso.week() == week).then(|| WeekIdentifier::new(iso.year(), week));
+    }
+
+    // Dateless fallback: "WNN-YYYY".
+    let year: i32 = tail.parse().ok()?;
+    Some(WeekIdentifier::new(year, week))
+}
+
+/// Parse the legacy "YYYY-WNN" directory name format.
+fn parse_legacy_week_dir_name(name: &str) -> Option<WeekIdentifier> {
     let parts: Vec<&str> = name.split("-W").collect();
     if parts.len() != 2 {
         return None;
@@ -598,11 +652,15 @@ mod tests {
         assert_eq!(service.archive_dir(), expected);
     }
 
+    // Week 4 of 2026's Saturday is 2026-01-24, so the new-format directory
+    // name (see `WeekIdentifier::as_dir_name`) is "W04-2026-01-24".
+    const WEEK_2026_04_NEW_DIR: &str = "W04-2026-01-24";
+
     #[test]
     fn test_week_archive_path() {
         let (temp_dir, service) = setup_test_dir();
         let week = WeekIdentifier::new(2026, 4);
-        let expected = temp_dir.path().join(".archive").join("2026-W04");
+        let expected = temp_dir.path().join(".archive").join(WEEK_2026_04_NEW_DIR);
         assert_eq!(service.week_archive_path(&week), expected);
     }
 
@@ -613,13 +671,13 @@ mod tests {
         let expected = temp_dir
             .path()
             .join(".archive")
-            .join("2026-W04")
+            .join(WEEK_2026_04_NEW_DIR)
             .join(".superseded");
         assert_eq!(service.superseded_path(&week), expected);
     }
 
     #[test]
-    fn test_parse_week_dir_name_valid() {
+    fn test_parse_week_dir_name_valid_legacy_format() {
         assert_eq!(
             parse_week_dir_name("2026-W04"),
             Some(WeekIdentifier::new(2026, 4))
@@ -643,6 +701,37 @@ mod tests {
         assert!(parse_week_dir_name("abc-W04").is_none());
     }
 
+    /// New self-explanatory format ("W{week}-{year}-{MM}-{DD}"): must parse
+    /// back to the same `WeekIdentifier` that produced it via `as_dir_name`,
+    /// including across the ISO year boundary where the Saturday's Gregorian
+    /// year differs from the ISO week-year.
+    #[test]
+    fn test_parse_week_dir_name_valid_new_format() {
+        let week = WeekIdentifier::new(2026, 4);
+        assert_eq!(parse_week_dir_name(&week.as_dir_name()), Some(week));
+
+        let week2 = WeekIdentifier::new(2026, 19);
+        assert_eq!(parse_week_dir_name("W19-2026-05-09"), Some(week2));
+
+        // 2025 has no ISO week 53 (`NaiveDate::from_isoywd_opt` returns
+        // `None`), so `as_dir_name` falls back to the dateless
+        // "W{week}-{year}" form; that fallback must also round-trip.
+        let week3 = WeekIdentifier::new(2025, 53);
+        assert_eq!(week3.as_dir_name(), "W53-2025");
+        assert_eq!(parse_week_dir_name(&week3.as_dir_name()), Some(week3));
+    }
+
+    #[test]
+    fn test_parse_week_dir_name_new_format_invalid() {
+        assert!(parse_week_dir_name("W00-2026-01-03").is_none()); // week 0
+        assert!(parse_week_dir_name("W99-2026-01-03").is_none()); // week > 53
+        assert!(parse_week_dir_name("W4-2026-01-24").is_none()); // not zero-padded
+        assert!(parse_week_dir_name("Wxx-2026-01-24").is_none()); // non-numeric week
+                                                                  // Week number in the name doesn't match the ISO week of the embedded
+                                                                  // date: rejected rather than silently trusting the mismatched name.
+        assert!(parse_week_dir_name("W01-2026-01-24").is_none());
+    }
+
     #[test]
     fn test_archive_file() {
         let (temp_dir, service) = setup_test_dir();
@@ -661,7 +750,11 @@ mod tests {
         assert!(archived_path.exists()); // Archived should exist
         assert_eq!(
             archived_path,
-            temp_dir.path().join(".archive/2026-W04/test_file.zip")
+            temp_dir
+                .path()
+                .join(".archive")
+                .join(WEEK_2026_04_NEW_DIR)
+                .join("test_file.zip")
         );
     }
 
@@ -683,7 +776,10 @@ mod tests {
             archived_path,
             temp_dir
                 .path()
-                .join(".archive/2026-W04/.superseded/old_version.zip")
+                .join(".archive")
+                .join(WEEK_2026_04_NEW_DIR)
+                .join(".superseded")
+                .join("old_version.zip")
         );
     }
 
@@ -693,6 +789,8 @@ mod tests {
         assert!(service.get_archived_weeks().is_empty());
     }
 
+    /// Legacy-only archive directories (pre-migration builds) must still be
+    /// recognized.
     #[test]
     fn test_get_archived_weeks() {
         let (temp_dir, service) = setup_test_dir();
@@ -712,6 +810,23 @@ mod tests {
         assert!(weeks.contains(&WeekIdentifier::new(2025, 52)));
     }
 
+    /// A mix of legacy- and new-format archive directories (the state right
+    /// after upgrading to the new naming, with old archives untouched on
+    /// disk) must both be recognized.
+    #[test]
+    fn test_get_archived_weeks_recognizes_both_formats() {
+        let (temp_dir, service) = setup_test_dir();
+
+        let archive = temp_dir.path().join(".archive");
+        fs::create_dir_all(archive.join("2025-W52")).unwrap(); // legacy
+        fs::create_dir_all(archive.join(WEEK_2026_04_NEW_DIR)).unwrap(); // new
+
+        let weeks = service.get_archived_weeks();
+        assert_eq!(weeks.len(), 2);
+        assert!(weeks.contains(&WeekIdentifier::new(2025, 52)));
+        assert!(weeks.contains(&WeekIdentifier::new(2026, 4)));
+    }
+
     #[test]
     fn test_has_superseded_files_false() {
         let (_temp_dir, service) = setup_test_dir();
@@ -725,7 +840,11 @@ mod tests {
         let week = WeekIdentifier::new(2026, 4);
 
         // Create superseded file
-        let superseded_dir = temp_dir.path().join(".archive/2026-W04/.superseded");
+        let superseded_dir = temp_dir
+            .path()
+            .join(".archive")
+            .join(WEEK_2026_04_NEW_DIR)
+            .join(".superseded");
         fs::create_dir_all(&superseded_dir).unwrap();
         fs::write(superseded_dir.join("old_file.zip"), b"old").unwrap();
 
@@ -738,7 +857,11 @@ mod tests {
         let week = WeekIdentifier::new(2026, 4);
 
         // Create superseded files
-        let superseded_dir = temp_dir.path().join(".archive/2026-W04/.superseded");
+        let superseded_dir = temp_dir
+            .path()
+            .join(".archive")
+            .join(WEEK_2026_04_NEW_DIR)
+            .join(".superseded");
         fs::create_dir_all(&superseded_dir).unwrap();
         fs::write(superseded_dir.join("old_v1.zip"), b"v1").unwrap();
         fs::write(superseded_dir.join("old_v2.zip"), b"v2").unwrap();
@@ -759,6 +882,12 @@ mod tests {
     /// week older than `retention_days` must be moved to the system trash,
     /// while a recent one is left untouched. Regression guard for
     /// bl-desktop-retention-not-wired.
+    ///
+    /// Deliberately uses legacy-format ("{year}-W{week}") directory names:
+    /// this also guards the week-dir naming migration, where
+    /// `enforce_retention` used to re-derive the physical path from the
+    /// parsed `WeekIdentifier` via `week_archive_path` (always new-format),
+    /// silently missing legacy-named directories entirely.
     #[test]
     fn test_enforce_retention_trashes_old_weeks_keeps_recent() {
         let (temp_dir, service) = setup_test_dir();
@@ -815,6 +944,35 @@ mod tests {
         // Nothing left to evaluate: must be a stable, error-free no-op.
         let second_run = service.enforce_retention(Some(7)).unwrap();
         assert_eq!(second_run, 0);
+    }
+
+    /// A new-format archived week (post week-dir-naming-migration) must be
+    /// evaluated at its own actual path too, alongside a legacy-format one —
+    /// both trashed once old enough. Complements
+    /// `test_enforce_retention_trashes_old_weeks_keeps_recent` (legacy-only).
+    #[test]
+    fn test_enforce_retention_trashes_new_format_week_alongside_legacy() {
+        let (temp_dir, service) = setup_test_dir();
+
+        let old_legacy_week = temp_dir.path().join(".archive/2025-W40");
+        let old_new_week = temp_dir.path().join(".archive").join(WEEK_2026_04_NEW_DIR);
+        fs::create_dir_all(&old_legacy_week).unwrap();
+        fs::create_dir_all(&old_new_week).unwrap();
+
+        let old_mtime =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 24 * 60 * 60);
+        for dir in [&old_legacy_week, &old_new_week] {
+            fs::File::open(dir)
+                .unwrap()
+                .set_modified(old_mtime)
+                .unwrap();
+        }
+
+        let trashed_count = service.enforce_retention(Some(7)).unwrap();
+
+        assert_eq!(trashed_count, 2);
+        assert!(!old_legacy_week.exists());
+        assert!(!old_new_week.exists());
     }
 
     // -- archive_previous_weeks (bl-desktop-archiving-not-called) -----------

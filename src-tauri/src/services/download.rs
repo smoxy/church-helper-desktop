@@ -393,16 +393,54 @@ fn is_windows_reserved_stem(file_name: &str) -> bool {
 /// filename from its effective download URL (honoring `prefer_optimized`) with
 /// a fallback to the sanitized title. Single source of truth for the
 /// existence/status/summary checks.
+///
+/// Read-fallback for the week-dir naming migration (self-explanatory
+/// Saturday-dated folders, e.g. "W19-2026-05-09", replacing the old
+/// "2026-W19"): tries the new-format path first, then the legacy-format path.
+/// If the file exists under the legacy name, that IS the effective dest path
+/// (so pause/resume, reveal-in-folder and downloaded-count keep working for
+/// files saved by older builds) — otherwise (including a brand-new download,
+/// where neither exists yet) the new-format path is used.
 pub(crate) fn resolve_dest_path(
     resource: &Resource,
     work_dir: &Path,
     prefer_optimized: bool,
 ) -> PathBuf {
-    let dest_dir = work_dir.join(resource.week().as_dir_name());
     let effective_url = resource.get_effective_download_url(prefer_optimized);
     let filename = extract_filename_from_url(effective_url)
         .unwrap_or_else(|| sanitize_filename(&resource.title));
-    dest_dir.join(filename)
+
+    let week = resource.week();
+    let new_path = work_dir.join(week.as_dir_name()).join(&filename);
+    if new_path.exists() {
+        return new_path;
+    }
+
+    let legacy_path = work_dir.join(week.legacy_dir_name()).join(&filename);
+    if legacy_path.exists() {
+        return legacy_path;
+    }
+
+    new_path
+}
+
+/// Resolve the week directory a resource's download should be written into
+/// (the containing folder of `resolve_dest_path`'s result): the legacy
+/// folder if the file already lives there, otherwise the new-format folder
+/// — including for a brand-new download, which always lands in the new
+/// format. Single source of truth for callers that need to create/ensure the
+/// destination directory before starting a download (`services::queue`,
+/// `commands::download_resource`), so they never drift from
+/// `resolve_dest_path`'s own resolution.
+pub(crate) fn resolve_week_dir(
+    resource: &Resource,
+    work_dir: &Path,
+    prefer_optimized: bool,
+) -> PathBuf {
+    resolve_dest_path(resource, work_dir, prefer_optimized)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| work_dir.join(resource.week().as_dir_name()))
 }
 
 /// Extract filename from URL with URL decoding support
@@ -475,6 +513,96 @@ pub(crate) fn sanitize_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{TimeZone, Utc};
+
+    fn make_resource(id: i64, url: &str, created_at: chrono::DateTime<Utc>) -> Resource {
+        Resource {
+            id,
+            category: "test".to_string(),
+            title: "Test Resource".to_string(),
+            description: None,
+            download_url: url.to_string(),
+            thumbnail_url: None,
+            file_type: None,
+            checksum: None,
+            is_active: true,
+            created_at,
+            optimized_video_url: None,
+            optimized_videos: None,
+        }
+    }
+
+    /// A file already saved under the legacy "{year}-W{week}" folder (older
+    /// build) must keep resolving there, so pause/resume, reveal and the
+    /// downloaded-count check still find it after the week-dir naming
+    /// migration.
+    #[test]
+    fn test_resolve_dest_path_finds_legacy_dir_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path();
+        let created_at = Utc.with_ymd_and_hms(2026, 1, 19, 12, 0, 0).unwrap(); // 2026-W04
+        let resource = make_resource(1, "https://example.com/file.mp4", created_at);
+        let week = resource.week();
+
+        let legacy_dir = work_dir.join(week.legacy_dir_name());
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(legacy_dir.join("file.mp4"), b"x").unwrap();
+
+        let resolved = resolve_dest_path(&resource, work_dir, true);
+        assert_eq!(resolved, legacy_dir.join("file.mp4"));
+        assert!(DownloadService::check_file_exists(
+            &resource, work_dir, true
+        ));
+
+        // The directory-creation helper must agree with resolve_dest_path.
+        assert_eq!(resolve_week_dir(&resource, work_dir, true), legacy_dir);
+    }
+
+    /// A brand-new download (neither the new- nor legacy-format file exists
+    /// yet) must resolve to the new self-explanatory Saturday-dated folder.
+    #[test]
+    fn test_resolve_dest_path_new_download_uses_new_format_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path();
+        let created_at = Utc.with_ymd_and_hms(2026, 1, 19, 12, 0, 0).unwrap(); // 2026-W04
+        let resource = make_resource(2, "https://example.com/file.mp4", created_at);
+        let week = resource.week();
+
+        let resolved = resolve_dest_path(&resource, work_dir, true);
+        let expected_new_dir = work_dir.join(week.as_dir_name());
+        assert_eq!(resolved, expected_new_dir.join("file.mp4"));
+        assert_ne!(week.as_dir_name(), week.legacy_dir_name());
+        assert!(!DownloadService::check_file_exists(
+            &resource, work_dir, true
+        ));
+
+        assert_eq!(
+            resolve_week_dir(&resource, work_dir, true),
+            expected_new_dir
+        );
+    }
+
+    /// When a file exists under BOTH the new and legacy dir (shouldn't
+    /// normally happen, but must resolve deterministically), the new-format
+    /// path wins — it's checked first.
+    #[test]
+    fn test_resolve_dest_path_prefers_new_over_legacy_when_both_exist() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path();
+        let created_at = Utc.with_ymd_and_hms(2026, 1, 19, 12, 0, 0).unwrap(); // 2026-W04
+        let resource = make_resource(3, "https://example.com/file.mp4", created_at);
+        let week = resource.week();
+
+        let new_dir = work_dir.join(week.as_dir_name());
+        let legacy_dir = work_dir.join(week.legacy_dir_name());
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::write(new_dir.join("file.mp4"), b"new").unwrap();
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(legacy_dir.join("file.mp4"), b"legacy").unwrap();
+
+        let resolved = resolve_dest_path(&resource, work_dir, true);
+        assert_eq!(resolved, new_dir.join("file.mp4"));
+    }
 
     #[test]
     fn test_extract_filename_from_url_decoded() {

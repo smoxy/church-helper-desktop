@@ -395,9 +395,12 @@ impl DownloadQueue {
                                                 .shared_http_client
                                                 .clone(),
                                         );
-                                    let week_dir = resource.week().as_dir_name();
-                                    let dest_dir = work_dir.join(week_dir);
                                     let prefer_optimized = config.prefer_optimized;
+                                    let dest_dir = crate::services::download::resolve_week_dir(
+                                        &resource,
+                                        &work_dir,
+                                        prefer_optimized,
+                                    );
 
                                     if !dest_dir.exists() {
                                         let _ = std::fs::create_dir_all(&dest_dir);

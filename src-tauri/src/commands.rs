@@ -396,8 +396,8 @@ pub async fn download_resource(
         .work_directory
         .ok_or(FileError::WorkDirectoryNotSet)?;
 
-    let week_dir = resource.week().as_dir_name();
-    let dest_dir = work_dir.join(week_dir);
+    let dest_dir =
+        crate::services::download::resolve_week_dir(&resource, &work_dir, config.prefer_optimized);
 
     if !dest_dir.exists() {
         std::fs::create_dir_all(&dest_dir)

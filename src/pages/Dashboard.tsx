@@ -11,6 +11,7 @@ import { ResourceDetail } from "../components/features/resource/ResourceDetail";
 import { ResourceCard } from "../components/features/resource/ResourceCard";
 import { ResourcesFoundCard } from "../components/features/resource/ResourcesFoundCard";
 import { DownloadsModal } from "../components/features/resource/DownloadsModal";
+import { StaleWeekBanner } from "../components/features/dashboard/StaleWeekBanner";
 
 export default function Dashboard() {
     const status = useAppStore(s => s.status);
@@ -56,6 +57,10 @@ export default function Dashboard() {
                     </p>
                 </div>
             </div>
+
+            {status?.material_week_stale && (
+                <StaleWeekBanner currentWeek={status.current_week} />
+            )}
 
             {/* Status Cards */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

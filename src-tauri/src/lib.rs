@@ -160,6 +160,8 @@ pub fn run() {
                     if let Some(week) = models::latest_week(&cached_resources) {
                         status.current_week = Some(week);
                     }
+                    status.material_week_stale =
+                        models::is_material_week_stale(status.current_week.as_ref());
                 }
             }
 

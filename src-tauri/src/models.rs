@@ -2,7 +2,7 @@
 //!
 //! These models represent the core domain entities used throughout the application.
 
-use chrono::{DateTime, Datelike, IsoWeek, NaiveDateTime, Utc};
+use chrono::{DateTime, Datelike, IsoWeek, NaiveDate, NaiveDateTime, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -226,8 +226,13 @@ pub struct CategoriesCountResponse {
     pub total: u64,
 }
 
-/// Week identifier for tracking current vs archived resources
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+/// Week identifier for tracking current vs archived resources.
+///
+/// `PartialOrd`/`Ord` are derived from the field order (`year` then
+/// `week_number`), i.e. chronological order, matching `latest_week`'s manual
+/// `(year, week_number)` tuple comparison and used by
+/// `is_material_week_stale` to compare against `WeekIdentifier::current()`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WeekIdentifier {
     pub year: i32,
     pub week_number: u32,
@@ -247,13 +252,45 @@ impl WeekIdentifier {
         }
     }
 
-    /// Get the current week
+    /// Get the current week (ISO calendar week of `Utc::now()`)
     pub fn current() -> Self {
         Self::from_datetime(Utc::now())
     }
 
-    /// Format as directory name (e.g., "2026-W03")
+    /// Format as a self-explanatory directory name carrying the Saturday date
+    /// of that ISO week, e.g. "W19-2026-05-09" (year-month-day are the
+    /// Saturday's, not necessarily `self.year` — they can differ from the ISO
+    /// week-year right at a year boundary). Falls back to the dateless
+    /// "W{week:02}-{year}" when `(year, week_number)` isn't a valid ISO
+    /// week/Saturday combination (e.g. a week number a given year doesn't
+    /// have), logging a warning since that should never happen for
+    /// server-derived weeks.
     pub fn as_dir_name(&self) -> String {
+        match NaiveDate::from_isoywd_opt(self.year, self.week_number, Weekday::Sat) {
+            Some(saturday) => format!(
+                "W{:02}-{}-{:02}-{:02}",
+                self.week_number,
+                saturday.year(),
+                saturday.month(),
+                saturday.day()
+            ),
+            None => {
+                tracing::warn!(
+                    "WeekIdentifier(year={}, week={}) has no valid ISO Saturday; falling back to dateless directory name",
+                    self.year,
+                    self.week_number
+                );
+                format!("W{:02}-{}", self.week_number, self.year)
+            }
+        }
+    }
+
+    /// Format as the legacy directory name (e.g. "2026-W03") used before
+    /// `as_dir_name` gained the self-explanatory Saturday date. Still needed
+    /// to resolve files/archives written by older builds — see
+    /// `services::download::resolve_dest_path` and
+    /// `services::retention`'s directory-name parsing.
+    pub fn legacy_dir_name(&self) -> String {
         format!("{}-W{:02}", self.year, self.week_number)
     }
 }
@@ -272,6 +309,19 @@ pub fn latest_week(resources: &[Resource]) -> Option<WeekIdentifier> {
         .iter()
         .map(|r| r.week())
         .max_by(|a, b| (a.year, a.week_number).cmp(&(b.year, b.week_number)))
+}
+
+/// Whether the latest known material is older than the current ISO calendar
+/// week — i.e. the mail-parser stalled and the app would otherwise show old
+/// material without any indication (the regression that motivated this
+/// field: two months without new mail, app still showing May's material).
+/// `latest` is `None` (no resources at all) is deliberately never stale: the
+/// absence of material is not the same as stale material.
+pub fn is_material_week_stale(latest: Option<&WeekIdentifier>) -> bool {
+    match latest {
+        Some(week) => *week < WeekIdentifier::current(),
+        None => false,
+    }
 }
 
 /// Local state for tracking downloaded files.
@@ -313,6 +363,12 @@ pub struct AppStatus {
     pub total_resources: usize,
     pub pending_downloads: usize,
     pub has_superseded_files: bool,
+    /// True when `current_week`'s material is older than the current ISO
+    /// calendar week (see `is_material_week_stale`). `#[serde(default)]` so
+    /// this additive field never breaks (de)serialization for a build that
+    /// predates it (contract: IPC field, frontend-consumed).
+    #[serde(default)]
+    pub material_week_stale: bool,
 }
 
 #[cfg(test)]
@@ -483,13 +539,98 @@ mod tests {
         assert_eq!(week.week_number, 4);
     }
 
+    /// `as_dir_name` must carry the real Saturday of that ISO week (verified
+    /// independently via `chrono::NaiveDate::from_isoywd_opt`, not just
+    /// hand-computed), so the directory name is self-explanatory.
     #[test]
     fn test_week_identifier_as_dir_name() {
         let week = WeekIdentifier::new(2026, 3);
-        assert_eq!(week.as_dir_name(), "2026-W03");
+        let saturday = NaiveDate::from_isoywd_opt(2026, 3, Weekday::Sat).unwrap();
+        assert_eq!(
+            week.as_dir_name(),
+            format!(
+                "W03-{}-{:02}-{:02}",
+                saturday.year(),
+                saturday.month(),
+                saturday.day()
+            )
+        );
+        assert_eq!(week.as_dir_name(), "W03-2026-01-17");
 
         let week2 = WeekIdentifier::new(2025, 52);
-        assert_eq!(week2.as_dir_name(), "2025-W52");
+        let saturday2 = NaiveDate::from_isoywd_opt(2025, 52, Weekday::Sat).unwrap();
+        assert_eq!(
+            week2.as_dir_name(),
+            format!(
+                "W52-{}-{:02}-{:02}",
+                saturday2.year(),
+                saturday2.month(),
+                saturday2.day()
+            )
+        );
+        assert_eq!(week2.as_dir_name(), "W52-2025-12-27");
+
+        // Example from the spec: W19 2026 -> Saturday 2026-05-09.
+        let week3 = WeekIdentifier::new(2026, 19);
+        assert_eq!(week3.as_dir_name(), "W19-2026-05-09");
+    }
+
+    /// Invalid `(year, week_number)` combinations (no such ISO week/Saturday)
+    /// must fall back to the dateless format instead of panicking.
+    #[test]
+    fn test_week_identifier_as_dir_name_invalid_week_falls_back_to_dateless() {
+        // Week 0 and week 60 are never valid ISO week numbers, for any year.
+        assert!(NaiveDate::from_isoywd_opt(2026, 0, Weekday::Sat).is_none());
+        assert!(NaiveDate::from_isoywd_opt(2026, 60, Weekday::Sat).is_none());
+
+        let week = WeekIdentifier::new(2026, 0);
+        assert_eq!(week.as_dir_name(), "W00-2026");
+
+        let week2 = WeekIdentifier::new(2026, 60);
+        assert_eq!(week2.as_dir_name(), "W60-2026");
+    }
+
+    #[test]
+    fn test_week_identifier_legacy_dir_name() {
+        let week = WeekIdentifier::new(2026, 3);
+        assert_eq!(week.legacy_dir_name(), "2026-W03");
+
+        let week2 = WeekIdentifier::new(2025, 52);
+        assert_eq!(week2.legacy_dir_name(), "2025-W52");
+    }
+
+    #[test]
+    fn test_week_identifier_ord_is_chronological() {
+        assert!(WeekIdentifier::new(2025, 52) < WeekIdentifier::new(2026, 1));
+        assert!(WeekIdentifier::new(2026, 19) < WeekIdentifier::new(2026, 27));
+        assert_eq!(WeekIdentifier::new(2026, 19), WeekIdentifier::new(2026, 19));
+    }
+
+    // -- is_material_week_stale ---------------------------------------------
+
+    /// Material from W19 shown while the calendar is at W27 (the exact
+    /// 2-month-stale-mail-parser regression this field guards against) must
+    /// be flagged stale.
+    #[test]
+    fn test_material_week_stale_true_when_latest_precedes_current_calendar_week() {
+        // W19 2026 (May) is necessarily before "now" for any real wall-clock
+        // time this test can run at, so this exercises the real
+        // `WeekIdentifier::current()` (Utc::now()) comparison end to end,
+        // matching the spec's "W19 with today in W27" scenario.
+        let old = WeekIdentifier::new(2026, 19);
+        assert!(old < WeekIdentifier::current());
+        assert!(is_material_week_stale(Some(&old)));
+    }
+
+    #[test]
+    fn test_material_week_stale_false_when_latest_is_current_week() {
+        let today = WeekIdentifier::current();
+        assert!(!is_material_week_stale(Some(&today)));
+    }
+
+    #[test]
+    fn test_material_week_stale_false_when_no_resources() {
+        assert!(!is_material_week_stale(None));
     }
 
     #[test]
