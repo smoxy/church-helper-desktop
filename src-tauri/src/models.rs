@@ -7,7 +7,15 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// User configuration persisted via tauri-plugin-store
+///
+/// `#[serde(default)]` at the struct level (not just on individual new
+/// fields) so a settings.json saved by an older build of the app — missing
+/// any number of fields added since — still deserializes successfully,
+/// filling in `AppConfig::default()` for whatever is absent, instead of
+/// failing to parse and silently resetting the user's whole config back to
+/// defaults (see `test_deserialize_missing_new_fields_preserves_existing`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct AppConfig {
     /// Local folder where files are saved
     pub work_directory: Option<PathBuf>,
@@ -26,6 +34,11 @@ pub struct AppConfig {
     pub prefer_optimized: bool,
     /// Whether the app should launch automatically at OS startup (opt-in)
     pub autostart_enabled: bool,
+    /// Whether the one-time "the app keeps running in the tray" notice has
+    /// already been shown (see `lib.rs`'s window `CloseRequested` handler).
+    /// Covered by the struct-level `#[serde(default)]` above; kept here too
+    /// for clarity at the field.
+    pub tray_close_notice_shown: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -43,8 +56,9 @@ impl Default for AppConfig {
             retention_days: Some(7),      // Default: 7 days
             auto_download_categories: Vec::new(),
             download_mode: DownloadMode::Queue,
-            prefer_optimized: true,   // Default: prefer optimized videos
-            autostart_enabled: false, // Default: disabled (opt-in)
+            prefer_optimized: true,         // Default: prefer optimized videos
+            autostart_enabled: false,       // Default: disabled (opt-in)
+            tray_close_notice_shown: false, // Default: not shown yet
         }
     }
 }
@@ -268,6 +282,74 @@ mod tests {
             !config.autostart_enabled,
             "autostart must default to disabled (opt-in only)"
         );
+        assert!(
+            !config.tray_close_notice_shown,
+            "tray close notice must default to not-yet-shown"
+        );
+    }
+
+    /// Upgrading from a settings.json saved before this field existed must
+    /// not fail to deserialize the rest of the config (see the field's
+    /// `#[serde(default)]` doc comment in the struct definition).
+    #[test]
+    fn test_tray_close_notice_shown_missing_key_deserializes_to_false() {
+        let json = r#"{
+            "work_directory": null,
+            "polling_enabled": true,
+            "polling_interval_minutes": 60,
+            "retention_days": 7,
+            "auto_download_categories": [],
+            "download_mode": "Queue",
+            "prefer_optimized": true,
+            "autostart_enabled": false
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.tray_close_notice_shown);
+    }
+
+    /// BLOCKER (audit): a settings.json written by an older build is
+    /// missing *every* field added since (not just the newest one). With
+    /// only per-field `#[serde(default)]` attributes, any field the older
+    /// build didn't know about yet is absent too, so this must be covered
+    /// by the struct-level `#[serde(default)]` instead. This deserializes
+    /// a config containing only the very first fields the app ever had,
+    /// and checks both that it succeeds and that the fields which *are*
+    /// present are preserved verbatim (not silently reset alongside the
+    /// missing ones).
+    #[test]
+    fn test_deserialize_missing_new_fields_preserves_existing() {
+        let json = r#"{
+            "work_directory": "/home/user/church-media",
+            "polling_enabled": false,
+            "polling_interval_minutes": 30,
+            "retention_days": 14,
+            "auto_download_categories": ["sermons"],
+            "download_mode": "Parallel"
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+
+        // Present fields must be preserved exactly, not overwritten by
+        // `AppConfig::default()`.
+        assert_eq!(
+            config.work_directory,
+            Some(PathBuf::from("/home/user/church-media"))
+        );
+        assert!(!config.polling_enabled);
+        assert_eq!(config.polling_interval_minutes, 30);
+        assert_eq!(config.retention_days, Some(14));
+        assert_eq!(config.auto_download_categories, vec!["sermons".to_string()]);
+        assert_eq!(config.download_mode, DownloadMode::Parallel);
+
+        // Fields absent from the old JSON fall back to their defaults
+        // instead of failing to deserialize.
+        assert_eq!(
+            config.prefer_optimized,
+            AppConfig::default().prefer_optimized
+        );
+        assert!(!config.autostart_enabled);
+        assert!(!config.tray_close_notice_shown);
     }
 
     #[test]
@@ -400,6 +482,7 @@ mod tests {
             download_mode: DownloadMode::Parallel,
             prefer_optimized: false,
             autostart_enabled: true,
+            tray_close_notice_shown: true,
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: AppConfig = serde_json::from_str(&json).unwrap();
