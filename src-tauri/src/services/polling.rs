@@ -4,7 +4,7 @@
 
 use crate::commands::AppState;
 use crate::constants::api_base_url;
-use crate::models::{ResourceListResponse, WeekIdentifier};
+use crate::models::{CategoriesCountResponse, ResourceListResponse, WeekIdentifier};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
@@ -85,7 +85,7 @@ impl PollingService {
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
-                        tracing::trace!("Polling tick");
+                        tracing::debug!("Polling tick (interval: {} minutes)", interval_mins);
 
                         // Perform the poll
                         if let Err(e) = poll_api(&app).await {
@@ -228,6 +228,10 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
     app.emit("resources-updated", &api_response)?;
     app.emit("poll-tick", ())?;
 
+    // Second, independent GET for the full category catalog (best-effort:
+    // its own errors never fail the poll). Shared with `commands::force_poll`.
+    refresh_categories(app).await;
+
     // Save to cache
     use tauri_plugin_store::StoreExt;
     let store = app.store("cache.json").map_err(|e| e.to_string())?;
@@ -273,6 +277,67 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
     Ok(())
 }
 
+/// A parsed-but-empty categories response (`{}` or
+/// `{"categories":[],"total":0}` both deserialize fine thanks to
+/// `#[serde(default)]`) must be treated like a network/parse failure rather
+/// than a legitimate "no categories" answer: the endpoint is not expected to
+/// ever genuinely empty out, so an empty list is far more likely a backend
+/// deploy hiccup or stub response than reality. Applying it would blank the
+/// catalog and drop out-of-week categories from Settings.
+fn is_empty_categories_response(parsed: &CategoriesCountResponse) -> bool {
+    parsed.categories.is_empty()
+}
+
+/// Fetch the full category catalog (`categories/counts`) and publish it to the
+/// UI. Called by both `poll_api` and `commands::force_poll` so the two entry
+/// points never drift; kept out of the resource-fetch error path on purpose —
+/// this is a best-effort enrichment. On any network failure, parse failure,
+/// *or* a parsed-but-empty payload (see `is_empty_categories_response`) it
+/// logs and leaves `AppState::all_categories` untouched (last-known values
+/// stay usable offline/during a backend deploy) without emitting
+/// `categories-updated`, so the failure is invisible to the user.
+pub async fn refresh_categories(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let url = format!("{}/api/resources/categories/counts", api_base_url());
+
+    let response = match state.shared_http_client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("Categories fetch failed, keeping last known: {}", e);
+            return;
+        }
+    };
+
+    let parsed: CategoriesCountResponse = match response.json().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Categories parse failed, keeping last known: {}", e);
+            return;
+        }
+    };
+
+    if is_empty_categories_response(&parsed) {
+        tracing::debug!("Categories response parsed but empty, keeping last known");
+        return;
+    }
+
+    // Per-category debug line so a typo in the source data (e.g. "vidoe")
+    // shows up as its own bogus category for the operator to spot.
+    for cat in &parsed.categories {
+        tracing::debug!("categoria {}: {} risorse", cat.name, cat.count);
+    }
+
+    match state.all_categories.write() {
+        Ok(mut guard) => *guard = parsed.categories.clone(),
+        Err(e) => {
+            tracing::warn!("Categories state lock poisoned, not updating: {}", e);
+            return;
+        }
+    }
+
+    let _ = app.emit("categories-updated", &parsed.categories);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +366,24 @@ mod tests {
     #[test]
     fn default_matches_new() {
         assert!(!PollingService::default().is_running());
+    }
+
+    #[test]
+    fn empty_categories_response_is_flagged_as_empty() {
+        let empty: CategoriesCountResponse = serde_json::from_str(r#"{"categories":[],"total":0}"#)
+            .expect("empty categories must parse");
+        assert!(is_empty_categories_response(&empty));
+
+        let bare: CategoriesCountResponse =
+            serde_json::from_str("{}").expect("bare object must parse");
+        assert!(is_empty_categories_response(&bare));
+    }
+
+    #[test]
+    fn non_empty_categories_response_is_not_flagged_as_empty() {
+        let json = r#"{"categories":[{"name":"decime","count":12}],"total":12}"#;
+        let parsed: CategoriesCountResponse =
+            serde_json::from_str(json).expect("categories must parse");
+        assert!(!is_empty_categories_response(&parsed));
     }
 }

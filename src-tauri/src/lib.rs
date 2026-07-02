@@ -20,8 +20,12 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize tracing for logging
-    tracing_subscriber::fmt::init();
+    // Initialize tracing for logging. Honor RUST_LOG when set (e.g.
+    // `church_helper_desktop_lib=debug`), defaulting to `info` otherwise.
+    use tracing_subscriber::EnvFilter;
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .init();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -350,6 +354,7 @@ pub fn run() {
             commands::set_config,
             commands::get_status,
             commands::get_resources,
+            commands::get_all_categories,
             commands::force_poll,
             commands::select_work_directory,
             commands::set_work_directory,
@@ -365,6 +370,8 @@ pub fn run() {
             commands::check_resource_status,
             commands::get_file_size,
             commands::get_resource_summary,
+            commands::get_resources_status,
+            commands::reveal_resource,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -452,7 +459,7 @@ fn maybe_notify_first_tray_close(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
 
     let already_shown = match state.config.read() {
-        Ok(config) => config.tray_close_notice_shown,
+        Ok(config) => config.tray_close_os_notice_shown,
         Err(e) => {
             tracing::error!("Tray close notice: failed to read config: {}", e);
             return;
@@ -462,6 +469,9 @@ fn maybe_notify_first_tray_close(app: &tauri::AppHandle) {
         return;
     }
 
+    // Only burn the one-time flag once the notification was actually handed
+    // off successfully: on failure, leave it unset so we retry on the next
+    // close instead of silently swallowing the user's only heads-up.
     if let Err(e) = app
         .notification()
         .builder()
@@ -470,10 +480,9 @@ fn maybe_notify_first_tray_close(app: &tauri::AppHandle) {
         .show()
     {
         tracing::warn!("Failed to show tray-close OS notification: {}", e);
+        return;
     }
 
-    // Persist so this never fires again, regardless of whether the
-    // frontend was actually listening (e.g. window not yet fully loaded).
     let mut config = match state.config.write() {
         Ok(config) => config,
         Err(e) => {
@@ -481,7 +490,7 @@ fn maybe_notify_first_tray_close(app: &tauri::AppHandle) {
             return;
         }
     };
-    config.tray_close_notice_shown = true;
+    config.tray_close_os_notice_shown = true;
 
     use tauri_plugin_store::StoreExt;
     let store = match app.store("settings.json") {
@@ -563,6 +572,13 @@ async fn shutdown_and_exit(app: tauri::AppHandle) {
 async fn check_for_updates(app: tauri::AppHandle) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
     use tauri_plugin_updater::UpdaterExt;
+
+    if updater_pubkey_is_placeholder(&app) {
+        tracing::info!(
+            "Auto-update non configurato (pubkey placeholder): salto il check. Vedi UPDATER_SETUP.md"
+        );
+        return;
+    }
 
     let updater = match app.updater() {
         Ok(updater) => updater,
@@ -662,6 +678,23 @@ async fn check_for_updates(app: tauri::AppHandle) {
     }
 
     app.restart();
+}
+
+/// Sentinel value shipped in `tauri.conf.json` until the real signing public
+/// key is generated (see UPDATER_SETUP.md).
+const UPDATER_PUBKEY_PLACEHOLDER: &str = "PLACEHOLDER_REPLACE_WITH_TAURI_SIGNER_PUBLIC_KEY";
+
+/// Whether `plugins.updater.pubkey` is still the placeholder (or missing):
+/// in that state the endpoint has no signed `latest.json` yet, so checking
+/// would only produce noisy plugin-level errors.
+fn updater_pubkey_is_placeholder(app: &tauri::AppHandle) -> bool {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|updater| updater.get("pubkey"))
+        .and_then(|pubkey| pubkey.as_str())
+        .is_none_or(|pubkey| pubkey == UPDATER_PUBKEY_PLACEHOLDER)
 }
 
 /// tauri-plugin-store key (in settings.json) holding the last update version

@@ -1,19 +1,20 @@
 import {invoke} from '@tauri-apps/api/core';
 import {useEffect, useMemo, useState} from 'react';
 
-import {formatBytes} from '../lib/utils';
 import {useAppStore} from '../stores/appStore';
 import {useToastStore} from '../stores/toastStore';
-import {AppConfig, OptimizedVideo, Resource} from '../types';
+import {OptimizedVideo, Resource} from '../types';
 
 export function useResource(resource: Resource) {
-  const [isDownloaded, setIsDownloaded] = useState<boolean>(false);
-  const [isAutoDownloadEnabled, setIsAutoDownloadEnabled] =
-      useState<boolean>(false);
-  const [fileSize, setFileSize] = useState<string|null>(null);
-  const [originalSizeBytes, setOriginalSizeBytes] = useState<number|null>(null);
-  const [optimizedSizeBytes, setOptimizedSizeBytes] = useState<number|null>(null);
-  const [preferOptimized, setPreferOptimized] = useState<boolean>(true);
+  // Config and batched status come from the global store: no per-card IPC.
+  const config = useAppStore(state => state.config);
+  const updateConfig = useAppStore(state => state.updateConfig);
+  const statusEntry =
+      useAppStore(state => state.resourceStatuses[resource.id]);
+
+  const isAutoDownloadEnabled =
+      config?.auto_download_categories.includes(resource.category) ?? false;
+  const preferOptimized = config?.prefer_optimized ?? true;
 
   // adr-0008: when a resource offers multiple optimized video variants
   // (e.g. several clips re-encoded from the same zip), the user must be
@@ -62,104 +63,43 @@ export function useResource(resource: Resource) {
   const downloadState = activeDownloads[resource.id];
   const isDownloading = downloadState?.status === 'downloading';
   const isPaused = downloadState?.status === 'paused';
+  const isPending = downloadState?.status === 'pending';
+  const queuePosition = downloadState?.queuePosition ?? null;
   const progress = downloadState?.progress ?? null;
   const error = downloadState?.error ?? null;
   const integrity = downloadState?.integrity;
 
-  // Initial check for status and config
-  useEffect(
-      () => {
-        checkAutoDownload();
-      },
-      [
-        resource
-      ]);  // Re-check when resource changes
+  // The batched status is computed for the compat-default URL. When the user
+  // picks a non-default variant, that batched flag can be wrong, so (and only
+  // then) fall back to a targeted check for the exact selected variant.
+  const isNonDefaultVariant = hasVideoChoice && !!selectedVideoUrl &&
+      selectedVideoUrl !== resource.optimized_video_url;
+  const [variantDownloaded, setVariantDownloaded] =
+      useState<boolean|null>(null);
 
-  // Separate effect for the "is it downloaded?" check and the file-size
-  // fetch: both re-run when the user picks a different optimized video
-  // (effectiveResource changes), so the downloaded/not-downloaded indicator
-  // and the displayed size track the variant that was actually selected
-  // instead of always the compat-default.
   useEffect(
       () => {
-        checkStatus();
-        fetchFileSize();
-      },
-      [
-        effectiveResource
-      ]);
-
-  // Update displayed file size when preference changes
-  useEffect(
-      () => {
-        // Determine which size to show based on preference and availability
-        let sizeToShow: number | null = null;
-        
-        if (preferOptimized && optimizedSizeBytes) {
-          sizeToShow = optimizedSizeBytes;
-        } else if (originalSizeBytes) {
-          sizeToShow = originalSizeBytes;
+        if (!isNonDefaultVariant) {
+          setVariantDownloaded(null);
+          return;
         }
-
-        if (sizeToShow) {
-          setFileSize(formatBytes(sizeToShow));
-        } else {
-          setFileSize(null);
-        }
+        let cancelled = false;
+        invoke<boolean>('check_resource_status', {resource: effectiveResource})
+            .then(status => {
+              if (!cancelled) setVariantDownloaded(status);
+            })
+            .catch(err => {
+              console.error('Failed to check resource status:', err);
+            });
+        return () => {
+          cancelled = true;
+        };
       },
-      [
-        preferOptimized, originalSizeBytes, optimizedSizeBytes
-      ]);
+      [isNonDefaultVariant, effectiveResource]);
 
-  const checkStatus = async () => {
-    try {
-      const status = await invoke<boolean>(
-          'check_resource_status', {resource: effectiveResource});
-      setIsDownloaded(status);
-    } catch (error) {
-      console.error('Failed to check resource status:', error);
-    }
-  };
-
-  const checkAutoDownload = async () => {
-    try {
-      const config = await invoke<AppConfig>('get_config');
-      setIsAutoDownloadEnabled(
-          config.auto_download_categories.includes(resource.category));
-      setPreferOptimized(config.prefer_optimized);
-    } catch (error) {
-      console.error('Failed to check auto-download config:', error);
-    }
-  };
-
-  const fetchFileSize = async () => {
-    // Simple check for YouTube URLs
-    const isYoutube = resource.download_url.includes('youtube.com') ||
-        resource.download_url.includes('youtu.be');
-    if (isYoutube) {
-      setFileSize(null);
-      setOriginalSizeBytes(null);
-      setOptimizedSizeBytes(null);
-      return;
-    }
-
-    try {
-      // Fetch both sizes in parallel for better performance
-      const [originalSize, optimizedSize] = await Promise.all([
-        invoke<number>('get_file_size', { url: resource.download_url }),
-        effectiveResource.optimized_video_url
-          ? invoke<number>('get_file_size', { url: effectiveResource.optimized_video_url })
-          : Promise.resolve(0)
-      ]);
-
-      setOriginalSizeBytes(originalSize > 0 ? originalSize : null);
-      setOptimizedSizeBytes(optimizedSize > 0 ? optimizedSize : null);
-    } catch (error) {
-      console.error('Failed to fetch file size:', error);
-      setOriginalSizeBytes(null);
-      setOptimizedSizeBytes(null);
-    }
-  };
+  const isDownloaded = isNonDefaultVariant ?
+      (variantDownloaded ?? false) :
+      (statusEntry?.downloaded ?? false);
 
   const download = async () => {
     // Determine explicitly if we can download.
@@ -196,41 +136,32 @@ export function useResource(resource: Resource) {
 
   const cancel = async () => {
     await cancelDownloadAction(resource.id);
-    // Re-check status to verify deletion?
-    // checkStatus();
-    // Actually cancelDownload updates state immediately.
   };
 
   const {addToast} = useToastStore();
 
-  const toggleAutoDownload = async () => {
+  const revealInFolder = async () => {
     try {
-      const config = await invoke<AppConfig>('get_config');
-      let newCategories = [...config.auto_download_categories];
+      await invoke('reveal_resource', {resource: effectiveResource});
+    } catch (error) {
+      addToast(`Impossibile aprire la cartella: ${error}`, 'error');
+    }
+  };
 
-      const checkEnabled =
-          isAutoDownloadEnabled;  // Capture current state before toggle
+  const toggleAutoDownload = async () => {
+    if (!config) return;
+    const wasEnabled = isAutoDownloadEnabled;
+    const newCategories = wasEnabled ?
+        config.auto_download_categories.filter(c => c !== resource.category) :
+        [...config.auto_download_categories, resource.category];
 
-      if (checkEnabled) {
-        newCategories = newCategories.filter(c => c !== resource.category);
-      } else {
-        if (!newCategories.includes(resource.category)) {
-          newCategories.push(resource.category);
-        }
-      }
-
-      const newConfig = {...config, auto_download_categories: newCategories};
-      await invoke('set_config', {config: newConfig});
-
-      const newState = !checkEnabled;
-      setIsAutoDownloadEnabled(newState);
-
+    try {
+      await updateConfig({auto_download_categories: newCategories});
       addToast(
-          `Auto-download ${newState ? 'enabled' : 'disabled'} for "${
+          `Auto-download ${!wasEnabled ? 'enabled' : 'disabled'} for "${
               resource.category}"`,
           'success');
     } catch (error) {
-      console.error('Failed to toggle auto-download:', error);
       addToast(`Failed to toggle auto-download: ${error}`, 'error');
     }
   };
@@ -239,10 +170,9 @@ export function useResource(resource: Resource) {
     isDownloaded,
     isDownloading,
     isPaused,
+    isPending,
+    queuePosition,
     isAutoDownloadEnabled,
-    fileSize,
-    originalSizeBytes,
-    optimizedSizeBytes,
     error,
     progress,
     integrity,
@@ -250,6 +180,7 @@ export function useResource(resource: Resource) {
     pause,
     resume,
     cancel,
+    revealInFolder,
     toggleAutoDownload,
     preferOptimized,
     optimizedVideos,

@@ -55,21 +55,29 @@ export function SplashScreen() {
         <div
             onClick={dismiss}
             className={cn(
-                "fixed inset-0 z-100 flex cursor-pointer flex-col items-center justify-center gap-8 bg-background px-8 text-center",
+                "fixed inset-0 z-100 flex cursor-pointer flex-col items-center justify-center gap-10 bg-background px-8 text-center",
                 !reduceMotion && "transition-opacity ease-out",
                 fadingOut ? "opacity-0" : "opacity-100"
             )}
             style={reduceMotion ? undefined : { transitionDuration: `${FADE_DURATION_MS}ms` }}
         >
-            <h1 className="text-4xl font-bold tracking-tight text-foreground">
-                <span className="text-primary">Church</span>Helper
-            </h1>
-
-            <div className="flex flex-col items-center gap-4">
-                <RinoovaLogo variant="light" className="h-9" />
-                <p className="max-w-xs text-sm font-medium text-foreground">
-                    Sponsorizzato da Rinoova — server, sviluppo e know-how
+            <div className="flex flex-col items-center gap-3">
+                <h1 className="text-5xl font-bold tracking-tight sm:text-6xl">
+                    <span className="text-primary">Church</span>{" "}
+                    <span className="text-foreground">Helper</span>
+                </h1>
+                <p className="max-w-sm text-base text-foreground/80">
+                    I materiali della settimana, scaricati per te
                 </p>
+            </div>
+
+            <div className="h-px w-24 bg-border" />
+
+            <div className="flex flex-col items-center gap-3">
+                <span className="text-xs font-medium uppercase tracking-wide text-foreground/80">
+                    Sponsorizzato da
+                </span>
+                <RinoovaLogo className="h-12 sm:h-14" />
             </div>
         </div>
     )

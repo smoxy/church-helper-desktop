@@ -1,20 +1,20 @@
 import { Card, CardContent, CardHeader, CardTitle } from "../../ui/card";
 import { FileText, Download, CircleCheck, CloudDownload } from "lucide-react";
-import { ResourceSummary, ActiveDownload } from "../../../stores/appStore";
+import { useAppStore, ResourceSummary } from "../../../stores/appStore";
 
 interface ResourcesFoundCardProps {
     summary: ResourceSummary | null;
-    activeDownloads: Record<number, ActiveDownload>;
     onClick: () => void;
 }
 
 export function ResourcesFoundCard({
     summary,
-    activeDownloads,
     onClick
 }: ResourcesFoundCardProps) {
+    const activeDownloads = useAppStore(s => s.activeDownloads);
+
     if (!summary) return (
-        <Card className="cursor-pointer hover:bg-accent/50 transition-colors animate-pulse">
+        <Card className="hover:bg-accent/50 transition-colors animate-pulse">
             <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium opacity-50">Resources Found</CardTitle>
             </CardHeader>
@@ -54,8 +54,16 @@ export function ResourcesFoundCard({
 
     return (
         <Card
-            className="cursor-pointer hover:bg-accent/50 transition-all relative overflow-hidden group border-primary/20 h-full"
+            className="cursor-pointer hover:bg-accent/50 transition-all relative overflow-hidden group border-primary/20 h-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             onClick={onClick}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                    if (e.key === " ") e.preventDefault();
+                    onClick();
+                }
+            }}
         >
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <CardTitle className="text-sm font-semibold tracking-tight text-muted-foreground uppercase">Material Summary</CardTitle>

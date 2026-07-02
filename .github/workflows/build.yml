@@ -12,12 +12,12 @@ jobs:
   release-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
           cache-dependency-path: './package-lock.json'
 
@@ -26,10 +26,16 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      # shared-key: riusa la cache scaldata dal job warm-release-cache di
+      # ci.yml su main (i tag possono leggere solo cache del default branch).
+      # save-if: su tag il salvataggio e' inutile (nessuna run futura puo'
+      # leggere cache create su un tag).
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-           workspaces: './src-tauri'
+          workspaces: './src-tauri'
+          shared-key: release-windows
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -68,8 +74,8 @@ jobs:
           HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
           HAS_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
         run: |
-          if [ "$HAS_SIGNING_KEY" != "true" ] || [ "$HAS_SIGNING_KEY_PASSWORD" != "true" ]; then
-            echo "::warning::TAURI_SIGNING_PRIVATE_KEY e/o TAURI_SIGNING_PRIVATE_KEY_PASSWORD non configurati nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
+          if [ "$HAS_SIGNING_KEY" != "true" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY non configurato nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
             jq '.bundle.createUpdaterArtifacts = false' ./src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./src-tauri/tauri.conf.json
           fi
 
@@ -105,7 +111,7 @@ jobs:
     needs: release-windows
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         run: |
@@ -113,9 +119,9 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
           cache-dependency-path: './package-lock.json'
 
@@ -125,7 +131,9 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-           workspaces: './src-tauri'
+          workspaces: './src-tauri'
+          shared-key: release-linux
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -163,8 +171,8 @@ jobs:
           HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
           HAS_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
         run: |
-          if [ "$HAS_SIGNING_KEY" != "true" ] || [ "$HAS_SIGNING_KEY_PASSWORD" != "true" ]; then
-            echo "::warning::TAURI_SIGNING_PRIVATE_KEY e/o TAURI_SIGNING_PRIVATE_KEY_PASSWORD non configurati nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
+          if [ "$HAS_SIGNING_KEY" != "true" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY non configurato nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
             jq '.bundle.createUpdaterArtifacts = false' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
           fi
 

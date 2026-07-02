@@ -3,12 +3,15 @@
 //! These commands implement the "Dumb UI, Smart Backend" architecture.
 
 use crate::constants::api_base_url;
-use crate::models::{AppConfig, AppStatus, Resource, ResourceListResponse, WeekIdentifier};
+use crate::models::{
+    AppConfig, AppStatus, CategoryCount, DownloadedFile, Resource, ResourceListResponse,
+    WeekIdentifier,
+};
 use crate::services::download::{STATUS_CANCELLED, STATUS_PAUSED};
 use crate::services::{DownloadQueue, PollingService, RetentionScheduler};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter, State};
@@ -19,6 +22,12 @@ pub struct AppState {
     pub current_week: RwLock<Option<WeekIdentifier>>,
     pub resources: RwLock<Vec<Resource>>,
     pub status: RwLock<AppStatus>,
+    /// Full category catalog from `categories/counts`, independent of the
+    /// current week's resources so Settings can list (and re-enable)
+    /// categories that aren't downloadable right now. Refreshed on every poll
+    /// by `services::refresh_categories`; empty until the first successful
+    /// fetch and left untouched when that fetch fails (offline fallback).
+    pub all_categories: RwLock<Vec<CategoryCount>>,
     /// Signals to control active downloads (Pause/Cancel)
     pub download_signals: RwLock<HashMap<i64, Arc<AtomicU8>>>,
     /// Registry of successfully downloaded files (errata corrige tracking).
@@ -73,6 +82,7 @@ impl Default for AppState {
             current_week: RwLock::new(None),
             resources: RwLock::new(Vec::new()),
             status: RwLock::new(AppStatus::default()),
+            all_categories: RwLock::new(Vec::new()),
             download_signals: RwLock::new(HashMap::new()),
             downloaded_files: RwLock::new(Vec::new()),
             download_queue: Arc::new(DownloadQueue::new()),
@@ -109,7 +119,7 @@ pub async fn set_config(
         .validate()
         .map_err(|e| format!("Invalid config: {:?}", e))?;
 
-    // `tray_close_notice_shown` is backend-owned (set once in lib.rs when the
+    // `tray_close_os_notice_shown` is backend-owned (set once in lib.rs when the
     // window is first hidden to the tray); never let a stale value round-tripped
     // by the frontend overwrite it.
     {
@@ -117,7 +127,7 @@ pub async fn set_config(
             .config
             .read()
             .map_err(|e| format!("Failed to read config: {}", e))?;
-        config.tray_close_notice_shown = current.tray_close_notice_shown;
+        config.tray_close_os_notice_shown = current.tray_close_os_notice_shown;
     }
 
     // Save to store
@@ -168,6 +178,18 @@ pub fn get_resources(state: State<'_, AppState>) -> Result<Vec<Resource>, String
         .read()
         .map_err(|e| format!("Failed to read resources: {}", e))?;
     Ok(resources.clone())
+}
+
+/// Get the full category catalog (from the last successful `categories/counts`
+/// fetch). Used by the UI's initial load; live updates arrive via the
+/// `categories-updated` event.
+#[tauri::command]
+pub fn get_all_categories(state: State<'_, AppState>) -> Result<Vec<CategoryCount>, String> {
+    let categories = state
+        .all_categories
+        .read()
+        .map_err(|e| format!("Failed to read categories: {}", e))?;
+    Ok(categories.clone())
 }
 
 /// Trigger an immediate poll of the API
@@ -281,6 +303,11 @@ pub async fn force_poll(
 
     // Emit event to frontend
     let _ = app.emit("resources-updated", &api_response);
+
+    // Second, independent GET for the full category catalog, shared with
+    // `services::polling::poll_api` so the two poll paths stay identical.
+    // Best-effort: its failures never affect this command's result.
+    crate::services::refresh_categories(&app).await;
 
     // Save to cache
     use tauri_plugin_store::StoreExt;
@@ -669,18 +696,69 @@ pub fn check_resource_status(
         .map_err(|_| "Config locked, try again".to_string())?;
 
     if let Some(work_dir) = &config.work_directory {
-        let week_dir = resource.week().as_dir_name();
-        let dest_dir = work_dir.join(week_dir);
-
-        let effective_url = resource.get_effective_download_url(config.prefer_optimized);
-        let filename = crate::services::download::extract_filename_from_url(effective_url)
-            .unwrap_or_else(|| crate::services::download::sanitize_filename(&resource.title));
-
-        let dest_path = dest_dir.join(filename);
+        let dest_path = crate::services::download::resolve_dest_path(
+            &resource,
+            work_dir,
+            config.prefer_optimized,
+        );
         Ok(dest_path.exists())
     } else {
         Ok(false)
     }
+}
+
+/// Resolve the on-disk path of a resource's downloaded file.
+///
+/// Registry-first: an entry in `downloaded_files` records where the download
+/// actually landed, which stays authoritative even if the URL-derived filename
+/// later changes. Falls back to `resolve_dest_path` (work dir + week + URL
+/// filename) for files that predate the registry or have no entry yet.
+fn resolve_resource_path(state: &AppState, resource: &Resource) -> Result<PathBuf, String> {
+    {
+        let registry = state.downloaded_files.read().map_err(|e| e.to_string())?;
+        if let Some(entry) = registry
+            .iter()
+            .rev()
+            .find(|f| f.resource_id == resource.id && !f.is_superseded)
+        {
+            return Ok(entry.local_path.clone());
+        }
+    }
+
+    let config = state.config.read().map_err(|e| e.to_string())?;
+    let work_dir = config
+        .work_directory
+        .as_ref()
+        .ok_or("Work directory not configured")?;
+    Ok(crate::services::download::resolve_dest_path(
+        resource,
+        work_dir,
+        config.prefer_optimized,
+    ))
+}
+
+/// Reveal a downloaded resource in the system file manager, selecting the file
+/// inside its containing folder. If selection isn't supported (some Linux file
+/// managers) or the reveal otherwise fails, falls back to opening the week
+/// directory that would contain it.
+#[tauri::command]
+pub fn reveal_resource(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    resource: Resource,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let path = resolve_resource_path(state.inner(), &resource)?;
+
+    if app.opener().reveal_item_in_dir(&path).is_err() {
+        let dir = path.parent().unwrap_or(path.as_path());
+        app.opener()
+            .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
+            .map_err(|e| format!("Impossibile aprire la cartella: {}", e))?;
+    }
+
+    Ok(())
 }
 
 /// Get the size of a file from its URL without downloading it
@@ -768,14 +846,134 @@ pub struct ResourceSummary {
     pub queued: usize,
 }
 
+/// Batched per-resource status for the UI. `file_size`/`optimized_file_size`
+/// come exclusively from the cached HEAD sizes (never a network request); a
+/// missing or sentinel-cached (`u64::MAX`) entry serializes as `None`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResourceStatus {
+    pub downloaded: bool,
+    pub file_size: Option<u64>,
+    pub optimized_file_size: Option<u64>,
+}
+
+/// Read a cached HEAD size, treating the `u64::MAX` failure sentinel (negative
+/// cache) as "unknown" so it never leaks to the UI as a real size.
+fn cached_size(size_cache: &HashMap<String, u64>, url: &str) -> Option<u64> {
+    size_cache
+        .get(url)
+        .copied()
+        .filter(|&size| size != u64::MAX)
+}
+
+/// Pure computation of per-resource status. A resource counts as `downloaded`
+/// when the errata registry has a matching, not-yet-superseded entry
+/// (`resource_id` + `week`) whose `local_path` still exists on disk, OR — as a
+/// fallback when no such registry entry exists — the effective destination file
+/// is present (`check_file_exists`). Sizes are looked up only in `size_cache`;
+/// no network I/O happens here. With `work_dir` `None` every resource is
+/// `downloaded = false`.
+pub(crate) fn compute_resources_status(
+    resources: &[Resource],
+    registry: &[DownloadedFile],
+    work_dir: Option<&Path>,
+    prefer_optimized: bool,
+    size_cache: &HashMap<String, u64>,
+) -> HashMap<i64, ResourceStatus> {
+    let mut statuses = HashMap::with_capacity(resources.len());
+
+    for resource in resources {
+        let downloaded = match work_dir {
+            Some(work_dir) => {
+                let week = resource.week();
+                let registry_hit = registry.iter().any(|entry| {
+                    entry.resource_id == resource.id
+                        && entry.week == week
+                        && !entry.is_superseded
+                        && entry.local_path.exists()
+                });
+                registry_hit
+                    || crate::services::download::DownloadService::check_file_exists(
+                        resource,
+                        work_dir,
+                        prefer_optimized,
+                    )
+            }
+            None => false,
+        };
+
+        let file_size = cached_size(size_cache, &resource.download_url);
+        let optimized_file_size = resource
+            .optimized_video_url
+            .as_deref()
+            .and_then(|url| cached_size(size_cache, url));
+
+        statuses.insert(
+            resource.id,
+            ResourceStatus {
+                downloaded,
+                file_size,
+                optimized_file_size,
+            },
+        );
+    }
+
+    statuses
+}
+
+#[tauri::command]
+pub async fn get_resources_status(
+    state: State<'_, AppState>,
+) -> Result<HashMap<i64, ResourceStatus>, String> {
+    // Snapshot everything under short read locks, then compute off the async
+    // runtime. No lock guard is ever held across the await (spawn_blocking).
+    let (resources, registry, work_dir, prefer_optimized, size_cache) = {
+        let resources = state.resources.read().map_err(|e| e.to_string())?.clone();
+        let registry = state
+            .downloaded_files
+            .read()
+            .map_err(|e| e.to_string())?
+            .clone();
+        let (work_dir, prefer_optimized) = {
+            let config = state.config.read().map_err(|e| e.to_string())?;
+            (config.work_directory.clone(), config.prefer_optimized)
+        };
+        let size_cache = state
+            .file_size_cache
+            .read()
+            .map_err(|e| e.to_string())?
+            .clone();
+        (resources, registry, work_dir, prefer_optimized, size_cache)
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        compute_resources_status(
+            &resources,
+            &registry,
+            work_dir.as_deref(),
+            prefer_optimized,
+            &size_cache,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn get_resource_summary(state: State<'_, AppState>) -> Result<ResourceSummary, String> {
     // Clone data that needs to be used after await points or potentially long operations
     // This avoids holding non-Send RwLockGuard across await points
-    let (resources, config) = {
+    let (resources, registry, work_dir, prefer_optimized) = {
         let resources = state.resources.read().map_err(|e| e.to_string())?.clone();
-        let config = state.config.read().map_err(|e| e.to_string())?.clone();
-        (resources, config)
+        let registry = state
+            .downloaded_files
+            .read()
+            .map_err(|e| e.to_string())?
+            .clone();
+        let (work_dir, prefer_optimized) = {
+            let config = state.config.read().map_err(|e| e.to_string())?;
+            (config.work_directory.clone(), config.prefer_optimized)
+        };
+        (resources, registry, work_dir, prefer_optimized)
     };
 
     // Now we can await without holding the lock guards
@@ -783,33 +981,23 @@ pub async fn get_resource_summary(state: State<'_, AppState>) -> Result<Resource
     let queued = state.download_queue.queue_len().await;
     let total = resources.len();
 
-    let mut downloaded = 0;
-
-    // We need to clone the work directory and prefer_optimized to move them into the 'static closure
-    if let Some(work_dir) = config.work_directory.clone() {
-        let prefer_optimized = config.prefer_optimized;
-        // Run filesystem checks in a blocking task to avoid blocking the async runtime
-        downloaded = tauri::async_runtime::spawn_blocking(move || {
-            let mut count = 0;
-            for resource in resources {
-                let week_dir = resource.week().as_dir_name();
-                let dest_dir = work_dir.join(week_dir);
-                let effective_url = resource.get_effective_download_url(prefer_optimized);
-                let filename = crate::services::download::extract_filename_from_url(effective_url)
-                    .unwrap_or_else(|| {
-                        crate::services::download::sanitize_filename(&resource.title)
-                    });
-                let dest_path = dest_dir.join(filename);
-
-                if dest_path.exists() {
-                    count += 1;
-                }
-            }
-            count
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    }
+    // Reuse the same registry-first-OR-fs logic as the batched status command;
+    // the size cache is irrelevant to the downloaded count, so pass an empty one.
+    let downloaded = tauri::async_runtime::spawn_blocking(move || {
+        let empty_cache = HashMap::new();
+        compute_resources_status(
+            &resources,
+            &registry,
+            work_dir.as_deref(),
+            prefer_optimized,
+            &empty_cache,
+        )
+        .values()
+        .filter(|status| status.downloaded)
+        .count()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     Ok(ResourceSummary {
         total,
@@ -817,4 +1005,231 @@ pub async fn get_resource_summary(state: State<'_, AppState>) -> Result<Resource
         active,
         queued,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use tempfile::TempDir;
+
+    fn make_resource(id: i64, url: &str) -> Resource {
+        Resource {
+            id,
+            category: "video".to_string(),
+            title: format!("Resource {id}"),
+            description: None,
+            download_url: url.to_string(),
+            thumbnail_url: None,
+            file_type: None,
+            checksum: None,
+            is_active: true,
+            created_at: Utc.with_ymd_and_hms(2026, 1, 19, 12, 0, 0).unwrap(),
+            optimized_video_url: None,
+            optimized_videos: None,
+        }
+    }
+
+    fn make_downloaded(
+        resource: &Resource,
+        local_path: PathBuf,
+        superseded: bool,
+    ) -> DownloadedFile {
+        DownloadedFile {
+            resource_id: resource.id,
+            week: resource.week(),
+            local_path,
+            downloaded_at: resource.created_at,
+            source_url: resource.download_url.clone(),
+            is_superseded: superseded,
+        }
+    }
+
+    /// Write a real file at the resource's derived destination path so that
+    /// `check_file_exists` (the fs fallback) sees it.
+    fn create_dest_file(work_dir: &Path, resource: &Resource) -> PathBuf {
+        let dest = crate::services::download::resolve_dest_path(resource, work_dir, true);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, b"x").unwrap();
+        dest
+    }
+
+    #[test]
+    fn test_registry_hit_with_existing_file_is_downloaded() {
+        let tmp = TempDir::new().unwrap();
+        let wd = tmp.path();
+        let r = make_resource(1, "https://example.com/file1.mp4");
+
+        // A real file recorded by the registry at a path distinct from the
+        // derived dest (which is never created): only the registry can see it.
+        let reg_path = wd.join("registry-copy.mp4");
+        std::fs::write(&reg_path, b"x").unwrap();
+        let registry = vec![make_downloaded(&r, reg_path, false)];
+
+        let out = compute_resources_status(&[r], &registry, Some(wd), true, &HashMap::new());
+        assert!(out[&1].downloaded);
+    }
+
+    #[test]
+    fn test_registry_hit_missing_file_and_no_fs_is_not_downloaded() {
+        let tmp = TempDir::new().unwrap();
+        let wd = tmp.path();
+        let r = make_resource(2, "https://example.com/file2.mp4");
+
+        // Registry points at a non-existent path and no derived dest exists.
+        let registry = vec![make_downloaded(&r, wd.join("missing.mp4"), false)];
+
+        let out = compute_resources_status(&[r], &registry, Some(wd), true, &HashMap::new());
+        assert!(!out[&2].downloaded);
+    }
+
+    #[test]
+    fn test_superseded_entry_is_ignored() {
+        let tmp = TempDir::new().unwrap();
+        let wd = tmp.path();
+        let r = make_resource(3, "https://example.com/file3.mp4");
+
+        // Superseded entry whose file exists must NOT count; no fs dest exists.
+        let sup_path = wd.join("superseded.mp4");
+        std::fs::write(&sup_path, b"x").unwrap();
+        let registry = vec![make_downloaded(&r, sup_path, true)];
+
+        let out = compute_resources_status(&[r], &registry, Some(wd), true, &HashMap::new());
+        assert!(!out[&3].downloaded);
+    }
+
+    #[test]
+    fn test_empty_registry_with_file_on_disk_is_downloaded() {
+        let tmp = TempDir::new().unwrap();
+        let wd = tmp.path();
+        let r = make_resource(4, "https://example.com/file4.mp4");
+        create_dest_file(wd, &r);
+
+        let out = compute_resources_status(&[r], &[], Some(wd), true, &HashMap::new());
+        assert!(out[&4].downloaded);
+    }
+
+    #[test]
+    fn test_different_week_falls_back_to_fs() {
+        let tmp = TempDir::new().unwrap();
+        let wd = tmp.path();
+        let r = make_resource(5, "https://example.com/file5.mp4");
+
+        // Registry entry for the same id but a DIFFERENT week: it must not
+        // match, so the decision falls back to the fs check.
+        let mut other_week = r.week();
+        other_week.week_number += 1;
+        let reg_path = wd.join("otherweek.mp4");
+        std::fs::write(&reg_path, b"x").unwrap();
+        let registry = vec![DownloadedFile {
+            resource_id: r.id,
+            week: other_week,
+            local_path: reg_path,
+            downloaded_at: r.created_at,
+            source_url: r.download_url.clone(),
+            is_superseded: false,
+        }];
+
+        // No derived dest yet → not downloaded despite the other-week file.
+        let out = compute_resources_status(
+            std::slice::from_ref(&r),
+            &registry,
+            Some(wd),
+            true,
+            &HashMap::new(),
+        );
+        assert!(
+            !out[&5].downloaded,
+            "different-week entry must not register a hit"
+        );
+
+        // Now the fs fallback finds the file in the resource's own week.
+        create_dest_file(wd, &r);
+        let out = compute_resources_status(&[r], &registry, Some(wd), true, &HashMap::new());
+        assert!(out[&5].downloaded, "fs fallback finds the file");
+    }
+
+    #[test]
+    fn test_size_cache_sentinel_maps_to_none() {
+        let tmp = TempDir::new().unwrap();
+        let wd = tmp.path();
+
+        let mut r = make_resource(6, "https://example.com/file6.mp4");
+        r.optimized_video_url = Some("https://example.com/file6-opt.mp4".to_string());
+
+        let mut cache = HashMap::new();
+        // Real size for the original, sentinel (failed HEAD) for the optimized.
+        cache.insert(r.download_url.clone(), 1234u64);
+        cache.insert("https://example.com/file6-opt.mp4".to_string(), u64::MAX);
+
+        let out = compute_resources_status(&[r], &[], Some(wd), true, &cache);
+        assert_eq!(out[&6].file_size, Some(1234));
+        assert_eq!(out[&6].optimized_file_size, None);
+    }
+
+    #[test]
+    fn test_work_dir_none_is_all_false() {
+        let tmp = TempDir::new().unwrap();
+        let wd = tmp.path();
+        let r = make_resource(7, "https://example.com/file7.mp4");
+
+        // A registry entry with an existing file is present, but work_dir None
+        // forces every resource to false.
+        let reg_path = wd.join("present.mp4");
+        std::fs::write(&reg_path, b"x").unwrap();
+        let registry = vec![make_downloaded(&r, reg_path, false)];
+
+        let out = compute_resources_status(&[r], &registry, None, true, &HashMap::new());
+        assert!(!out[&7].downloaded);
+    }
+
+    #[test]
+    fn test_basename_collision_registry_disambiguates() {
+        let tmp = TempDir::new().unwrap();
+        let wd = tmp.path();
+
+        // Two resources whose URLs share the same basename → identical derived
+        // dest path in the same week (a real-world collision).
+        let a = make_resource(20, "https://a.example.com/shared.mp4");
+        let b = make_resource(21, "https://b.example.com/shared.mp4");
+        let shared_dest = crate::services::download::resolve_dest_path(&a, wd, true);
+        assert_eq!(
+            shared_dest,
+            crate::services::download::resolve_dest_path(&b, wd, true),
+            "test premise: both resources derive the same dest path"
+        );
+
+        // Legacy fs-only behavior (empty registry): the single file at the
+        // shared derived path makes BOTH resources look downloaded. This is the
+        // documented over-count the registry is meant to disambiguate.
+        std::fs::create_dir_all(shared_dest.parent().unwrap()).unwrap();
+        std::fs::write(&shared_dest, b"x").unwrap();
+        let legacy = compute_resources_status(
+            &[a.clone(), b.clone()],
+            &[],
+            Some(wd),
+            true,
+            &HashMap::new(),
+        );
+        assert!(legacy[&20].downloaded);
+        assert!(
+            legacy[&21].downloaded,
+            "without a registry the fs fallback counts both (legacy behavior)"
+        );
+
+        // Registry-disambiguated: the actual download was recorded for A at its
+        // real saved path (distinct from the colliding derived name). Re-deriving
+        // B's filename collides but no file exists there, so only A is downloaded.
+        std::fs::remove_file(&shared_dest).unwrap();
+        let actual_a = wd.join(a.week().as_dir_name()).join("actual-a.mp4");
+        std::fs::write(&actual_a, b"x").unwrap();
+        let registry = vec![make_downloaded(&a, actual_a, false)];
+
+        let out = compute_resources_status(&[a, b], &registry, Some(wd), true, &HashMap::new());
+        assert!(out[&20].downloaded, "registry hit for A");
+        assert!(
+            !out[&21].downloaded,
+            "B has no registry entry and no file at its derived path"
+        );
+    }
 }

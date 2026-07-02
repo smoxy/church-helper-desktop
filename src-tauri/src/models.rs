@@ -34,17 +34,31 @@ pub struct AppConfig {
     pub prefer_optimized: bool,
     /// Whether the app should launch automatically at OS startup (opt-in)
     pub autostart_enabled: bool,
-    /// Whether the one-time "the app keeps running in the tray" notice has
-    /// already been shown (see `lib.rs`'s window `CloseRequested` handler).
-    /// Covered by the struct-level `#[serde(default)]` above; kept here too
-    /// for clarity at the field.
-    pub tray_close_notice_shown: bool,
+    /// Whether the one-time OS notification about the app staying in the tray
+    /// has already been shown (see `lib.rs`'s window `CloseRequested` handler).
+    /// Renamed from `tray_close_notice_shown`: a settings.json carrying only the
+    /// old key deserializes this to `false` (struct-level `#[serde(default)]`)
+    /// and drops the stale key on the next write, so users whose old flag was
+    /// burned get the OS notice once more — no migration needed.
+    pub tray_close_os_notice_shown: bool,
+    /// UI colour theme. `#[serde(default)]` so a settings.json from a build
+    /// predating this field deserializes to `System` instead of failing.
+    #[serde(default)]
+    pub theme: ThemeSetting,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DownloadMode {
     Queue,
     Parallel,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub enum ThemeSetting {
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 impl Default for AppConfig {
@@ -56,9 +70,10 @@ impl Default for AppConfig {
             retention_days: Some(7),      // Default: 7 days
             auto_download_categories: Vec::new(),
             download_mode: DownloadMode::Queue,
-            prefer_optimized: true,         // Default: prefer optimized videos
-            autostart_enabled: false,       // Default: disabled (opt-in)
-            tray_close_notice_shown: false, // Default: not shown yet
+            prefer_optimized: true,   // Default: prefer optimized videos
+            autostart_enabled: false, // Default: disabled (opt-in)
+            tray_close_os_notice_shown: false, // Default: not shown yet
+            theme: ThemeSetting::System, // Default: follow the OS
         }
     }
 }
@@ -188,6 +203,29 @@ pub struct ResourceListResponse {
     pub resources: Vec<Resource>,
 }
 
+/// One category and how many resources currently carry it, as returned by
+/// `GET {API_BASE}/api/resources/categories/counts`. The name is shown in
+/// Settings so the user can enable auto-download for categories that aren't
+/// in the current week (and so typos in the source data surface in the debug
+/// log): see `services::polling::refresh_categories`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CategoryCount {
+    pub name: String,
+    pub count: u64,
+}
+
+/// Response of the categories/counts endpoint. `#[serde(default)]` on both
+/// fields so a partial or evolving payload (the endpoint ships in parallel)
+/// still deserializes instead of failing the whole refresh — a missing
+/// `categories` yields an empty list and the UI keeps its previous state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CategoriesCountResponse {
+    #[serde(default)]
+    pub categories: Vec<CategoryCount>,
+    #[serde(default)]
+    pub total: u64,
+}
+
 /// Week identifier for tracking current vs archived resources
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct WeekIdentifier {
@@ -294,7 +332,7 @@ mod tests {
             "autostart must default to disabled (opt-in only)"
         );
         assert!(
-            !config.tray_close_notice_shown,
+            !config.tray_close_os_notice_shown,
             "tray close notice must default to not-yet-shown"
         );
     }
@@ -303,7 +341,7 @@ mod tests {
     /// not fail to deserialize the rest of the config (see the field's
     /// `#[serde(default)]` doc comment in the struct definition).
     #[test]
-    fn test_tray_close_notice_shown_missing_key_deserializes_to_false() {
+    fn test_tray_close_os_notice_shown_missing_key_deserializes_to_false() {
         let json = r#"{
             "work_directory": null,
             "polling_enabled": true,
@@ -316,7 +354,7 @@ mod tests {
         }"#;
 
         let config: AppConfig = serde_json::from_str(json).unwrap();
-        assert!(!config.tray_close_notice_shown);
+        assert!(!config.tray_close_os_notice_shown);
     }
 
     /// BLOCKER (audit): a settings.json written by an older build is
@@ -360,7 +398,7 @@ mod tests {
             AppConfig::default().prefer_optimized
         );
         assert!(!config.autostart_enabled);
-        assert!(!config.tray_close_notice_shown);
+        assert!(!config.tray_close_os_notice_shown);
     }
 
     #[test]
@@ -493,11 +531,33 @@ mod tests {
             download_mode: DownloadMode::Parallel,
             prefer_optimized: false,
             autostart_enabled: true,
-            tray_close_notice_shown: true,
+            tray_close_os_notice_shown: true,
+            theme: ThemeSetting::Dark,
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config, deserialized);
+    }
+
+    /// A settings.json written before the `theme` field existed must
+    /// deserialize to `ThemeSetting::System` (the `#[serde(default)]` default)
+    /// rather than failing to parse.
+    #[test]
+    fn test_theme_missing_key_deserializes_to_system() {
+        let json = r#"{
+            "work_directory": null,
+            "polling_enabled": true,
+            "polling_interval_minutes": 60,
+            "retention_days": 7,
+            "auto_download_categories": [],
+            "download_mode": "Queue",
+            "prefer_optimized": true,
+            "autostart_enabled": false,
+            "tray_close_os_notice_shown": false
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.theme, ThemeSetting::System);
     }
 
     #[test]
@@ -535,6 +595,40 @@ mod tests {
         assert_eq!(response.resources.len(), 2);
         assert!(!response.resources[0].is_youtube());
         assert!(response.resources[1].is_youtube());
+    }
+
+    #[test]
+    fn test_categories_count_response_parsing() {
+        let json = r#"{
+            "categories": [
+                {"name": "decime", "count": 12},
+                {"name": "video", "count": 3}
+            ],
+            "total": 15
+        }"#;
+
+        let response: CategoriesCountResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.total, 15);
+        assert_eq!(response.categories.len(), 2);
+        assert_eq!(response.categories[0].name, "decime");
+        assert_eq!(response.categories[0].count, 12);
+        assert_eq!(response.categories[1].name, "video");
+    }
+
+    #[test]
+    fn test_categories_count_response_empty_and_missing_fields() {
+        // Empty categories with a total present.
+        let empty: CategoriesCountResponse = serde_json::from_str(r#"{"categories":[],"total":0}"#)
+            .expect("empty categories must parse");
+        assert!(empty.categories.is_empty());
+        assert_eq!(empty.total, 0);
+
+        // Both fields absent (serde(default)): degrades to an empty list and
+        // zero total instead of failing the whole refresh.
+        let bare: CategoriesCountResponse =
+            serde_json::from_str("{}").expect("missing fields must default");
+        assert!(bare.categories.is_empty());
+        assert_eq!(bare.total, 0);
     }
 
     /// contract-resources-api / adr-0008: `optimized_videos` is additive and

@@ -3,38 +3,34 @@ import { cn } from "../../lib/utils"
 import logoLight from "../../assets/sponsor/logo-rinoova-horizontal.svg"
 import logoDark from "../../assets/sponsor/logo-rinoova-horizontal-dark.svg"
 
-export interface RinoovaLogoProps extends React.ImgHTMLAttributes<HTMLImageElement> {
-    /**
-     * Which colour variant to render, matching the surface this logo is
-     * placed on:
-     * - "light" (default): near-black wordmark, for a light/white surface.
-     * - "dark": wordmark recoloured near-white, for a dark surface.
-     *
-     * The source artwork only ships the near-black wordmark, which
-     * disappears on a dark surface (the brand gradient icon is the
-     * opposite: legible on dark, washed out on light) — hence the second
-     * bundled variant. There is deliberately no automatic OS-based
-     * detection here: this app's `bg-*`/`text-*` design tokens are pinned
-     * to their light `:root` values and are never switched to `.dark`
-     * (only a handful of unrelated components use the OS-driven `dark:`
-     * Tailwind variant directly), so picking a variant from
-     * `prefers-color-scheme` would pick the dark-safe wordmark while the
-     * real surface stays light, making it invisible instead of fixing it.
-     * Callers pass the variant that matches their actual background.
-     */
-    variant?: "light" | "dark"
-}
+export type RinoovaLogoProps = React.ImgHTMLAttributes<HTMLImageElement>
 
-/** Rinoova horizontal logo lockup (icon + wordmark). */
+/**
+ * Rinoova horizontal logo lockup (icon + wordmark).
+ *
+ * The source artwork ships a near-black wordmark that vanishes on a dark
+ * surface, so a second dark-safe (near-white) variant is bundled. Both are
+ * rendered and the active `.dark` root class (driven by lib/theme) toggles
+ * which one is visible via Tailwind's `dark:` variant — no runtime prop or
+ * `prefers-color-scheme` guess, so the wordmark always matches the real theme.
+ */
 export const RinoovaLogo = React.forwardRef<HTMLImageElement, RinoovaLogoProps>(
-    ({ className, variant = "light", alt = "Rinoova", ...props }, ref) => (
-        <img
-            ref={ref}
-            src={variant === "dark" ? logoDark : logoLight}
-            alt={alt}
-            className={cn("h-full w-auto", className)}
-            {...props}
-        />
+    ({ className, alt = "Rinoova", ...props }, ref) => (
+        <>
+            <img
+                ref={ref}
+                src={logoLight}
+                alt={alt}
+                className={cn("h-full w-auto dark:hidden", className)}
+                {...props}
+            />
+            <img
+                src={logoDark}
+                alt={alt}
+                className={cn("hidden h-full w-auto dark:block", className)}
+                {...props}
+            />
+        </>
     )
 )
 RinoovaLogo.displayName = "RinoovaLogo"

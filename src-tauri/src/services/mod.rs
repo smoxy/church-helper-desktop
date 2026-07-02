@@ -10,6 +10,6 @@ pub mod retention;
 
 pub use download::DownloadService;
 pub use errata::{detect_errata_changes, process_errata, record_downloaded_file};
-pub use polling::PollingService;
+pub use polling::{refresh_categories, PollingService};
 pub use queue::DownloadQueue;
 pub use retention::{archive_previous_weeks_once, FileRetentionService, RetentionScheduler};

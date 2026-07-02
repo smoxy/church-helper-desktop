@@ -46,10 +46,6 @@ export default function AppLayout() {
                         Settings
                     </NavLink>
                 </nav>
-
-                <div className="p-4 border-t text-xs text-muted-foreground text-center">
-                    v0.1.0-alpha
-                </div>
             </aside>
 
             {/* Main Content */}
@@ -93,7 +89,7 @@ export default function AppLayout() {
                                     rel="noopener noreferrer"
                                     className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-card text-foreground hover:bg-muted hover:text-primary transition-all font-semibold text-xs border border-border"
                                 >
-                                    <RinoovaLogo variant="light" className="h-4" />
+                                    <RinoovaLogo className="h-4" />
                                     Sponsored by Rinoova
                                 </a>
                             </div>

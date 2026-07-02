@@ -39,15 +39,7 @@ impl DownloadService {
     /// Check if a resource file already exists
     /// Uses the effective download URL based on prefer_optimized setting
     pub fn check_file_exists(resource: &Resource, work_dir: &Path, prefer_optimized: bool) -> bool {
-        let week_dir = resource.week().as_dir_name();
-        let dest_dir = work_dir.join(week_dir);
-
-        let effective_url = resource.get_effective_download_url(prefer_optimized);
-        let filename = extract_filename_from_url(effective_url)
-            .unwrap_or_else(|| sanitize_filename(&resource.title));
-
-        let dest_path = dest_dir.join(filename);
-        dest_path.exists()
+        resolve_dest_path(resource, work_dir, prefer_optimized).exists()
     }
 
     /// Download a resource to the destination directory
@@ -368,6 +360,22 @@ fn is_windows_reserved_stem(file_name: &str) -> bool {
         }
     }
     false
+}
+
+/// Resolve `<work_dir>/<week-dir>/<filename>` for a resource, deriving the
+/// filename from its effective download URL (honoring `prefer_optimized`) with
+/// a fallback to the sanitized title. Single source of truth for the
+/// existence/status/summary checks.
+pub(crate) fn resolve_dest_path(
+    resource: &Resource,
+    work_dir: &Path,
+    prefer_optimized: bool,
+) -> PathBuf {
+    let dest_dir = work_dir.join(resource.week().as_dir_name());
+    let effective_url = resource.get_effective_download_url(prefer_optimized);
+    let filename = extract_filename_from_url(effective_url)
+        .unwrap_or_else(|| sanitize_filename(&resource.title));
+    dest_dir.join(filename)
 }
 
 /// Extract filename from URL with URL decoding support

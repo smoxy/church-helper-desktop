@@ -87,6 +87,25 @@ npm run tauri build
 
 ---
 
+## 🩺 Troubleshooting / Log
+
+L'app usa `tracing`: il livello di log si controlla con la variabile d'ambiente
+`RUST_LOG`. Senza `RUST_LOG` il livello di default è `info`.
+
+```bash
+# Log di debug per l'app (polling e download): utile per capire perché
+# un download non parte o ogni quanto avviene il polling
+RUST_LOG=church_helper_desktop_lib=debug ./church-helper-desktop
+
+# Massimo dettaglio (molto verboso, include gli internals delle librerie)
+RUST_LOG=church_helper_desktop_lib=trace ./church-helper-desktop
+```
+
+Il tick del polling è loggato a livello `debug` e include l'intervallo
+configurato; gli eventi di download compaiono anch'essi a `debug`.
+
+---
+
 ## 🏗️ Architettura
 
 ```
