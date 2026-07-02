@@ -3,8 +3,8 @@
 //! Manages a queue of download tasks, executing them sequentially or in parallel
 //! based on the configuration.
 
-use crate::models::{DownloadMode, Resource};
-use std::collections::VecDeque;
+use crate::models::{DownloadMode, Resource, WeekIdentifier};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
@@ -20,6 +20,14 @@ pub struct DownloadQueue {
     worker_started: Arc<AtomicBool>,
     /// Track active download IDs for status updates
     active_ids: Arc<Mutex<Vec<i64>>>,
+    /// Week each currently-active download belongs to, keyed by resource id
+    /// (mirrors `active_ids`'s push/remove lifecycle). Only needed so
+    /// `weeks_with_pending_downloads` can tell the archiving pass
+    /// (bl-desktop-archiving-not-called) which week folders are unsafe to
+    /// move right now; kept separate from `active_ids` because that field's
+    /// shape (`Vec<i64>`) is part of the `queue-status-changed` wire event
+    /// consumed by the frontend and must not change.
+    active_weeks: Arc<Mutex<HashMap<i64, WeekIdentifier>>>,
 }
 
 impl DownloadQueue {
@@ -31,7 +39,21 @@ impl DownloadQueue {
             mode: Arc::new(Mutex::new(DownloadMode::Queue)),
             worker_started: Arc::new(AtomicBool::new(false)),
             active_ids: Arc::new(Mutex::new(Vec::new())),
+            active_weeks: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Weeks that currently have a download in flight — either actively
+    /// downloading right now, or still queued waiting for a worker slot.
+    /// Consulted by the archiving pass (bl-desktop-archiving-not-called) so
+    /// it never moves a week's folder while a download could still be
+    /// writing into it.
+    pub async fn weeks_with_pending_downloads(&self) -> HashSet<WeekIdentifier> {
+        let queue = self.queue.lock().await;
+        let active_weeks = self.active_weeks.lock().await;
+        let mut weeks: HashSet<WeekIdentifier> = queue.iter().map(|r| r.week()).collect();
+        weeks.extend(active_weeks.values().cloned());
+        weeks
     }
 
     /// Update the concurrency limit based on mode
@@ -165,6 +187,7 @@ impl DownloadQueue {
         let mode_lock = self.mode.clone();
         let active_count = self.active_count.clone();
         let active_ids = self.active_ids.clone();
+        let active_weeks = self.active_weeks.clone();
         
         tracing::info!("Download queue worker started");
         
@@ -205,9 +228,14 @@ impl DownloadQueue {
                         let mut ids = active_ids.lock().await;
                         ids.push(resource.id);
                     }
-                    
+                    {
+                        let mut weeks = active_weeks.lock().await;
+                        weeks.insert(resource.id, resource.week());
+                    }
+
                     let active_count_clone = active_count.clone();
                     let active_ids_clone = active_ids.clone();
+                    let active_weeks_clone = active_weeks.clone();
                     let app_clone = app.clone();
                     
                     // Emit status update immediately as queue changed (popped item) AND active changed
@@ -304,6 +332,10 @@ impl DownloadQueue {
                                 ids.remove(pos);
                             }
                         }
+                        {
+                            let mut weeks = active_weeks_clone.lock().await;
+                            weeks.remove(&resource.id);
+                        }
                     });
                     
                     // In parallel mode, immediately check for more tasks
@@ -322,5 +354,81 @@ impl DownloadQueue {
 
     pub async fn queue_len(&self) -> usize {
         self.queue.lock().await.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    fn make_resource(id: i64, year: i32, month: u32, day: u32) -> Resource {
+        Resource {
+            id,
+            category: "test".to_string(),
+            title: format!("Resource {}", id),
+            description: String::new(),
+            download_url: format!("https://example.com/{}.zip", id),
+            thumbnail_url: None,
+            file_type: None,
+            checksum: None,
+            is_active: true,
+            created_at: Utc.with_ymd_and_hms(year, month, day, 12, 0, 0).unwrap(),
+            optimized_video_url: None,
+            optimized_videos: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_weeks_with_pending_downloads_empty_when_idle() {
+        let dq = DownloadQueue::new();
+        assert!(dq.weeks_with_pending_downloads().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_weeks_with_pending_downloads_includes_queued_resources() {
+        let dq = DownloadQueue::new();
+        {
+            let mut queue = dq.queue.lock().await;
+            queue.push_back(make_resource(1, 2026, 1, 19)); // week 4
+        }
+
+        let weeks = dq.weeks_with_pending_downloads().await;
+        assert_eq!(weeks.len(), 1);
+        assert!(weeks.contains(&WeekIdentifier::new(2026, 4)));
+    }
+
+    #[tokio::test]
+    async fn test_weeks_with_pending_downloads_includes_active_downloads() {
+        let dq = DownloadQueue::new();
+        {
+            // Simulates what start_worker records once a download actually
+            // starts (see the `active_weeks.insert` next to `ids.push`
+            // above): by then the resource has already left `queue`.
+            let mut active = dq.active_weeks.lock().await;
+            active.insert(42, WeekIdentifier::new(2025, 52));
+        }
+
+        let weeks = dq.weeks_with_pending_downloads().await;
+        assert_eq!(weeks.len(), 1);
+        assert!(weeks.contains(&WeekIdentifier::new(2025, 52)));
+    }
+
+    #[tokio::test]
+    async fn test_weeks_with_pending_downloads_merges_queued_and_active() {
+        let dq = DownloadQueue::new();
+        {
+            let mut queue = dq.queue.lock().await;
+            queue.push_back(make_resource(1, 2026, 1, 19)); // week 4
+        }
+        {
+            let mut active = dq.active_weeks.lock().await;
+            active.insert(2, WeekIdentifier::new(2025, 52));
+        }
+
+        let weeks = dq.weeks_with_pending_downloads().await;
+        assert_eq!(weeks.len(), 2);
+        assert!(weeks.contains(&WeekIdentifier::new(2026, 4)));
+        assert!(weeks.contains(&WeekIdentifier::new(2025, 52)));
     }
 }

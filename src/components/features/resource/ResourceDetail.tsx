@@ -1,5 +1,7 @@
 import { Resource } from '../../../types';
 import { useResource } from '../../../hooks/useResource';
+import { formatBytes } from '../../../lib/utils';
+import { OptimizedVideoPicker } from './OptimizedVideoPicker';
 import { Loader2, Download, Check, Pause, Play, Trash2, AlertTriangle, RotateCcw, X } from "lucide-react";
 
 interface ResourceDetailProps {
@@ -24,7 +26,10 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
         resume,
         cancel,
         toggleAutoDownload,
-        preferOptimized
+        preferOptimized,
+        optimizedVideos,
+        selectedVideoUrl,
+        selectVideo
     } = useResource(resource);
 
     const handleMainAction = () => {
@@ -39,19 +44,13 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
 
     const isCorrupted = isDownloaded && integrity === 'mismatch';
 
-    // Calculate potential savings when prefer_optimized is false
-    const formatBytes = (bytes: number): string => {
-        const units = ['B', 'KB', 'MB', 'GB'];
-        let size = bytes;
-        let unitIndex = 0;
-        while (size >= 1024 && unitIndex < units.length - 1) {
-            size /= 1024;
-            unitIndex++;
-        }
-        return `${size.toFixed(1)} ${units[unitIndex]}`;
-    };
+    // adr-0008: only show the picker when the user wants optimized videos at
+    // all (matches useResource's own gating) AND there is an actual choice
+    // to make; with 0/1 elements the download button behaves exactly as
+    // before (single implicit URL, no picker rendered).
+    const showVideoPicker = preferOptimized && optimizedVideos.length > 1;
 
-    const canShowSavingsWarning = !preferOptimized && 
+    const canShowSavingsWarning = !preferOptimized &&
         optimizedSizeBytes && 
         originalSizeBytes && 
         optimizedSizeBytes < originalSizeBytes;
@@ -118,6 +117,16 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                 </div>
 
                                 <div className="flex flex-col gap-3">
+                                    {/* Optimized video picker (adr-0008): only when there's an actual choice */}
+                                    {showVideoPicker && (
+                                        <OptimizedVideoPicker
+                                            videos={optimizedVideos}
+                                            selectedUrl={selectedVideoUrl}
+                                            onSelect={selectVideo}
+                                            disabled={isDownloading || isPaused || (isDownloaded && !isCorrupted)}
+                                        />
+                                    )}
+
                                     {/* Progress Bar Area */}
                                     {(isDownloading || isPaused) && (
                                         <div className="w-full bg-muted rounded-full h-2.5 overflow-hidden">

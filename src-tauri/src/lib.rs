@@ -14,7 +14,9 @@ pub use error::AppError;
 pub use models::{AppConfig, Resource, WeekIdentifier};
 pub use services::{PollingService, RetentionScheduler};
 
-use tauri::Manager;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::Ordering;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -199,15 +201,43 @@ pub fn run() {
             // window hide it instead of terminating the process, so the
             // download queue (adr-0007) and background schedulers keep
             // running (bl-desktop-close-to-tray).
-            setup_tray(app.handle())?;
+            //
+            // Guarded against panics: on some Linux setups the underlying
+            // tray-icon stack can panic (rather than return a clean `Err`)
+            // when libappindicator3/libayatana-appindicator3 isn't
+            // installed (see `setup_tray`'s doc comment below). Catching
+            // that here degrades to "no tray icon" — logged as a warning —
+            // instead of the whole app failing to start.
+            let tray_available = match catch_unwind(AssertUnwindSafe(|| setup_tray(app.handle())))
+            {
+                Ok(Ok(())) => true,
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        "Tray icon setup failed, continuing without one (window close will exit the app instead of hiding it): {}",
+                        e
+                    );
+                    false
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "Tray icon setup panicked (likely missing libappindicator3/libayatana-appindicator3 on this Linux system). Continuing without a tray icon: window close will exit the app instead of hiding it. Install your desktop environment's AppIndicator support to enable it."
+                    );
+                    false
+                }
+            };
+            app.state::<AppState>()
+                .tray_available
+                .store(tray_available, Ordering::SeqCst);
 
             // Show the main window, unless this launch was triggered by the
             // OS autostart entry (see the `--autostart` flag registered with
             // the autostart plugin above): in that case stay hidden in the
             // tray, coordinating with bl-desktop-autostart so the app doesn't
-            // pop up a window at every boot.
+            // pop up a window at every boot. Exception: without a tray there
+            // is no "Apri" to reopen from, so show the window anyway rather
+            // than stranding the user with an invisible, unreachable app.
             let launched_via_autostart = std::env::args().any(|arg| arg == "--autostart");
-            if launched_via_autostart {
+            if launched_via_autostart && tray_available {
                 tracing::info!("Launched via autostart: starting hidden in the tray");
             } else if let Some(window) = app.get_webview_window("main") {
                 window
@@ -237,10 +267,28 @@ pub fn run() {
             // the background schedulers mid-flight. Hide it instead; the
             // only real exit path is the tray menu's "Esci"
             // (bl-desktop-close-to-tray).
+            //
+            // Exception: if the tray icon isn't available (see
+            // `tray_available`, set at setup from `setup_tray`'s result),
+            // there is no "Esci" to fall back on, so closing the window
+            // must behave like a normal close (the process exits) instead
+            // of hiding to a tray the user could never reopen.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let tray_available = window
+                    .try_state::<AppState>()
+                    .map(|state| state.tray_available.load(Ordering::SeqCst))
+                    .unwrap_or(false);
+
+                if !tray_available {
+                    tracing::debug!("No tray icon available: allowing the window to close normally");
+                    return;
+                }
+
                 api.prevent_close();
                 if let Err(e) = window.hide() {
                     tracing::error!("Failed to hide window on close request: {}", e);
+                } else {
+                    maybe_notify_first_tray_close(window.app_handle());
                 }
             }
         })
@@ -334,6 +382,61 @@ fn show_main_window(app: &tauri::AppHandle) {
         }
     } else {
         tracing::warn!("Tray 'show' requested but the main window doesn't exist");
+    }
+}
+
+/// Shows a one-time notice the first time the window is closed to the tray
+/// rather than exiting, so the user isn't left wondering where the app
+/// went (2B review follow-up on bl-desktop-close-to-tray). Emits a
+/// `tray-close-notice` event for the frontend to render as a toast, then
+/// persists a flag in config so it never fires again, even across
+/// restarts. A no-op (besides logging) on any failure to read/write that
+/// flag — never worth blocking the close/hide that already happened.
+fn maybe_notify_first_tray_close(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+
+    let already_shown = match state.config.read() {
+        Ok(config) => config.tray_close_notice_shown,
+        Err(e) => {
+            tracing::error!("Tray close notice: failed to read config: {}", e);
+            return;
+        }
+    };
+    if already_shown {
+        return;
+    }
+
+    if let Err(e) = app.emit("tray-close-notice", ()) {
+        tracing::error!("Failed to emit tray-close-notice: {}", e);
+    }
+
+    // Persist so this never fires again, regardless of whether the
+    // frontend was actually listening (e.g. window not yet fully loaded).
+    let mut config = match state.config.write() {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::error!("Tray close notice: failed to write config: {}", e);
+            return;
+        }
+    };
+    config.tray_close_notice_shown = true;
+
+    use tauri_plugin_store::StoreExt;
+    let store = match app.store("settings.json") {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::error!("Tray close notice: failed to access store: {}", e);
+            return;
+        }
+    };
+    match serde_json::to_value(&*config) {
+        Ok(json) => {
+            store.set("config", json);
+            if let Err(e) = store.save() {
+                tracing::error!("Tray close notice: failed to persist flag: {}", e);
+            }
+        }
+        Err(e) => tracing::error!("Tray close notice: failed to serialize config: {}", e),
     }
 }
 

@@ -3,8 +3,8 @@
 //! Runs a background task using tokio to periodically poll the API.
 
 use crate::commands::AppState;
-use crate::constants::API_BASE_URL;
-use crate::models::ResourceListResponse;
+use crate::constants::api_base_url;
+use crate::models::{ResourceListResponse, WeekIdentifier};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
@@ -127,7 +127,7 @@ impl Default for PollingService {
 /// Perform a single poll of the API
 async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = app.state::<AppState>();
-    let url = format!("{}/api/resources/latest-week", API_BASE_URL);
+    let url = format!("{}/api/resources/latest-week", api_base_url());
 
     let response = state.shared_http_client.get(&url).send().await?;
     let api_response: ResourceListResponse = response.json().await?;
@@ -188,13 +188,22 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
         }
     }
 
+    // Set when this poll's resources belong to a different week than the
+    // last known one, so we can archive the now-previous week(s) below
+    // (bl-desktop-archiving-not-called) once the status write lock (a
+    // non-Send std::sync guard) is released and out of scope.
+    let mut new_current_week: Option<WeekIdentifier> = None;
     {
         let mut status = state.status.write().map_err(|e| e.to_string())?;
         status.last_poll_time = Some(chrono::Utc::now());
         status.total_resources = api_response.resources.len();
 
         if let Some(resource) = api_response.resources.first() {
-            status.current_week = Some(resource.week());
+            let week = resource.week();
+            if status.current_week.as_ref() != Some(&week) {
+                new_current_week = Some(week.clone());
+            }
+            status.current_week = Some(week);
         }
     }
 
@@ -229,6 +238,14 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
 
     // Initial check for auto-downloads
     state.download_queue.scan_and_queue(app.clone()).await;
+
+    // The current week just changed: archive the folders of the now-past
+    // week(s) so enforce_retention (already scheduled daily) has something
+    // to trash after retention_days (bl-desktop-archiving-not-called).
+    if let Some(week) = new_current_week {
+        tracing::info!("Current week changed to {}, archiving previous weeks", week);
+        crate::services::archive_previous_weeks_once(app, &week).await;
+    }
 
     Ok(())
 }

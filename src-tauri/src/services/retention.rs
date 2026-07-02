@@ -5,6 +5,7 @@
 use crate::error::FileError;
 use crate::models::WeekIdentifier;
 use chrono::{Duration, Utc};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -241,6 +242,120 @@ impl FileRetentionService {
             })
             .unwrap_or_default()
     }
+
+    /// Move previous weeks' folders out of the work directory into
+    /// `.archive/{week}/`, so `enforce_retention` (which only ever looks at
+    /// `.archive/`) has something to actually act on
+    /// (bl-desktop-archiving-not-called: previously `archive_file` had no
+    /// production call site, so `.archive/` stayed empty forever and old
+    /// week folders were never cleaned up).
+    ///
+    /// - Never touches `current_week`'s folder.
+    /// - Never touches a week in `busy_weeks` (per the download queue —
+    ///   caller passes `DownloadQueue::weeks_with_pending_downloads`), and as
+    ///   an extra filesystem-level safety net never moves a `.part` file
+    ///   (download.rs's own in-progress/resume marker) even inside an
+    ///   otherwise-eligible week.
+    /// - Idempotent: uses `archive_file` per file (rename), so a file
+    ///   already moved by a previous run simply isn't found again on the
+    ///   next one; a week folder left non-empty because some of its files
+    ///   were skipped (still downloading) is revisited on a later call and
+    ///   only its remaining files are moved.
+    ///
+    /// Returns the number of week folders that had at least one file moved.
+    pub fn archive_previous_weeks(
+        &self,
+        current_week: &WeekIdentifier,
+        busy_weeks: &HashSet<WeekIdentifier>,
+    ) -> Result<u32, FileError> {
+        if !self.work_dir.exists() {
+            return Ok(0);
+        }
+
+        let entries = fs::read_dir(&self.work_dir).map_err(|e| FileError::ReadDirectoryFailed {
+            path: self.work_dir.clone(),
+            source: e,
+        })?;
+
+        let mut archived_weeks = 0u32;
+
+        for entry in entries.filter_map(Result::ok) {
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            // Never descend into `.archive`, `.superseded`, or any other
+            // dotdir (defensive: only ever touch directories that parse as
+            // a week name).
+            if name.starts_with('.') {
+                continue;
+            }
+            let Some(week) = parse_week_dir_name(&name) else {
+                continue; // not a week-named directory, leave it alone
+            };
+            if &week == current_week {
+                continue; // never touch the current week
+            }
+            if busy_weeks.contains(&week) {
+                tracing::debug!(
+                    "Archiving: skipping week {} for now, it has a download in flight",
+                    week
+                );
+                continue;
+            }
+
+            let week_path = entry.path();
+            let files = match fs::read_dir(&week_path) {
+                Ok(files) => files,
+                Err(e) => {
+                    tracing::error!("Archiving: failed to read {}: {}", week_path.display(), e);
+                    continue;
+                }
+            };
+
+            let mut moved_any = false;
+            let mut skipped_any = false;
+            for file_entry in files.filter_map(Result::ok) {
+                if !file_entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    // Unexpected nested directory: leave it alone rather
+                    // than guessing what to do with it.
+                    skipped_any = true;
+                    continue;
+                }
+                let file_name = file_entry.file_name();
+                if file_name.to_string_lossy().ends_with(".part") {
+                    // In-progress/resumable download (services/download.rs):
+                    // never move it, even if the queue itself doesn't (yet,
+                    // or anymore) know about it.
+                    skipped_any = true;
+                    continue;
+                }
+
+                self.archive_file(&file_entry.path(), &week)?;
+                moved_any = true;
+            }
+
+            if moved_any {
+                archived_weeks += 1;
+                tracing::info!(
+                    "Archived week {} into {:?}",
+                    week,
+                    self.week_archive_path(&week)
+                );
+            }
+            if !skipped_any {
+                // Best-effort cleanup: only succeeds if truly empty, so a
+                // concurrent write or a race with the check above is safe
+                // to ignore.
+                let _ = fs::remove_dir(&week_path);
+            }
+        }
+
+        Ok(archived_weeks)
+    }
 }
 
 /// Parse a directory name in format "YYYY-WNN" to WeekIdentifier
@@ -393,6 +508,50 @@ async fn run_retention_once(app: &AppHandle) {
         Ok(Ok(_)) => {} // enforce_retention already logs a clear summary
         Ok(Err(e)) => tracing::error!("Retention enforcement failed: {}", e),
         Err(e) => tracing::error!("Retention enforcement task panicked: {}", e),
+    }
+}
+
+/// Archive the work directory's previous-week folders once, for the given
+/// (already-updated) current week. Called from `services/polling.rs` and
+/// `commands.rs` right after a poll determines the current week has
+/// changed (bl-desktop-archiving-not-called): this is what makes
+/// `enforce_retention` (already wired to run daily, see
+/// `RetentionScheduler`) actually have a user-visible effect, since it only
+/// ever acts on `.archive/`.
+///
+/// No-ops (with a debug log) if the work directory isn't configured yet,
+/// mirroring `run_retention_once` above.
+pub async fn archive_previous_weeks_once(app: &AppHandle, current_week: &WeekIdentifier) {
+    let state = app.state::<crate::commands::AppState>();
+    let work_dir = match state.config.read() {
+        Ok(config) => config.work_directory.clone(),
+        Err(e) => {
+            tracing::error!("Archiving: failed to read config: {}", e);
+            return;
+        }
+    };
+
+    let Some(work_dir) = work_dir else {
+        tracing::debug!("Archiving: work directory not configured yet, skipping");
+        return;
+    };
+
+    // Consult the download queue so we never move a week folder out from
+    // under a download that's still writing into it.
+    let busy_weeks = state.download_queue.weeks_with_pending_downloads().await;
+    let current_week = current_week.clone();
+
+    // The filesystem scan + file moves are blocking I/O; run them off the
+    // async runtime (same pattern as `run_retention_once` above).
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        FileRetentionService::new(work_dir).archive_previous_weeks(&current_week, &busy_weeks)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(_)) => {} // archive_previous_weeks already logs per-week on success
+        Ok(Err(e)) => tracing::error!("Archiving previous weeks failed: {}", e),
+        Err(e) => tracing::error!("Archiving previous weeks task panicked: {}", e),
     }
 }
 
@@ -631,5 +790,188 @@ mod tests {
         // Nothing left to evaluate: must be a stable, error-free no-op.
         let second_run = service.enforce_retention(Some(7)).unwrap();
         assert_eq!(second_run, 0);
+    }
+
+    // -- archive_previous_weeks (bl-desktop-archiving-not-called) -----------
+
+    /// Regression guard for bl-desktop-archiving-not-called: previous weeks'
+    /// folders (directly under the work directory) must actually move into
+    /// `.archive/{week}/`, and the current week must be left alone.
+    #[test]
+    fn test_archive_previous_weeks_moves_non_current_keeps_current() {
+        let (temp_dir, service) = setup_test_dir();
+        let current = WeekIdentifier::new(2026, 4);
+        let old1 = WeekIdentifier::new(2026, 3);
+        let old2 = WeekIdentifier::new(2026, 2);
+
+        for week in [&current, &old1, &old2] {
+            let dir = temp_dir.path().join(week.as_dir_name());
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("video.mp4"), b"content").unwrap();
+        }
+
+        let archived = service
+            .archive_previous_weeks(&current, &HashSet::new())
+            .unwrap();
+
+        assert_eq!(archived, 2, "both non-current weeks should be archived");
+        assert!(
+            temp_dir.path().join(current.as_dir_name()).exists(),
+            "current week folder must be left in place at the top level"
+        );
+        assert!(
+            !temp_dir.path().join(old1.as_dir_name()).exists(),
+            "archived week folder must no longer exist at the top level"
+        );
+        assert!(service.week_archive_path(&old1).join("video.mp4").exists());
+        assert!(service.week_archive_path(&old2).join("video.mp4").exists());
+    }
+
+    /// Re-running after everything has already been archived must be a
+    /// stable no-op: no errors, nothing re-counted, no duplicate files.
+    #[test]
+    fn test_archive_previous_weeks_is_idempotent() {
+        let (temp_dir, service) = setup_test_dir();
+        let current = WeekIdentifier::new(2026, 4);
+        let old = WeekIdentifier::new(2026, 3);
+
+        let dir = temp_dir.path().join(old.as_dir_name());
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("video.mp4"), b"content").unwrap();
+
+        let first_run = service
+            .archive_previous_weeks(&current, &HashSet::new())
+            .unwrap();
+        assert_eq!(first_run, 1);
+
+        let second_run = service
+            .archive_previous_weeks(&current, &HashSet::new())
+            .unwrap();
+        assert_eq!(
+            second_run, 0,
+            "nothing left at the top level to archive again"
+        );
+        assert!(service.week_archive_path(&old).join("video.mp4").exists());
+    }
+
+    /// A week with a download in flight (per the queue) must be left
+    /// completely untouched, even though it isn't the current week.
+    #[test]
+    fn test_archive_previous_weeks_skips_busy_week() {
+        let (temp_dir, service) = setup_test_dir();
+        let current = WeekIdentifier::new(2026, 4);
+        let busy = WeekIdentifier::new(2026, 3);
+
+        let dir = temp_dir.path().join(busy.as_dir_name());
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("video.mp4"), b"content").unwrap();
+
+        let mut busy_weeks = HashSet::new();
+        busy_weeks.insert(busy.clone());
+
+        let archived = service
+            .archive_previous_weeks(&current, &busy_weeks)
+            .unwrap();
+
+        assert_eq!(archived, 0);
+        assert!(
+            temp_dir
+                .path()
+                .join(busy.as_dir_name())
+                .join("video.mp4")
+                .exists(),
+            "busy week's file must stay exactly where it was"
+        );
+        assert!(!service.week_archive_path(&busy).join("video.mp4").exists());
+    }
+
+    /// A `.part` file (services/download.rs's in-progress/resume marker)
+    /// must never be moved, even inside an otherwise-archivable week —
+    /// belt-and-suspenders alongside the queue-based `busy_weeks` check.
+    /// Other, completed files in the same folder are still archived, and
+    /// the week folder itself is left in place (not fully archived yet).
+    #[test]
+    fn test_archive_previous_weeks_never_moves_part_files() {
+        let (temp_dir, service) = setup_test_dir();
+        let current = WeekIdentifier::new(2026, 4);
+        let old = WeekIdentifier::new(2026, 3);
+
+        let dir = temp_dir.path().join(old.as_dir_name());
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("done.mp4"), b"complete").unwrap();
+        fs::write(dir.join("still-downloading.mp4.part"), b"partial").unwrap();
+
+        let archived = service
+            .archive_previous_weeks(&current, &HashSet::new())
+            .unwrap();
+
+        assert_eq!(
+            archived, 1,
+            "the week still counts as archived (moved >=1 file)"
+        );
+        assert!(service.week_archive_path(&old).join("done.mp4").exists());
+        assert!(
+            dir.join("still-downloading.mp4.part").exists(),
+            ".part file must never be moved"
+        );
+        assert!(
+            dir.exists(),
+            "week folder must stay in place while a .part file remains"
+        );
+    }
+
+    /// Once a week folder is fully archived (no files skipped), the
+    /// now-empty source folder is cleaned up instead of being left behind.
+    #[test]
+    fn test_archive_previous_weeks_removes_now_empty_source_folder() {
+        let (temp_dir, service) = setup_test_dir();
+        let current = WeekIdentifier::new(2026, 4);
+        let old = WeekIdentifier::new(2026, 3);
+
+        let dir = temp_dir.path().join(old.as_dir_name());
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("video.mp4"), b"content").unwrap();
+
+        service
+            .archive_previous_weeks(&current, &HashSet::new())
+            .unwrap();
+
+        assert!(
+            !dir.exists(),
+            "fully-archived week folder should be removed from the top level"
+        );
+    }
+
+    /// Directories that aren't week-named (notes, `.git`, or the `.archive`
+    /// tree itself) must never be touched by the scan.
+    #[test]
+    fn test_archive_previous_weeks_ignores_non_week_directories() {
+        let (temp_dir, service) = setup_test_dir();
+        let current = WeekIdentifier::new(2026, 4);
+
+        let notes_dir = temp_dir.path().join("notes");
+        fs::create_dir_all(&notes_dir).unwrap();
+        fs::write(notes_dir.join("readme.txt"), b"keep me").unwrap();
+
+        let archived = service
+            .archive_previous_weeks(&current, &HashSet::new())
+            .unwrap();
+
+        assert_eq!(archived, 0);
+        assert!(notes_dir.join("readme.txt").exists());
+    }
+
+    /// No work directory yet (not configured / not created on disk): must
+    /// no-op cleanly rather than erroring, mirroring `get_archived_weeks`.
+    #[test]
+    fn test_archive_previous_weeks_missing_work_dir_is_a_noop() {
+        let temp_dir = TempDir::new().unwrap();
+        let missing = temp_dir.path().join("does-not-exist");
+        let service = FileRetentionService::new(missing);
+
+        let archived = service
+            .archive_previous_weeks(&WeekIdentifier::new(2026, 4), &HashSet::new())
+            .unwrap();
+        assert_eq!(archived, 0);
     }
 }

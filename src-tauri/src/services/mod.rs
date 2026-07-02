@@ -12,4 +12,4 @@ pub use download::DownloadService;
 pub use errata::detect_errata_changes;
 pub use polling::PollingService;
 pub use queue::DownloadQueue;
-pub use retention::{FileRetentionService, RetentionScheduler};
+pub use retention::{archive_previous_weeks_once, FileRetentionService, RetentionScheduler};

@@ -2,14 +2,14 @@
 //!
 //! These commands implement the "Dumb UI, Smart Backend" architecture.
 
-use crate::constants::API_BASE_URL;
+use crate::constants::api_base_url;
 use crate::models::{AppConfig, AppStatus, Resource, ResourceListResponse, WeekIdentifier};
 use crate::services::download::{STATUS_CANCELLED, STATUS_PAUSED};
 use crate::services::{DownloadQueue, PollingService, RetentionScheduler};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter, State};
 
@@ -35,6 +35,13 @@ pub struct AppState {
     /// Handle to the background retention scheduler, so it can be stopped
     /// cleanly on app exit alongside `polling_service`.
     pub retention_scheduler: RwLock<Option<RetentionScheduler>>,
+    /// Whether the system tray icon was created successfully at setup.
+    /// `false` on Linux systems missing libappindicator3/
+    /// libayatana-appindicator3 (see `lib.rs::setup_tray`): the window's
+    /// `CloseRequested` handler reads this to fall back to a normal close
+    /// (process exits) instead of hiding to a tray icon that doesn't exist,
+    /// which would otherwise strand the user with no way to reopen the app.
+    pub tray_available: AtomicBool,
 }
 
 /// Response for download command
@@ -67,6 +74,7 @@ impl Default for AppState {
             shared_http_client: reqwest::Client::new(),
             polling_service: RwLock::new(None),
             retention_scheduler: RwLock::new(None),
+            tray_available: AtomicBool::new(false),
         }
     }
 }
@@ -152,7 +160,7 @@ pub async fn force_poll(
     app: AppHandle,
 ) -> Result<ResourceListResponse, String> {
     // Fetch from API
-    let url = format!("{}/api/resources/latest-week", API_BASE_URL);
+    let url = format!("{}/api/resources/latest-week", api_base_url());
 
     let response = state
         .shared_http_client
@@ -230,6 +238,12 @@ pub async fn force_poll(
         }
     }
 
+    // Set when this poll's resources belong to a different week than the
+    // last known one, so we can archive the now-previous week(s) below
+    // (bl-desktop-archiving-not-called) once the status write lock (a
+    // non-Send std::sync guard) is released and out of scope.
+    let mut new_current_week: Option<WeekIdentifier> = None;
+
     // Update status
     {
         let mut status = state
@@ -241,7 +255,11 @@ pub async fn force_poll(
 
         // Determine current week from resources
         if let Some(resource) = api_response.resources.first() {
-            status.current_week = Some(resource.week());
+            let week = resource.week();
+            if status.current_week.as_ref() != Some(&week) {
+                new_current_week = Some(week.clone());
+            }
+            status.current_week = Some(week);
         }
     }
 
@@ -271,6 +289,14 @@ pub async fn force_poll(
     // Check for auto-downloads after force poll
     tracing::debug!("Scanning resources for auto-download after force poll");
     state.download_queue.scan_and_queue(app.clone()).await;
+
+    // The current week just changed: archive the folders of the now-past
+    // week(s) so enforce_retention (already scheduled daily) has something
+    // to trash after retention_days (bl-desktop-archiving-not-called).
+    if let Some(week) = new_current_week {
+        tracing::info!("Current week changed to {}, archiving previous weeks", week);
+        crate::services::archive_previous_weeks_once(&app, &week).await;
+    }
 
     Ok(api_response)
 }

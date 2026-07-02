@@ -1,0 +1,77 @@
+{
+  "count": 4,
+  "resources": [
+    {
+      "id": 101,
+      "category": "decime",
+      "title": "Gestione Cristiana della Vita – 29 Giugno",
+      "description": "Video del sabato per la rubrica Gestione Cristiana della Vita.",
+      "download_url": "http://localhost:8799/files/decime_101_1_gestione-cristiana-vita.mp4",
+      "thumbnail_url": null,
+      "file_type": "mp4",
+      "checksum": "79d3e3db611c0c8a80fdf1575eab9bc8c737933a78517504890b986fc50cba9c",
+      "is_active": true,
+      "created_at": "2026-07-02T05:29:28.175000",
+      "optimized_video_url": null,
+      "optimized_videos": null
+    },
+    {
+      "id": 102,
+      "category": "missioni",
+      "title": "Missioni dal Mondo – Amazzonia",
+      "description": "Archivio zip con i contributi missionari della settimana.",
+      "download_url": "http://localhost:8799/files/missioni_102_amazzonia.zip",
+      "thumbnail_url": null,
+      "file_type": "zip",
+      "checksum": "db25b501877bab5d9640c3ae53adc49261372477618a26e4a9bcdc1c78e0c974",
+      "is_active": true,
+      "created_at": "2026-07-02T08:29:28+02:00",
+      "optimized_video_url": "http://localhost:8799/files/missioni_102_1_servizio-completo.mp4",
+      "optimized_videos": [
+        {
+          "url": "http://localhost:8799/files/missioni_102_1_servizio-completo.mp4",
+          "label": "Servizio completo",
+          "size_bytes": 8100000
+        },
+        {
+          "url": "http://localhost:8799/files/missioni_102_2_intervista-pastore.mp4",
+          "label": "Intervista al pastore",
+          "size_bytes": 4950000
+        },
+        {
+          "url": "http://localhost:8799/files/missioni_102_3_saluti-finali.mp4",
+          "label": "Saluti finali",
+          "size_bytes": 2150000
+        }
+      ]
+    },
+    {
+      "id": 103,
+      "category": "vga",
+      "title": "Video Giornale Avventista – Puntata 27",
+      "description": "Puntata settimanale del VGA, pubblicata su YouTube (nessun file da scaricare).",
+      "download_url": "https://www.youtube.com/watch?v=vga2026w27puntata",
+      "thumbnail_url": "https://img.youtube.com/vi/vga2026w27puntata/hqdefault.jpg",
+      "file_type": null,
+      "checksum": null,
+      "is_active": true,
+      "created_at": "2026-07-02T07:29:28Z",
+      "optimized_video_url": null,
+      "optimized_videos": null
+    },
+    {
+      "id": 104,
+      "category": "vga",
+      "title": "Video Giornale Avventista – Clip supplementare",
+      "description": "Contenuto extra non incluso nella puntata principale.",
+      "download_url": "http://localhost:8799/files/vga_104_1_puntata-27-extra.mp4",
+      "thumbnail_url": null,
+      "file_type": "mp4",
+      "checksum": "27cdce64ddbf5a029aae50a79ae1704308b8414f581752c7b12302dcf735fc95",
+      "is_active": true,
+      "created_at": "2026-07-02T08:29:28",
+      "optimized_video_url": null,
+      "optimized_videos": null
+    }
+  ]
+}
