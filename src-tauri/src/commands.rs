@@ -21,6 +21,11 @@ pub struct AppState {
     pub status: RwLock<AppStatus>,
     /// Signals to control active downloads (Pause/Cancel)
     pub download_signals: RwLock<HashMap<i64, Arc<AtomicU8>>>,
+    /// Registry of successfully downloaded files (errata corrige tracking).
+    /// Persisted in the `downloaded_files` key of `cache.json`; the queue
+    /// worker upserts an entry on each successful download and the errata
+    /// pass (`services::errata::process_errata`) marks entries superseded.
+    pub downloaded_files: RwLock<Vec<crate::models::DownloadedFile>>,
     /// Download queue service
     pub download_queue: Arc<DownloadQueue>,
     /// Cache for file sizes (keyed by download_url)
@@ -69,6 +74,7 @@ impl Default for AppState {
             resources: RwLock::new(Vec::new()),
             status: RwLock::new(AppStatus::default()),
             download_signals: RwLock::new(HashMap::new()),
+            downloaded_files: RwLock::new(Vec::new()),
             download_queue: Arc::new(DownloadQueue::new()),
             file_size_cache: RwLock::new(HashMap::new()),
             shared_http_client: reqwest::Client::new(),
@@ -96,12 +102,23 @@ pub fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
 pub async fn set_config(
     state: State<'_, AppState>,
     app: AppHandle,
-    config: AppConfig,
+    mut config: AppConfig,
 ) -> Result<(), String> {
     // Validate before saving
     config
         .validate()
         .map_err(|e| format!("Invalid config: {:?}", e))?;
+
+    // `tray_close_notice_shown` is backend-owned (set once in lib.rs when the
+    // window is first hidden to the tray); never let a stale value round-tripped
+    // by the frontend overwrite it.
+    {
+        let current = state
+            .config
+            .read()
+            .map_err(|e| format!("Failed to read config: {}", e))?;
+        config.tray_close_notice_shown = current.tray_close_notice_shown;
+    }
 
     // Save to store
     use tauri_plugin_store::StoreExt;
@@ -254,8 +271,7 @@ pub async fn force_poll(
         status.total_resources = api_response.resources.len();
 
         // Determine current week from resources
-        if let Some(resource) = api_response.resources.first() {
-            let week = resource.week();
+        if let Some(week) = crate::models::latest_week(&api_response.resources) {
             if status.current_week.as_ref() != Some(&week) {
                 new_current_week = Some(week.clone());
             }
@@ -285,6 +301,13 @@ pub async fn force_poll(
     store.set("file_size_cache", cache_json);
 
     store.save().map_err(|e| e.to_string())?;
+
+    // Reconcile the errata registry against this fresh snapshot BEFORE the
+    // auto-download scan (same ordering rationale as `polling.rs::poll_api`):
+    // a re-queued errata corrige is already in the queue when the scan runs,
+    // so its check_file_exists pass is deduped instead of racing a second
+    // download of the same file (adr-0007).
+    crate::services::process_errata(&app, &api_response.resources).await;
 
     // Check for auto-downloads after force poll
     tracing::debug!("Scanning resources for auto-download after force poll");
@@ -351,17 +374,52 @@ pub fn set_polling_enabled(
     app: AppHandle,
     enabled: bool,
 ) -> Result<(), String> {
-    let mut config = state
-        .config
-        .write()
-        .map_err(|e| format!("Failed to write config: {}", e))?;
-    config.polling_enabled = enabled;
+    // Update config + capture the interval to (re)start with, then release the
+    // lock before touching the polling service.
+    let (interval, config_json) = {
+        let mut config = state
+            .config
+            .write()
+            .map_err(|e| format!("Failed to write config: {}", e))?;
+        config.polling_enabled = enabled;
+        let json = serde_json::to_value(&*config)
+            .map_err(|e| format!("Failed to serialize config: {}", e))?;
+        (config.polling_interval_minutes, json)
+    };
 
-    let mut status = state
-        .status
-        .write()
-        .map_err(|e| format!("Failed to write status: {}", e))?;
-    status.polling_active = enabled;
+    {
+        let mut status = state
+            .status
+            .write()
+            .map_err(|e| format!("Failed to write status: {}", e))?;
+        status.polling_active = enabled;
+    }
+
+    // Actually start/stop the background task so the UI toggle takes effect
+    // (previously this command only flipped config/status flags, a no-op).
+    {
+        let mut guard = state
+            .polling_service
+            .write()
+            .map_err(|e| format!("Failed to access polling service: {}", e))?;
+        if enabled {
+            match guard.as_ref() {
+                // Already running: nothing to do.
+                Some(service) if service.is_running() => {}
+                // Kept from a previous run but stopped: restart it in place.
+                Some(service) => service.start(app.clone(), interval),
+                // No service yet: create, start, and store it in the same
+                // field `lib.rs`/shutdown use, so it can be stopped cleanly.
+                None => {
+                    let service = PollingService::new();
+                    service.start(app.clone(), interval);
+                    *guard = Some(service);
+                }
+            }
+        } else if let Some(service) = guard.as_ref() {
+            service.stop();
+        }
+    }
 
     // Save to store
     use tauri_plugin_store::StoreExt;
@@ -369,10 +427,7 @@ pub fn set_polling_enabled(
         .store("settings.json")
         .map_err(|e| format!("Failed to access store: {}", e))?;
 
-    let json =
-        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?;
-
-    store.set("config", json);
+    store.set("config", config_json);
     store
         .save()
         .map_err(|e| format!("Failed to save store: {}", e))?;
@@ -388,15 +443,32 @@ pub fn set_polling_interval(
     app: AppHandle,
     minutes: u32,
 ) -> Result<(), String> {
-    if minutes < 1 || minutes > 1440 {
+    if !(1..=1440).contains(&minutes) {
         return Err("Polling interval must be between 1 and 1440 minutes".to_string());
     }
 
-    let mut config = state
-        .config
-        .write()
-        .map_err(|e| format!("Failed to write config: {}", e))?;
-    config.polling_interval_minutes = minutes;
+    let config_json = {
+        let mut config = state
+            .config
+            .write()
+            .map_err(|e| format!("Failed to write config: {}", e))?;
+        config.polling_interval_minutes = minutes;
+        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?
+    };
+
+    // If polling is currently running, restart it so the new interval takes
+    // effect immediately instead of only after the next app launch.
+    {
+        let guard = state
+            .polling_service
+            .read()
+            .map_err(|e| format!("Failed to access polling service: {}", e))?;
+        if let Some(service) = guard.as_ref() {
+            if service.is_running() {
+                service.restart(app.clone(), minutes);
+            }
+        }
+    }
 
     // Save to store
     use tauri_plugin_store::StoreExt;
@@ -404,10 +476,7 @@ pub fn set_polling_interval(
         .store("settings.json")
         .map_err(|e| format!("Failed to access store: {}", e))?;
 
-    let json =
-        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?;
-
-    store.set("config", json);
+    store.set("config", config_json);
     store
         .save()
         .map_err(|e| format!("Failed to save store: {}", e))?;
@@ -563,7 +632,23 @@ pub fn pause_download(state: State<'_, AppState>, resource_id: i64) -> Result<()
 
 /// Cancel and delete an active download
 #[tauri::command]
-pub fn cancel_download(state: State<'_, AppState>, resource_id: i64) -> Result<(), String> {
+pub async fn cancel_download(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    resource_id: i64,
+) -> Result<(), String> {
+    // A5: if the resource is still waiting in the queue, drop it there.
+    // Setting the download signal would be a no-op for something not yet
+    // active, so the item would otherwise reappear on the next status emit.
+    if state
+        .download_queue
+        .remove_queued(&app, resource_id)
+        .await
+    {
+        return Ok(());
+    }
+
+    // Otherwise it's an in-flight download: signal cancellation.
     // Use try_read to avoid blocking if a write lock is held
     let signals = state
         .download_signals

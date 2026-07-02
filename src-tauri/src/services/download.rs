@@ -99,6 +99,12 @@ impl DownloadService {
         let dest_path = dest_dir.join(&filename);
         let part_path = dest_dir.join(format!("{}.part", filename));
 
+        // Defensive path-traversal guard: the resolved filename must stay directly
+        // inside dest_dir. If join() escaped the base (absolute path or `..`), reject.
+        if dest_path.parent() != Some(dest_dir) || part_path.parent() != Some(dest_dir) {
+            return Err(DownloadError::InvalidFilename);
+        }
+
         tracing::debug!("Destination path: {:?}", dest_path);
 
         // Check for existing partial download
@@ -317,45 +323,93 @@ fn create_linux_desktop_shortcut(name: &str, url: &str) -> (String, String) {
     (filename, content)
 }
 
+/// Whether `file_name`'s stem (everything before its first `.`) is a Windows
+/// reserved device name (CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9),
+/// case-insensitive. Such names cannot be created as regular files on Windows,
+/// so a URL yielding one is rejected in favour of the sanitized title.
+fn is_windows_reserved_stem(file_name: &str) -> bool {
+    let stem = file_name.split('.').next().unwrap_or(file_name);
+    let upper = stem.to_ascii_uppercase();
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    for prefix in ["COM", "LPT"] {
+        if let Some(rest) = upper.strip_prefix(prefix) {
+            if rest.len() == 1 && matches!(rest.as_bytes()[0], b'1'..=b'9') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Extract filename from URL with URL decoding support
-/// 
+///
 /// 1. Extracts the filename from the last path segment
 /// 2. Removes query parameters
 /// 3. Decodes URL-encoded characters (%20 -> space, etc.)
-/// 4. Returns None if result is invalid/empty
+/// 4. Sanitizes against path traversal: the decoded value is reduced to its
+///    final path component (`Path::file_name`), rejecting `..`, `.`, empty or
+///    separator-bearing results so an encoded path (e.g. `..%2F..%2Fevil.sh`
+///    or `%2Fetc%2Fx`) can never escape the destination directory.
+/// 5. Returns None if the result is invalid/empty (callers fall back to
+///    `sanitize_filename(title)`).
 pub(crate) fn extract_filename_from_url(url: &str) -> Option<String> {
     url.split('/')
-        .last()
+        .next_back()
         .filter(|s| !s.is_empty() && s.contains('.'))
         .and_then(|s| {
             // Remove query parameters
             let without_query = s.split('?').next().unwrap_or(s);
-            
+
             // Decode URL-encoded characters
             let decoded = urlencoding::decode(without_query)
                 .ok()?
                 .into_owned();
-            
-            // Only return if not empty after decoding
-            if decoded.is_empty() {
+
+            // Reduce to the final path component and reject anything that could
+            // traverse out of the destination directory. Note: on Linux `\` is
+            // not a path separator, so `Path::file_name` would keep it; the
+            // explicit separator checks below neutralize that case too.
+            let file_name = Path::new(&decoded).file_name()?.to_str()?;
+            if file_name.is_empty()
+                || file_name == ".."
+                || file_name == "."
+                || file_name.contains('/')
+                || file_name.contains('\\')
+                || is_windows_reserved_stem(file_name)
+            {
                 None
             } else {
-                Some(decoded)
+                Some(file_name.to_string())
             }
         })
 }
 
 /// Sanitize a string to be a valid filename
+///
+/// Neutralizes reserved characters, path separators and `..` traversal
+/// sequences anywhere in the name, and never returns an empty string
+/// (falls back to `"download"`).
 pub(crate) fn sanitize_filename(name: &str) -> String {
-    name.chars()
+    let mapped = name
+        .chars()
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             c if c.is_control() => '_',
             c => c,
         })
-        .collect::<String>()
-        .trim()
-        .to_string()
+        .collect::<String>();
+
+    // Neutralize `..` traversal sequences left after separator mapping.
+    let neutralized = mapped.replace("..", "_");
+
+    let trimmed = neutralized.trim();
+    if trimmed.is_empty() {
+        "download".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -399,6 +453,94 @@ mod tests {
     fn test_extract_filename_from_url_invalid() {
         assert!(extract_filename_from_url("https://example.com/").is_none());
         assert!(extract_filename_from_url("https://example.com/folder").is_none());
+    }
+
+    #[test]
+    fn test_extract_filename_rejects_path_traversal() {
+        // Encoded `../../evil.sh` must be reduced to its final component only,
+        // never escaping the destination directory.
+        assert_eq!(
+            extract_filename_from_url("https://host/..%2F..%2Fevil.sh"),
+            Some("evil.sh".to_string())
+        );
+
+        // Encoded absolute path `/etc/passwd`: no dot in the last segment, so it
+        // is filtered out and the caller falls back to the sanitized title.
+        assert!(extract_filename_from_url("https://host/%2Fetc%2Fpasswd").is_none());
+
+        // A single `..` segment must never be accepted as a filename.
+        assert!(extract_filename_from_url("https://host/..").is_none());
+
+        // Encoded nested path keeps only the final safe component.
+        assert_eq!(
+            extract_filename_from_url("https://host/a%2Fb.pdf"),
+            Some("b.pdf".to_string())
+        );
+
+        // A normal encoded filename must remain valid and fully decoded.
+        assert_eq!(
+            extract_filename_from_url("https://host/file%20name.pdf"),
+            Some("file name.pdf".to_string())
+        );
+
+        // URL without a path component yields no filename.
+        assert!(extract_filename_from_url("https://host/").is_none());
+    }
+
+    #[test]
+    fn test_extract_filename_rejects_windows_reserved_names() {
+        // Names whose stem before the first `.` is a Windows reserved device
+        // are rejected (→ None), case-insensitive, so the caller falls back to
+        // the sanitized title.
+        for url in [
+            "https://host/CON.txt",
+            "https://host/con.txt",
+            "https://host/NUL.mp4",
+            "https://host/aux.pdf",
+            "https://host/prn.zip",
+            "https://host/COM1.dat",
+            "https://host/com9.bin",
+            "https://host/LPT1.log",
+            "https://host/lpt9.tmp",
+            "https://host/CON.tar.gz",
+        ] {
+            assert!(
+                extract_filename_from_url(url).is_none(),
+                "`{url}` should be rejected as a Windows reserved name"
+            );
+        }
+
+        // Non-reserved lookalikes stay valid: only the exact device names and
+        // COM/LPT followed by a single 1-9 digit are reserved.
+        assert_eq!(
+            extract_filename_from_url("https://host/CONFIG.txt"),
+            Some("CONFIG.txt".to_string())
+        );
+        assert_eq!(
+            extract_filename_from_url("https://host/COM10.dat"),
+            Some("COM10.dat".to_string())
+        );
+        assert_eq!(
+            extract_filename_from_url("https://host/COM0.dat"),
+            Some("COM0.dat".to_string())
+        );
+    }
+
+    #[test]
+    fn test_sanitize_filename_neutralizes_traversal() {
+        // `..` sequences and separators are neutralized anywhere in the name:
+        // the result must never contain a traversal token or a path separator.
+        for input in ["../../evil.sh", "..\\..\\evil", "a/../b"] {
+            let out = sanitize_filename(input);
+            assert!(!out.contains(".."), "`{input}` -> `{out}` still has `..`");
+            assert!(!out.contains('/'), "`{input}` -> `{out}` still has `/`");
+            assert!(!out.contains('\\'), "`{input}` -> `{out}` still has `\\`");
+            assert!(!out.is_empty());
+        }
+        assert_eq!(sanitize_filename(".."), "_");
+        // Never returns an empty string.
+        assert_eq!(sanitize_filename(""), "download");
+        assert_eq!(sanitize_filename("   "), "download");
     }
 
     #[test]

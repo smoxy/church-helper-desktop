@@ -16,7 +16,7 @@ pub use services::{PollingService, RetentionScheduler};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::Ordering;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -117,8 +117,8 @@ pub fn run() {
                         .write()
                         .map_err(|e| format!("Failed to write status: {}", e))?;
                     status.total_resources = cached_resources.len();
-                    if let Some(resource) = cached_resources.first() {
-                        status.current_week = Some(resource.week());
+                    if let Some(week) = models::latest_week(&cached_resources) {
+                        status.current_week = Some(week);
                     }
                 }
             }
@@ -140,6 +140,54 @@ pub fn run() {
                         .len();
                     tracing::info!("Loaded {} cached file sizes", cached_file_sizes_len);
                 }
+            }
+
+            // Try to load the errata registry (downloaded_files). Absent or
+            // malformed → empty registry, never a startup error: a corrupt or
+            // missing registry must not stop the app from launching.
+            if let Some(json) = cache_store.get("downloaded_files") {
+                match serde_json::from_value::<Vec<models::DownloadedFile>>(json.clone()) {
+                    Ok(files) => {
+                        let count = files.len();
+                        *app_state
+                            .downloaded_files
+                            .write()
+                            .map_err(|e| format!("Failed to write downloaded_files: {}", e))? =
+                            files;
+                        tracing::info!("Loaded {} downloaded-file registry entries", count);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse downloaded_files registry, starting empty: {}",
+                            e
+                        );
+                    }
+                }
+            }
+
+            // Reconcile has_superseded_files against the freshly loaded registry
+            // so a supersession recorded in a previous session is reflected in
+            // the status at startup, using the same week the status derives from
+            // latest_week (set above) rather than the wall-clock week.
+            {
+                let current_week = app_state
+                    .status
+                    .read()
+                    .map_err(|e| format!("Failed to read status: {}", e))?
+                    .current_week
+                    .clone();
+                let has_superseded = {
+                    let registry = app_state
+                        .downloaded_files
+                        .read()
+                        .map_err(|e| format!("Failed to read downloaded_files: {}", e))?;
+                    services::errata::compute_has_superseded(&registry, current_week.as_ref())
+                };
+                app_state
+                    .status
+                    .write()
+                    .map_err(|e| format!("Failed to write status: {}", e))?
+                    .has_superseded_files = has_superseded;
             }
 
             app.manage(app_state);
@@ -392,12 +440,15 @@ fn show_main_window(app: &tauri::AppHandle) {
 
 /// Shows a one-time notice the first time the window is closed to the tray
 /// rather than exiting, so the user isn't left wondering where the app
-/// went (2B review follow-up on bl-desktop-close-to-tray). Emits a
-/// `tray-close-notice` event for the frontend to render as a toast, then
-/// persists a flag in config so it never fires again, even across
-/// restarts. A no-op (besides logging) on any failure to read/write that
-/// flag — never worth blocking the close/hide that already happened.
+/// went (2B review follow-up on bl-desktop-close-to-tray). Delivered as an
+/// OS notification (the window is already hidden, so an in-app toast would
+/// never be seen), then persists a flag in config so it never fires again,
+/// even across restarts. A no-op (besides logging) on any failure to
+/// notify or to read/write that flag — never worth blocking the close/hide
+/// that already happened.
 fn maybe_notify_first_tray_close(app: &tauri::AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+
     let state = app.state::<AppState>();
 
     let already_shown = match state.config.read() {
@@ -411,8 +462,14 @@ fn maybe_notify_first_tray_close(app: &tauri::AppHandle) {
         return;
     }
 
-    if let Err(e) = app.emit("tray-close-notice", ()) {
-        tracing::error!("Failed to emit tray-close-notice: {}", e);
+    if let Err(e) = app
+        .notification()
+        .builder()
+        .title("Church Helper è ancora attivo")
+        .body("L'app continua a funzionare nell'area di notifica. Usa \"Esci\" dal menu dell'icona per chiuderla del tutto.")
+        .show()
+    {
+        tracing::warn!("Failed to show tray-close OS notification: {}", e);
     }
 
     // Persist so this never fires again, regardless of whether the
@@ -530,6 +587,17 @@ async fn check_for_updates(app: tauri::AppHandle) {
         }
     };
 
+    // The user already dismissed this exact version with "Più tardi": don't
+    // re-download it or nag again on every launch. A newer version won't
+    // match the persisted string and will prompt as usual.
+    if update_version_declined(&app, &update.version) {
+        tracing::info!(
+            "Update {} was previously declined by the user, skipping",
+            update.version
+        );
+        return;
+    }
+
     tracing::info!(
         "Update available: {} -> {}, downloading in background",
         update.current_version,
@@ -582,14 +650,81 @@ async fn check_for_updates(app: tauri::AppHandle) {
             "Update {} downloaded but installation postponed by the user",
             update.version
         );
+        persist_declined_update_version(&app, &update.version);
         return;
     }
 
     tracing::info!("Installing update {} and restarting", update.version);
     if let Err(e) = update.install(bytes) {
         tracing::error!("Failed to install update {}: {}", update.version, e);
+        show_update_error_dialog(&app, &update.version, &e);
         return;
     }
 
     app.restart();
+}
+
+/// tauri-plugin-store key (in settings.json) holding the last update version
+/// the user dismissed with "Più tardi", so it isn't re-offered every launch.
+const UPDATER_DECLINED_VERSION_KEY: &str = "updater_declined_version";
+
+/// Persist the version the user declined via the update dialog. Best-effort:
+/// a store failure only means we may prompt again next launch.
+fn persist_declined_update_version(app: &tauri::AppHandle, version: &str) {
+    use tauri_plugin_store::StoreExt;
+    let store = match app.store("settings.json") {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::warn!(
+                "Updater: failed to access store to record declined version: {}",
+                e
+            );
+            return;
+        }
+    };
+    store.set(UPDATER_DECLINED_VERSION_KEY, serde_json::json!(version));
+    if let Err(e) = store.save() {
+        tracing::warn!("Updater: failed to persist declined version: {}", e);
+    }
+}
+
+/// Whether the user already declined this exact version.
+fn update_version_declined(app: &tauri::AppHandle, version: &str) -> bool {
+    use tauri_plugin_store::StoreExt;
+    let Ok(store) = app.store("settings.json") else {
+        return false;
+    };
+    store
+        .get(UPDATER_DECLINED_VERSION_KEY)
+        .and_then(|value| value.as_str().map(str::to_string))
+        .is_some_and(|declined| declined == version)
+}
+
+/// Surface an install failure that happened *after* the user consented, so it
+/// doesn't fail silently. Distinguishes the platform-not-supported case
+/// (nothing the user can retry) from a transient failure.
+fn show_update_error_dialog(
+    app: &tauri::AppHandle,
+    version: &str,
+    error: &tauri_plugin_updater::Error,
+) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    use tauri_plugin_updater::Error;
+
+    let message = match error {
+        Error::UnsupportedOs | Error::UnsupportedArch | Error::TargetNotFound(_) => format!(
+            "L'aggiornamento automatico non è supportato su questa piattaforma. Scarica e installa manualmente la versione {}.",
+            version
+        ),
+        _ => format!(
+            "Installazione dell'aggiornamento {} non riuscita. Riprova più tardi.",
+            version
+        ),
+    };
+
+    app.dialog()
+        .message(message)
+        .title("Aggiornamento non riuscito")
+        .kind(MessageDialogKind::Error)
+        .blocking_show();
 }

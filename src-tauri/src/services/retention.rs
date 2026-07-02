@@ -178,18 +178,27 @@ impl FileRetentionService {
                     let modified_datetime: chrono::DateTime<Utc> = modified.into();
 
                     if modified_datetime < cutoff_date {
-                        // Move to system trash
-                        trash::delete(&week_path).map_err(|e| FileError::TrashFailed {
-                            path: week_path.clone(),
-                            source: e,
-                        })?;
-                        tracing::info!(
-                            "Retention: moved archived week {} to trash (archived {}, older than {} day(s))",
-                            week,
-                            modified_datetime.to_rfc3339(),
-                            retention_days
-                        );
-                        deleted_count += 1;
+                        // Best-effort per week: one week that can't be trashed
+                        // (permissions, locked file, ...) must not abort the
+                        // whole pass and starve the remaining weeks.
+                        match trash::delete(&week_path) {
+                            Ok(()) => {
+                                tracing::info!(
+                                    "Retention: moved archived week {} to trash (archived {}, older than {} day(s))",
+                                    week,
+                                    modified_datetime.to_rfc3339(),
+                                    retention_days
+                                );
+                                deleted_count += 1;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Retention: failed to move archived week {} to trash, skipping: {}",
+                                    week,
+                                    e
+                                );
+                            }
+                        }
                     } else {
                         tracing::trace!(
                             "Retention: keeping archived week {} (archived {}, within {} day(s))",
@@ -334,8 +343,24 @@ impl FileRetentionService {
                     continue;
                 }
 
-                self.archive_file(&file_entry.path(), &week)?;
-                moved_any = true;
+                match self.archive_file(&file_entry.path(), &week) {
+                    Ok(_) => moved_any = true,
+                    // Already moved out by a concurrent run: not an error, and
+                    // not something that should keep the week folder pinned.
+                    Err(FileError::MoveFileFailed { source, .. })
+                        if source.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        // Best-effort per file: a single un-movable file must
+                        // not abort archiving the rest of the week.
+                        tracing::warn!(
+                            "Archiving: failed to move {} for week {}, skipping: {}",
+                            file_entry.path().display(),
+                            week,
+                            e
+                        );
+                        skipped_any = true;
+                    }
+                }
             }
 
             if moved_any {
@@ -368,7 +393,7 @@ fn parse_week_dir_name(name: &str) -> Option<WeekIdentifier> {
     let year: i32 = parts[0].parse().ok()?;
     let week: u32 = parts[1].parse().ok()?;
 
-    if week >= 1 && week <= 53 {
+    if (1..=53).contains(&week) {
         Some(WeekIdentifier::new(year, week))
     } else {
         None

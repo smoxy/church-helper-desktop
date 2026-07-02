@@ -70,19 +70,20 @@ export function useResource(resource: Resource) {
   useEffect(
       () => {
         checkAutoDownload();
-        fetchFileSize();
       },
       [
         resource
       ]);  // Re-check when resource changes
 
-  // Separate effect for the "is it downloaded?" check: also re-runs when
-  // the user picks a different optimized video (effectiveResource changes),
-  // so the downloaded/not-downloaded indicator tracks the variant that was
-  // actually selected instead of always the compat-default.
+  // Separate effect for the "is it downloaded?" check and the file-size
+  // fetch: both re-run when the user picks a different optimized video
+  // (effectiveResource changes), so the downloaded/not-downloaded indicator
+  // and the displayed size track the variant that was actually selected
+  // instead of always the compat-default.
   useEffect(
       () => {
         checkStatus();
+        fetchFileSize();
       },
       [
         effectiveResource
@@ -146,8 +147,8 @@ export function useResource(resource: Resource) {
       // Fetch both sizes in parallel for better performance
       const [originalSize, optimizedSize] = await Promise.all([
         invoke<number>('get_file_size', { url: resource.download_url }),
-        resource.optimized_video_url 
-          ? invoke<number>('get_file_size', { url: resource.optimized_video_url })
+        effectiveResource.optimized_video_url
+          ? invoke<number>('get_file_size', { url: effectiveResource.optimized_video_url })
           : Promise.resolve(0)
       ]);
 

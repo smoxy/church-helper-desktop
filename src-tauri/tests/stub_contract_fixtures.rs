@@ -75,6 +75,41 @@ fn test_stub_no_optimized_scenario_parses_with_missing_keys() {
     }
 }
 
+/// contract-resources-api / adr-0003 (additive-only): `description` is a
+/// tolerant field. Derives two degraded payloads from the REAL stub response
+/// — one where a resource sends `description: null`, one where the key is
+/// absent entirely — and confirms neither breaks the whole poll (both map to
+/// `None`), while the untouched resources keep their descriptions.
+#[test]
+fn test_description_null_and_missing_do_not_break_real_payload() {
+    let mut value: serde_json::Value =
+        serde_json::from_str(NO_OPTIMIZED_JSON).expect("fixture must be valid JSON");
+    let resources = value["resources"]
+        .as_array_mut()
+        .expect("payload must carry a resources array");
+
+    // First resource: explicit null description.
+    resources[0]
+        .as_object_mut()
+        .expect("resource must be a JSON object")
+        .insert("description".to_string(), serde_json::Value::Null);
+    // Second resource: description key removed entirely.
+    resources[1]
+        .as_object_mut()
+        .expect("resource must be a JSON object")
+        .remove("description");
+
+    let degraded = serde_json::to_string(&value).expect("re-serialization must succeed");
+    let response: ResourceListResponse = serde_json::from_str(&degraded)
+        .expect("null/absent description must not fail the whole poll");
+
+    assert_eq!(response.count, 4);
+    assert_eq!(response.resources[0].description, None);
+    assert_eq!(response.resources[1].description, None);
+    // A resource that still carries a description keeps it as `Some(..)`.
+    assert!(response.resources[2].description.is_some());
+}
+
 /// bl-desktop-archiving-not-called fixture: three resources spread across
 /// three distinct past weeks, useful for exercising archiving/retention
 /// week-boundary logic against realistic data instead of only synthetic

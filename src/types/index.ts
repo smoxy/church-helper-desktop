@@ -48,11 +48,21 @@ export interface AppConfig {
 export interface AppStatus {
   polling_active: boolean;
   last_poll_time: string|null;  // ISO date string
-  total_resources: number;
   current_week: WeekIdentifier|null;
+  total_resources: number;
+  pending_downloads: number;
+  has_superseded_files: boolean;
 }
 
 export interface ResourceListResponse {
   count: number;
   resources: Resource[];
+}
+
+// Payload of the `errata-detected` event, emitted by the backend after a poll
+// finds one or more resources superseded by an errata corrige. Mirrors the
+// `serde_json::json!({ "resourceIds": ... })` payload in
+// src-tauri/src/services/errata.rs::process_errata.
+export interface ErrataDetectedPayload {
+  resourceIds: number[];
 }

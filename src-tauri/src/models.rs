@@ -98,7 +98,12 @@ pub struct Resource {
     pub id: i64,
     pub category: String,
     pub title: String,
-    pub description: String,
+    /// Human-readable description. Additive-tolerant (adr-0003): an explicit
+    /// JSON `null` or an entirely absent key both deserialize to `None`
+    /// instead of failing the whole poll. `#[serde(default)]` makes the
+    /// missing-key case explicit alongside `Option`'s implicit tolerance.
+    #[serde(default)]
+    pub description: Option<String>,
     pub download_url: String,
     pub thumbnail_url: Option<String>,
     pub file_type: Option<String>,
@@ -221,7 +226,24 @@ impl std::fmt::Display for WeekIdentifier {
     }
 }
 
-/// Local state for tracking downloaded files
+/// Latest (maximum) ISO week among `resources`, `None` if empty. Used to
+/// derive `current_week`, which guards the destructive archiving path, so it
+/// must not depend on API response ordering.
+pub fn latest_week(resources: &[Resource]) -> Option<WeekIdentifier> {
+    resources
+        .iter()
+        .map(|r| r.week())
+        .max_by(|a, b| (a.year, a.week_number).cmp(&(b.year, b.week_number)))
+}
+
+/// Local state for tracking downloaded files.
+///
+/// Persisted as the `downloaded_files` key of `cache.json` (the errata
+/// registry). `resource_id`, `week`, `local_path` and `downloaded_at` are the
+/// identity/essential fields and are always written; `source_url` and
+/// `is_superseded` carry `#[serde(default)]` so a registry snapshot written by
+/// an older build that predates them still deserializes (empty string / false)
+/// instead of failing to parse and wiping the whole registry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DownloadedFile {
     pub resource_id: i64,
@@ -229,8 +251,10 @@ pub struct DownloadedFile {
     pub local_path: PathBuf,
     pub downloaded_at: DateTime<Utc>,
     /// Original URL used for download
+    #[serde(default)]
     pub source_url: String,
     /// Whether this file has been superseded by an errata corrige
+    #[serde(default)]
     pub is_superseded: bool,
 }
 
@@ -243,7 +267,7 @@ pub struct ErrataChange {
 }
 
 /// Application status for UI display
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppStatus {
     pub polling_active: bool,
     pub last_poll_time: Option<DateTime<Utc>>,
@@ -251,19 +275,6 @@ pub struct AppStatus {
     pub total_resources: usize,
     pub pending_downloads: usize,
     pub has_superseded_files: bool,
-}
-
-impl Default for AppStatus {
-    fn default() -> Self {
-        Self {
-            polling_active: false,
-            last_poll_time: None,
-            current_week: None,
-            total_resources: 0,
-            pending_downloads: 0,
-            has_superseded_files: false,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -406,7 +417,7 @@ mod tests {
             id: 1,
             category: "video".to_string(),
             title: "Test Video".to_string(),
-            description: "A test".to_string(),
+            description: Some("A test".to_string()),
             download_url: "https://youtube.com/watch?v=abc".to_string(),
             thumbnail_url: None,
             file_type: None,
@@ -456,7 +467,7 @@ mod tests {
             id: 1,
             category: "test".to_string(),
             title: "Test".to_string(),
-            description: "".to_string(),
+            description: None,
             download_url: "https://example.com/file.zip".to_string(),
             thumbnail_url: None,
             file_type: None,
@@ -569,6 +580,46 @@ mod tests {
 
         let resource: Resource = serde_json::from_str(json).unwrap();
         assert_eq!(resource.optimized_videos, None);
+    }
+
+    /// contract-resources-api / adr-0003 (additive-only): `description` is
+    /// tolerant. An explicit JSON `null` must deserialize to `None` and never
+    /// fail the whole poll.
+    #[test]
+    fn test_description_null_deserializes_to_none() {
+        let json = r#"{
+            "id": 1,
+            "category": "decime",
+            "title": "Decime",
+            "description": null,
+            "download_url": "https://example.com/file.zip",
+            "thumbnail_url": null,
+            "file_type": null,
+            "is_active": true,
+            "created_at": "2026-01-17T23:51:02.358083"
+        }"#;
+
+        let resource: Resource = serde_json::from_str(json).unwrap();
+        assert_eq!(resource.description, None);
+    }
+
+    /// Same tolerance for a server that omits the `description` key entirely
+    /// (`#[serde(default)]`): it must deserialize to `None`, not error out.
+    #[test]
+    fn test_description_missing_key_deserializes_to_none() {
+        let json = r#"{
+            "id": 1,
+            "category": "decime",
+            "title": "Decime",
+            "download_url": "https://example.com/file.zip",
+            "thumbnail_url": null,
+            "file_type": null,
+            "is_active": true,
+            "created_at": "2026-01-17T23:51:02.358083"
+        }"#;
+
+        let resource: Resource = serde_json::from_str(json).unwrap();
+        assert_eq!(resource.description, None);
     }
 
     /// adr-0008 "multi-video": a zip resource produces several optimized

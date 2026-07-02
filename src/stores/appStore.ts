@@ -3,7 +3,7 @@ import {listen} from '@tauri-apps/api/event';
 import {create} from 'zustand';
 
 import {useToastStore} from './toastStore';
-import {AppConfig, AppStatus, Resource, ResourceListResponse, WeekIdentifier} from '../types';
+import {AppConfig, AppStatus, ErrataDetectedPayload, Resource, ResourceListResponse, WeekIdentifier} from '../types';
 
 export interface ActiveDownload {
   progress: number;
@@ -132,18 +132,6 @@ export const useAppStore = create<AppState>(
 
           await listen('poll-tick', () => {
             invoke<AppStatus>('get_status').then(status => set({status}));
-          });
-
-          // One-time notice, emitted by the backend the first time the
-          // window is closed to the tray instead of exiting (see
-          // `lib.rs::maybe_notify_first_tray_close`), so the user isn't
-          // left wondering where the app went. The backend already tracks
-          // "already shown" in persisted config, so this listener just
-          // renders whatever it's told, without its own dedup logic.
-          await listen('tray-close-notice', () => {
-            useToastStore.getState().addToast(
-                'L\'app continua a funzionare in background. Usa l\'icona nella system tray per riaprirla o uscire.',
-                'info');
           });
 
           // Global download progress listener
@@ -300,6 +288,53 @@ export const useAppStore = create<AppState>(
               };
             });
             debouncedFetchSummary();
+          });
+
+          // Listen for download pause (emitted by the queue worker when a
+          // download stops on the pause signal). Only reflect it if we track
+          // the resource; a pause event for an unknown download is ignored.
+          await listen<number>('download-paused', (event) => {
+            const resourceId = event.payload;
+            set(state => {
+              const current = state.activeDownloads[resourceId];
+              if (!current) return state;
+              return {
+                activeDownloads: {
+                  ...state.activeDownloads,
+                  [resourceId]: {...current, status: 'paused'}
+                }
+              };
+            });
+          });
+
+          // Listen for download cancellation (an in-flight download stopped on
+          // the cancel signal; removing a still-queued item does not emit this).
+          // Drop it from the map.
+          await listen<number>('download-cancelled', (event) => {
+            const resourceId = event.payload;
+            set(state => {
+              const {[resourceId]: _removed, ...rest} = state.activeDownloads;
+              return {activeDownloads: rest};
+            });
+            debouncedFetchSummary();
+          });
+
+          // Errata corrige detected: the backend has already archived the old
+          // file, marked the registry, and re-queued the updated download
+          // (see errata.rs::process_errata). The UI stays dumb — just refresh
+          // status/resources from the backend and surface a non-invasive
+          // toast; no client-side comparison logic.
+          await listen<ErrataDetectedPayload>('errata-detected', (event) => {
+            invoke<AppStatus>('get_status').then(status => set({status}));
+            invoke<Resource[]>('get_resources').then(resources => set({resources}));
+            debouncedFetchSummary();
+
+            const count = event.payload.resourceIds.length;
+            useToastStore.getState().addToast(
+                count === 1 ?
+                    'Rilevata una correzione (errata corrige): il file aggiornato è in scaricamento.' :
+                    `Rilevate ${count} correzioni (errata corrige): i file aggiornati sono in scaricamento.`,
+                'info');
           });
 
         } catch (e) {

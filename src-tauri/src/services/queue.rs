@@ -30,6 +30,28 @@ pub struct DownloadQueue {
     active_weeks: Arc<Mutex<HashMap<i64, WeekIdentifier>>>,
 }
 
+/// Pure enqueue guard (A2): a resource may be queued only if it is neither
+/// already queued nor already downloading. Kept free-standing so it can be
+/// unit-tested without an `AppHandle`.
+fn can_enqueue(queue: &VecDeque<Resource>, active_ids: &[i64], id: i64) -> bool {
+    !active_ids.contains(&id) && !queue.iter().any(|r| r.id == id)
+}
+
+/// Pure queue removal (A5): drops `id` from `queue` in place and reports
+/// whether anything was actually removed. Free-standing for unit testing
+/// without an `AppHandle`.
+fn drain_queued(queue: &mut VecDeque<Resource>, id: i64) -> bool {
+    let before = queue.len();
+    queue.retain(|r| r.id != id);
+    queue.len() != before
+}
+
+impl Default for DownloadQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DownloadQueue {
     pub fn new() -> Self {
         // Default to Queue (1 concurrent) initially, updated via config
@@ -80,12 +102,19 @@ impl DownloadQueue {
     pub async fn add_task(&self, app: AppHandle, resource: Resource) {
         {
             let mut queue = self.queue.lock().await;
-            // Avoid duplicates
-            if !queue.iter().any(|r| r.id == resource.id) {
-                // Also check if already downloading in AppState?
-                // The download service handles "already downloading" mostly, but good to check.
+            let active = self.active_ids.lock().await;
+            // A2: skip if already queued OR already downloading. Without the
+            // `active_ids` check a poll landing mid-download would re-enqueue
+            // the same resource — its `.part` doesn't trip `check_file_exists`,
+            // so two tasks would write the same file concurrently.
+            if can_enqueue(&queue, &active, resource.id) {
                 queue.push_back(resource);
                 tracing::info!("Added task to queue. Queue size: {}", queue.len());
+            } else {
+                tracing::trace!(
+                    "Skipping enqueue for resource {}: already queued or active",
+                    resource.id
+                );
             }
         }
         self.emit_queue_status(&app).await;
@@ -97,13 +126,41 @@ impl DownloadQueue {
     pub async fn add_task_priority(&self, app: AppHandle, resource: Resource) {
         {
             let mut queue = self.queue.lock().await;
-            // Remove if already exists (to avoid duplicates)
-            queue.retain(|r| r.id != resource.id);
-            // Add to front for priority
-            queue.push_front(resource);
+            let active = self.active_ids.lock().await;
+            // A2: never front-jump a resource that's already downloading —
+            // that would spawn a second concurrent write to the same file.
+            // (Queue duplicates are handled below by `retain`.)
+            if active.contains(&resource.id) {
+                tracing::trace!(
+                    "Skipping priority enqueue for resource {}: already active",
+                    resource.id
+                );
+            } else {
+                // Remove if already exists (to avoid duplicates)
+                queue.retain(|r| r.id != resource.id);
+                // Add to front for priority
+                queue.push_front(resource);
+            }
         }
         self.emit_queue_status(&app).await;
         self.ensure_worker_started(app).await;
+    }
+
+    /// Remove a still-queued resource and notify the frontend (A5).
+    ///
+    /// Returns `true` if an item was actually removed. Cancelling a resource
+    /// that hasn't started downloading yet used to only set its download
+    /// signal, which is a no-op for something not in `download_signals`, so
+    /// the item stayed in the queue and reappeared on the next status emit.
+    pub async fn remove_queued(&self, app: &AppHandle, id: i64) -> bool {
+        let removed = {
+            let mut queue = self.queue.lock().await;
+            drain_queued(&mut queue, id)
+        };
+        if removed {
+            self.emit_queue_status(app).await;
+        }
+        removed
     }
 
     /// Emit current queue status to frontend
@@ -213,31 +270,41 @@ impl DownloadQueue {
                     continue;
                 }
 
-                // Try to get next task from queue
+                // Try to get next task from queue. Register it in `active_ids`
+                // AND `active_weeks` while still holding the queue lock, so the
+                // transition out of the queue is atomic: a concurrent
+                // `add_task` running `can_enqueue` never observes a window where
+                // the resource is neither queued nor active (which would
+                // re-enqueue it into a double download), and the archiving pass
+                // (weeks_with_pending_downloads) never sees the week as free
+                // while a folder is about to be written into. Lock order
+                // queue→active_ids matches `add_task` to avoid deadlock.
                 let resource = {
                     let mut q = queue.lock().await;
-                    q.pop_front()
+                    let popped = q.pop_front();
+                    if let Some(resource) = &popped {
+                        active_ids.lock().await.push(resource.id);
+                        active_weeks
+                            .lock()
+                            .await
+                            .insert(resource.id, resource.week());
+                    }
+                    popped
                 };
 
                 if let Some(resource) = resource {
                     // We have a task and have capacity, start it
                     active_count.fetch_add(1, Ordering::SeqCst);
-                    
-                    // Add to active IDs and emit update
-                    {
-                        let mut ids = active_ids.lock().await;
-                        ids.push(resource.id);
-                    }
-                    {
-                        let mut weeks = active_weeks.lock().await;
-                        weeks.insert(resource.id, resource.week());
-                    }
 
                     let active_count_clone = active_count.clone();
                     let active_ids_clone = active_ids.clone();
                     let active_weeks_clone = active_weeks.clone();
                     let app_clone = app.clone();
-                    
+                    // Separate handle for the supervisor: its cleanup must run
+                    // even if `app_clone` is moved into the download body below.
+                    let app_super = app.clone();
+                    let resource_id = resource.id;
+
                     // Emit status update immediately as queue changed (popped item) AND active changed
                     {
                         let q = queue.lock().await;
@@ -256,11 +323,17 @@ impl DownloadQueue {
                         let _ = app_clone.emit("queue-status-changed", payload);
                     }
 
+                    // A4: supervise the download body so bookkeeping is ALWAYS
+                    // reconciled — even if the body panics. Previously the
+                    // `fetch_sub`/`active_ids` cleanup lived inside the body, so
+                    // a panic left `active_count` permanently inflated and the
+                    // worker stalled once it hit the concurrency limit.
                     tauri::async_runtime::spawn(async move {
+                        let body = tauri::async_runtime::spawn(async move {
                          // Execute download
                          // Resolve state at the top level of the task
                          let state = app_clone.state::<crate::commands::AppState>();
-                         
+
                          if let Ok(config) = crate::commands::get_config(state) {
                              if let Some(work_dir) = config.work_directory {
                                  let download_service = crate::services::DownloadService::new();
@@ -295,6 +368,10 @@ impl DownloadQueue {
                                  match download_service.download_resource(&resource, &dest_dir, Some(&app_clone), Some(signal), prefer_optimized).await {
                                     Ok((path, hash)) => {
                                         tracing::info!("Download completed successfully: {} -> {:?} (hash: {})", resource.title, path, hash);
+                                        // adr-0007 step 2: record the file in the
+                                        // errata registry so a later poll can
+                                        // detect it being superseded.
+                                        crate::services::record_downloaded_file(&app_clone, &resource, path, prefer_optimized);
                                         let _ = app_clone.emit("download-complete", resource.id);
                                     },
                                     Err(crate::error::DownloadError::Paused) => {
@@ -311,30 +388,46 @@ impl DownloadQueue {
                                     }
                                  }
                                  
-                                 // Cleanup signal
-                                 {
-                                     let signal_state = app_clone.state::<crate::commands::AppState>();
-                                     let signals_res = signal_state.download_signals.write();
-                                     if let Ok(mut signals) = signals_res {
-                                         signals.remove(&resource.id);
-                                     }
-                                 }
                              }
                          }
-                         
+                        });
+
+                        // A4: this cleanup runs unconditionally — including when
+                        // the body panicked (surfaced here as a JoinError).
+                        if let Err(join_err) = body.await {
+                            tracing::error!(
+                                "Download task for resource {} panicked: {:?}",
+                                resource_id, join_err
+                            );
+                            let _ = app_super.emit(
+                                "download-failed",
+                                serde_json::json!({"id": resource_id, "error": "internal error"}),
+                            );
+                        }
+
                         let previous = active_count_clone.fetch_sub(1, Ordering::SeqCst);
-                        tracing::trace!("Download worker finished. Active count decremented from {} to {}", previous, previous - 1);
-                        
+                        tracing::trace!("Download worker finished. Active count decremented from {} to {}", previous, previous.saturating_sub(1));
+
                         // Remove from active IDs
                         {
                             let mut ids = active_ids_clone.lock().await;
-                            if let Some(pos) = ids.iter().position(|&id| id == resource.id) {
+                            if let Some(pos) = ids.iter().position(|&id| id == resource_id) {
                                 ids.remove(pos);
                             }
                         }
                         {
                             let mut weeks = active_weeks_clone.lock().await;
-                            weeks.remove(&resource.id);
+                            weeks.remove(&resource_id);
+                        }
+                        // Guaranteed signal removal: the body registers the
+                        // signal, so a panic before its own cleanup would leak
+                        // it in `download_signals` without this.
+                        {
+                            let signal_state = app_super.state::<crate::commands::AppState>();
+                            let signals_res = signal_state.download_signals.write();
+                            if let Ok(mut signals) = signals_res {
+                                signals.remove(&resource_id);
+                            }
                         }
                     });
                     
@@ -367,7 +460,7 @@ mod tests {
             id,
             category: "test".to_string(),
             title: format!("Resource {}", id),
-            description: String::new(),
+            description: None,
             download_url: format!("https://example.com/{}.zip", id),
             thumbnail_url: None,
             file_type: None,
@@ -412,6 +505,51 @@ mod tests {
         let weeks = dq.weeks_with_pending_downloads().await;
         assert_eq!(weeks.len(), 1);
         assert!(weeks.contains(&WeekIdentifier::new(2025, 52)));
+    }
+
+    #[test]
+    fn test_can_enqueue_rejects_active_resource() {
+        // A2: a resource currently downloading must not be re-queued, even
+        // though it's not present in the (waiting) queue.
+        let queue: VecDeque<Resource> = VecDeque::new();
+        let active = vec![7_i64];
+        assert!(!can_enqueue(&queue, &active, 7));
+    }
+
+    #[test]
+    fn test_can_enqueue_rejects_already_queued_resource() {
+        let mut queue: VecDeque<Resource> = VecDeque::new();
+        queue.push_back(make_resource(3, 2026, 1, 19));
+        let active: Vec<i64> = Vec::new();
+        assert!(!can_enqueue(&queue, &active, 3));
+    }
+
+    #[test]
+    fn test_can_enqueue_accepts_new_resource() {
+        let mut queue: VecDeque<Resource> = VecDeque::new();
+        queue.push_back(make_resource(1, 2026, 1, 19));
+        let active = vec![2_i64];
+        assert!(can_enqueue(&queue, &active, 3));
+    }
+
+    #[test]
+    fn test_drain_queued_removes_present_resource() {
+        let mut queue: VecDeque<Resource> = VecDeque::new();
+        queue.push_back(make_resource(1, 2026, 1, 19));
+        queue.push_back(make_resource(2, 2026, 1, 19));
+
+        assert!(drain_queued(&mut queue, 1));
+        assert_eq!(queue.len(), 1);
+        assert!(queue.iter().all(|r| r.id != 1));
+    }
+
+    #[test]
+    fn test_drain_queued_reports_false_when_absent() {
+        let mut queue: VecDeque<Resource> = VecDeque::new();
+        queue.push_back(make_resource(1, 2026, 1, 19));
+
+        assert!(!drain_queued(&mut queue, 99));
+        assert_eq!(queue.len(), 1);
     }
 
     #[tokio::test]
