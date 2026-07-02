@@ -67,3 +67,11 @@ mod tests {
         std::env::remove_var(API_BASE_URL_ENV_VAR);
     }
 }
+
+/// True when the debug-only `CHURCH_HELPER_API_BASE` override is active,
+/// i.e. this run is a local test session against a stub backend. Used to
+/// skip side effects that must not leave the machine during tests (e.g. the
+/// GitHub update check). Always false in release builds, like the override.
+pub fn is_api_base_overridden() -> bool {
+    api_base_url() != API_BASE_URL
+}

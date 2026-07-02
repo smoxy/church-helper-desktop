@@ -249,7 +249,12 @@ pub fn run() {
             // if one is found, then ask for explicit confirmation before
             // installing and restarting. Never installs silently (policy
             // from bl-desktop-autoupdate: notify + explicit consent only).
-            {
+            if constants::is_api_base_overridden() {
+                // Local test session against a stub backend: do not contact
+                // the GitHub update endpoint (avoids noisy expected failures
+                // and keeps test runs fully local).
+                tracing::info!("API base override active: skipping update check");
+            } else {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     // Let the rest of startup (initial poll, retention, tray,
