@@ -64,7 +64,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
         : null;
 
     return (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 backdrop-blur-sm" onClick={onClose}>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 backdrop-blur-xs" onClick={onClose}>
             <div className="bg-card text-card-foreground rounded-xl shadow-2xl max-w-2xl w-full p-6 animate-in fade-in zoom-in duration-200" onClick={e => e.stopPropagation()}>
                 <div className="flex justify-between items-start mb-6">
                     <h2 className="text-2xl font-bold text-primary">{resource.title}</h2>
@@ -185,7 +185,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                         {(isDownloading || isPaused) && (
                                             <button
                                                 onClick={cancel}
-                                                className="p-3 bg-muted text-muted-foreground rounded-lg hover:bg-destructive hover:text-destructive-foreground transition-colors shadow-sm"
+                                                className="p-3 bg-muted text-muted-foreground rounded-lg hover:bg-destructive hover:text-destructive-foreground transition-colors shadow-xs"
                                                 title="Stop and Delete"
                                             >
                                                 <Trash2 className="h-5 w-5" />
@@ -234,14 +234,14 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                     <button
                                         onClick={toggleAutoDownload}
                                         className={`
-                                            relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2
+                                            relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-all duration-300 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2
                                             ${isAutoDownloadEnabled
                                                 ? 'bg-success ring-4 ring-success/30 shadow-[0_0_15px_-3px_rgba(34,197,94,0.6)]'
                                                 : 'bg-gray-200 dark:bg-gray-700 border border-transparent'}
                                         `}
                                     >
                                         <span className={`
-                                            inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform duration-300
+                                            inline-block h-4 w-4 transform rounded-full bg-white shadow-xs transition-transform duration-300
                                             ${isAutoDownloadEnabled ? 'translate-x-6' : 'translate-x-1'}
                                         `} />
                                     </button>

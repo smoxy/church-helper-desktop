@@ -29,16 +29,16 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
             {/* Download Status Indicator (Top Right of Card) */}
             <div className="absolute top-2 right-2 z-10 flex gap-1">
                 {resource.optimized_video_url && (
-                    <div className="bg-green-500/90 text-white p-1.5 rounded-full shadow-sm" title="Video ottimizzato disponibile">
+                    <div className="bg-green-500/90 text-white p-1.5 rounded-full shadow-xs" title="Video ottimizzato disponibile">
                         <Zap className="h-3 w-3" />
                     </div>
                 )}
                 {isDownloading ? (
-                    <div className="bg-muted text-muted-foreground p-1.5 rounded-full shadow-sm" title="Downloading...">
+                    <div className="bg-muted text-muted-foreground p-1.5 rounded-full shadow-xs" title="Downloading...">
                         <LoaderCircle className="h-3 w-3 animate-spin" />
                     </div>
                 ) : isDownloaded ? (
-                    <div className="bg-success text-success-foreground p-1.5 rounded-full shadow-sm" title="Downloaded">
+                    <div className="bg-success text-success-foreground p-1.5 rounded-full shadow-xs" title="Downloaded">
                         <Check className="h-3 w-3" />
                     </div>
                 ) : (
@@ -56,7 +56,7 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
                         className="w-full h-full object-cover transition-transform group-hover:scale-105"
                     />
                     {/* Category Badge overlay on image */}
-                    <div className="absolute bottom-2 left-2 bg-black/60 text-white text-[10px] px-2 py-0.5 rounded-sm uppercase font-bold tracking-wider backdrop-blur-sm">
+                    <div className="absolute bottom-2 left-2 bg-black/60 text-white text-[10px] px-2 py-0.5 rounded-sm uppercase font-bold tracking-wider backdrop-blur-xs">
                         {resource.category}
                     </div>
                 </div>

@@ -55,7 +55,7 @@ export function SplashScreen() {
         <div
             onClick={dismiss}
             className={cn(
-                "fixed inset-0 z-[100] flex cursor-pointer flex-col items-center justify-center gap-8 bg-background px-8 text-center",
+                "fixed inset-0 z-100 flex cursor-pointer flex-col items-center justify-center gap-8 bg-background px-8 text-center",
                 !reduceMotion && "transition-opacity ease-out",
                 fadingOut ? "opacity-0" : "opacity-100"
             )}
