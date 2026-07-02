@@ -51,6 +51,31 @@ npm install
 npm run tauri dev
 ```
 
+### Puntare il desktop allo stub API locale (dev-only)
+
+Per testare senza toccare l'API di produzione, il backend Rust legge (solo
+nelle build di debug: `cargo tauri dev` / `cargo build` / `cargo test`, MAI
+nelle build di release che arrivano agli utenti) la variabile d'ambiente
+`CHURCH_HELPER_API_BASE`: se impostata e non vuota, sostituisce la costante
+`API_BASE_URL` (`src-tauri/src/constants.rs`) per ogni chiamata all'API
+risorse (polling automatico e "force poll" manuale).
+
+```bash
+# 1. Avvia lo stub (repo sorella api-stub/, porta di default 8787)
+cd ../api-stub
+node server.mjs
+# In ascolto su http://localhost:8787 — scenario iniziale "base".
+# Cambia scenario a runtime, es. per testare la scelta multi-video:
+#   curl -X POST http://localhost:8787/stub/scenario/multi-video
+
+# 2. In un altro terminale, punta il desktop allo stub
+cd ../church-helper-desktop
+CHURCH_HELPER_API_BASE=http://localhost:8787 npm run tauri dev
+```
+
+Senza questa variabile non cambia nulla: il desktop continua a usare
+`API_BASE_URL` (produzione) come sempre.
+
 ### Build
 
 ```bash

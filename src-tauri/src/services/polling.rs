@@ -3,7 +3,7 @@
 //! Runs a background task using tokio to periodically poll the API.
 
 use crate::commands::AppState;
-use crate::constants::API_BASE_URL;
+use crate::constants::api_base_url;
 use crate::models::ResourceListResponse;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -127,7 +127,7 @@ impl Default for PollingService {
 /// Perform a single poll of the API
 async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = app.state::<AppState>();
-    let url = format!("{}/api/resources/latest-week", API_BASE_URL);
+    let url = format!("{}/api/resources/latest-week", api_base_url());
 
     let response = state.shared_http_client.get(&url).send().await?;
     let api_response: ResourceListResponse = response.json().await?;

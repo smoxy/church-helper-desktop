@@ -2,7 +2,7 @@
 //!
 //! These commands implement the "Dumb UI, Smart Backend" architecture.
 
-use crate::constants::API_BASE_URL;
+use crate::constants::api_base_url;
 use crate::models::{AppConfig, AppStatus, Resource, ResourceListResponse, WeekIdentifier};
 use crate::services::download::{STATUS_CANCELLED, STATUS_PAUSED};
 use crate::services::{DownloadQueue, PollingService, RetentionScheduler};
@@ -152,7 +152,7 @@ pub async fn force_poll(
     app: AppHandle,
 ) -> Result<ResourceListResponse, String> {
     // Fetch from API
-    let url = format!("{}/api/resources/latest-week", API_BASE_URL);
+    let url = format!("{}/api/resources/latest-week", api_base_url());
 
     let response = state
         .shared_http_client
