@@ -2,6 +2,7 @@ import {invoke} from '@tauri-apps/api/core';
 import {listen} from '@tauri-apps/api/event';
 import {create} from 'zustand';
 
+import {useToastStore} from './toastStore';
 import {AppConfig, AppStatus, Resource, ResourceListResponse, WeekIdentifier} from '../types';
 
 export interface ActiveDownload {
@@ -131,6 +132,18 @@ export const useAppStore = create<AppState>(
 
           await listen('poll-tick', () => {
             invoke<AppStatus>('get_status').then(status => set({status}));
+          });
+
+          // One-time notice, emitted by the backend the first time the
+          // window is closed to the tray instead of exiting (see
+          // `lib.rs::maybe_notify_first_tray_close`), so the user isn't
+          // left wondering where the app went. The backend already tracks
+          // "already shown" in persisted config, so this listener just
+          // renders whatever it's told, without its own dedup logic.
+          await listen('tray-close-notice', () => {
+            useToastStore.getState().addToast(
+                'L\'app continua a funzionare in background. Usa l\'icona nella system tray per riaprirla o uscire.',
+                'info');
           });
 
           // Global download progress listener

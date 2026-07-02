@@ -40,6 +40,9 @@ export interface AppConfig {
   download_mode: 'Queue'|'Parallel';
   prefer_optimized: boolean;
   autostart_enabled: boolean;
+  // Whether the one-time "the app keeps running in the tray" notice has
+  // already been shown (backend-owned; see the `tray-close-notice` event).
+  tray_close_notice_shown: boolean;
 }
 
 export interface AppStatus {

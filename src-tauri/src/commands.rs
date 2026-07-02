@@ -9,7 +9,7 @@ use crate::services::{DownloadQueue, PollingService, RetentionScheduler};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter, State};
 
@@ -35,6 +35,13 @@ pub struct AppState {
     /// Handle to the background retention scheduler, so it can be stopped
     /// cleanly on app exit alongside `polling_service`.
     pub retention_scheduler: RwLock<Option<RetentionScheduler>>,
+    /// Whether the system tray icon was created successfully at setup.
+    /// `false` on Linux systems missing libappindicator3/
+    /// libayatana-appindicator3 (see `lib.rs::setup_tray`): the window's
+    /// `CloseRequested` handler reads this to fall back to a normal close
+    /// (process exits) instead of hiding to a tray icon that doesn't exist,
+    /// which would otherwise strand the user with no way to reopen the app.
+    pub tray_available: AtomicBool,
 }
 
 /// Response for download command
@@ -67,6 +74,7 @@ impl Default for AppState {
             shared_http_client: reqwest::Client::new(),
             polling_service: RwLock::new(None),
             retention_scheduler: RwLock::new(None),
+            tray_available: AtomicBool::new(false),
         }
     }
 }

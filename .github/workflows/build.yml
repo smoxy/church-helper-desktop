@@ -45,14 +45,15 @@ jobs:
       - name: Check updater signing key
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
-        # Compare via an env var (not interpolating the secret value
-        # directly into the script) so the key's contents are never spliced
+        # Compare via env vars (not interpolating the secret values
+        # directly into the script) so their contents are never spliced
         # into shell code.
         env:
           HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          HAS_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
         run: |
-          if [ "$HAS_SIGNING_KEY" != "true" ]; then
-            echo "::warning::TAURI_SIGNING_PRIVATE_KEY non configurato nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
+          if [ "$HAS_SIGNING_KEY" != "true" ] || [ "$HAS_SIGNING_KEY_PASSWORD" != "true" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY e/o TAURI_SIGNING_PRIVATE_KEY_PASSWORD non configurati nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
             jq '.bundle.createUpdaterArtifacts = false' ./src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./src-tauri/tauri.conf.json
           fi
 
@@ -123,14 +124,15 @@ jobs:
 
       - name: Check updater signing key
         if: startsWith(github.ref, 'refs/tags/v')
-        # Compare via an env var (not interpolating the secret value
-        # directly into the script) so the key's contents are never spliced
+        # Compare via env vars (not interpolating the secret values
+        # directly into the script) so their contents are never spliced
         # into shell code.
         env:
           HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          HAS_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
         run: |
-          if [ "$HAS_SIGNING_KEY" != "true" ]; then
-            echo "::warning::TAURI_SIGNING_PRIVATE_KEY non configurato nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
+          if [ "$HAS_SIGNING_KEY" != "true" ] || [ "$HAS_SIGNING_KEY_PASSWORD" != "true" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY e/o TAURI_SIGNING_PRIVATE_KEY_PASSWORD non configurati nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
             jq '.bundle.createUpdaterArtifacts = false' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
           fi
 
