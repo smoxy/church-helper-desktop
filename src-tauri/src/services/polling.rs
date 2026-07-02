@@ -3,15 +3,13 @@
 //! Runs a background task using tokio to periodically poll the API.
 
 use crate::commands::AppState;
+use crate::constants::API_BASE_URL;
 use crate::models::ResourceListResponse;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::watch;
 use tokio::time::{interval, Duration};
-
-/// API base URL
-const API_BASE_URL: &str = "https://api.adventistyouth.it";
 
 /// Polling service that runs in the background
 pub struct PollingService {
@@ -49,13 +47,16 @@ impl PollingService {
             // Skip the first immediate tick
             ticker.tick().await;
 
-            tracing::info!("Polling service started with interval {} minutes", interval_mins);
+            tracing::info!(
+                "Polling service started with interval {} minutes",
+                interval_mins
+            );
 
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
                         tracing::trace!("Polling tick");
-                        
+
                         // Check if we should still be running
                         if !is_running.load(Ordering::SeqCst) {
                             break;
@@ -122,7 +123,7 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
         let resources = state.resources.read().map_err(|e| e.to_string())?;
         resources.clone()
     };
-    
+
     // Update resources
     {
         let mut resources = state.resources.write().map_err(|e| e.to_string())?;
@@ -132,19 +133,20 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
     // Invalidate cache for changed/removed URLs
     {
         let mut cache = state.file_size_cache.write().map_err(|e| e.to_string())?;
-        
+
         // Build a map of old URLs by resource ID
         let old_url_map: std::collections::HashMap<i64, String> = old_resources
             .iter()
             .map(|r| (r.id, r.download_url.clone()))
             .collect();
-        
+
         // Build a set of current URLs
-        let current_urls: std::collections::HashSet<String> = api_response.resources
+        let current_urls: std::collections::HashSet<String> = api_response
+            .resources
             .iter()
             .map(|r| r.download_url.clone())
             .collect();
-        
+
         // Remove cache entries for URLs that changed or no longer exist
         for new_resource in &api_response.resources {
             if let Some(old_url) = old_url_map.get(&new_resource.id) {
@@ -155,18 +157,18 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
                 }
             }
         }
-        
+
         // Remove cache entries for URLs that no longer exist
         let keys_to_remove: Vec<String> = cache
             .keys()
             .filter(|url| !current_urls.contains(*url))
             .cloned()
             .collect();
-        
+
         for key in &keys_to_remove {
             cache.remove(key);
         }
-        
+
         if !keys_to_remove.is_empty() {
             tracing::debug!("Removed {} stale cache entries", keys_to_remove.len());
         }
@@ -191,18 +193,19 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
     let store = app.store("cache.json").map_err(|e| e.to_string())?;
     let json = serde_json::to_value(&api_response.resources).map_err(|e| e.to_string())?;
     store.set("resources", json);
-    
+
     // Save file size cache (exclude negative cache entries from persistence)
     let cache_snapshot = {
         let cache = state.file_size_cache.read().map_err(|e| e.to_string())?;
-        cache.iter()
-            .filter(|(_, &size)| size != u64::MAX)  // Exclude negative cache
+        cache
+            .iter()
+            .filter(|(_, &size)| size != u64::MAX) // Exclude negative cache
             .map(|(k, v)| (k.clone(), *v))
             .collect::<std::collections::HashMap<String, u64>>()
     };
     let cache_json = serde_json::to_value(&cache_snapshot).map_err(|e| e.to_string())?;
     store.set("file_size_cache", cache_json);
-    
+
     store.save().map_err(|e| e.to_string())?;
 
     tracing::info!(
