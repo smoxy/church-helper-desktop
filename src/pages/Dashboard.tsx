@@ -12,16 +12,13 @@ import { ResourcesFoundCard } from "../components/features/resource/ResourcesFou
 import { DownloadsModal } from "../components/features/resource/DownloadsModal";
 
 export default function Dashboard() {
-    const {
-        status,
-        resources,
-        isLoading,
-        error,
-        activeDownloads,
-        summary,
-        fetchInitialData,
-        forcePoll
-    } = useAppStore();
+    const status = useAppStore(s => s.status);
+    const resources = useAppStore(s => s.resources);
+    const isLoading = useAppStore(s => s.isLoading);
+    const error = useAppStore(s => s.error);
+    const summary = useAppStore(s => s.summary);
+    const fetchInitialData = useAppStore(s => s.fetchInitialData);
+    const forcePoll = useAppStore(s => s.forcePoll);
 
     const { addToast } = useToastStore();
     const [selectedResource, setSelectedResource] = useState<Resource | null>(null);
@@ -64,7 +61,6 @@ export default function Dashboard() {
                 <div className="lg:col-span-2">
                     <ResourcesFoundCard
                         summary={summary}
-                        activeDownloads={activeDownloads}
                         onClick={() => setShowDownloads(true)}
                     />
                 </div>

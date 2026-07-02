@@ -40,7 +40,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "PLACEHOLDER_REPLACE_WITH_TAURI_SIGNER_PUBLIC_KEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMyNjMwNzRFMzhCRDBBMTIKUldRU0NyMDRUZ2Rqd3NVaktqV2IzdndsVlFlZjQ4elhkVDV4SnBYbURrTEk0NzJKeUNOQXN2Wk4K",
       "endpoints": [
         "https://github.com/smoxy/church-helper-desktop/releases/latest/download/latest.json"
       ]

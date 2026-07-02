@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../stores/appStore";
 import { useToastStore } from "../stores/toastStore";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -8,12 +9,20 @@ import { Input } from "../components/ui/input";
 import { Switch } from "../components/ui/switch";
 import { FolderOpen } from "lucide-react";
 import rinoovaIcon from "../assets/sponsor/logo-rinoova-icon.svg";
+import type { ThemeSetting } from "../types";
+
+const THEME_OPTIONS: { value: ThemeSetting; label: string }[] = [
+    { value: "System", label: "Sistema" },
+    { value: "Light", label: "Chiaro" },
+    { value: "Dark", label: "Scuro" },
+];
 
 
 export default function Settings() {
     const {
         config,
         resources,
+        allCategories,
         fetchInitialData,
         selectWorkDirectory: selectWorkDirAction,
         togglePolling: togglePollingAction,
@@ -21,7 +30,18 @@ export default function Settings() {
         setRetentionDays,
         setAutostartEnabled,
         updateConfig
-    } = useAppStore();
+    } = useAppStore(useShallow(s => ({
+        config: s.config,
+        resources: s.resources,
+        allCategories: s.allCategories,
+        fetchInitialData: s.fetchInitialData,
+        selectWorkDirectory: s.selectWorkDirectory,
+        togglePolling: s.togglePolling,
+        setPollingInterval: s.setPollingInterval,
+        setRetentionDays: s.setRetentionDays,
+        setAutostartEnabled: s.setAutostartEnabled,
+        updateConfig: s.updateConfig,
+    })));
 
     const { addToast } = useToastStore();
 
@@ -51,17 +71,18 @@ export default function Settings() {
         }
     }, [config]);
 
-    // Derive available categories from resources and config
+    // Derive available categories as the union of: the full backend catalog
+    // (so a category is listable and re-enablable even out-of-week/offline),
+    // the current week's resources, and the persisted config selections.
     useEffect(() => {
         const cats = new Set<string>();
-        // Add from current resources
+        allCategories.forEach(c => cats.add(c.name));
         resources.forEach(r => cats.add(r.category));
-        // Add from config (persisted ones even if no current resources)
         if (config) {
             config.auto_download_categories.forEach(c => cats.add(c));
         }
         setAvailableCategories(Array.from(cats).sort());
-    }, [resources, config]);
+    }, [allCategories, resources, config]);
 
     const toggleCategory = async (category: string, checked: boolean) => {
         if (!config) return;
@@ -94,6 +115,16 @@ export default function Settings() {
         } catch (e) {
             addToast(`Failed to update mode: ${e}`, "error");
             if (config) setLocalDownloadMode(config.download_mode);
+        }
+    };
+
+    const updateTheme = async (theme: ThemeSetting) => {
+        if (!config || theme === config.theme) return;
+        try {
+            await updateConfig({ theme });
+            addToast(`Tema impostato su ${THEME_OPTIONS.find(o => o.value === theme)?.label}`, "success");
+        } catch (e) {
+            addToast(`Impossibile aggiornare il tema: ${e}`, "error");
         }
     };
 
@@ -374,16 +405,34 @@ export default function Settings() {
 
             <Card>
                 <CardHeader>
+                    <CardTitle>Aspetto</CardTitle>
+                    <CardDescription>
+                        Scegli il tema dell'interfaccia.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <div className="flex flex-wrap gap-2">
+                        {THEME_OPTIONS.map(({ value, label }) => (
+                            <Button
+                                key={value}
+                                variant={config.theme === value ? "default" : "outline"}
+                                onClick={() => updateTheme(value)}
+                            >
+                                {label}
+                            </Button>
+                        ))}
+                    </div>
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardHeader>
                     <CardTitle>System Information</CardTitle>
                 </CardHeader>
                 <CardContent className="text-sm space-y-2">
                     <div className="flex justify-between">
                         <span className="text-muted-foreground">App Version</span>
                         <span>{appVersion}</span>
-                    </div>
-                    <div className="flex justify-between">
-                        <span className="text-muted-foreground">Tauri Version</span>
-                        <span>v2.0.0</span>
                     </div>
 
                     <div className="flex items-center gap-4 rounded-lg border bg-card/50 p-4 mt-4">

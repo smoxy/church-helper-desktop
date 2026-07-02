@@ -6,11 +6,15 @@ on:
       - develop
       - main
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         run: |
@@ -39,12 +43,12 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
           cache-dependency-path: './package-lock.json'
 
@@ -56,3 +60,55 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+  # Le run su tag possono ripristinare solo cache create sul tag stesso (mai
+  # esistenti) o sul default branch: senza questo job ogni release ricompila
+  # tutte le dipendenze Rust da zero. Compila in release su main con le stesse
+  # shared-key di build.yml, senza bundling ne' firma (--no-bundle).
+  warm-release-cache:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            shared-key: release-windows
+            targets: x86_64-pc-windows-msvc
+            build-args: '--target x86_64-pc-windows-msvc'
+          - os: ubuntu-latest
+            shared-key: release-linux
+            targets: ''
+            build-args: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: 'npm'
+          cache-dependency-path: './package-lock.json'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri'
+          shared-key: ${{ matrix.shared-key }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build (warm cache, no bundle)
+        run: npm run tauri build -- ${{ matrix.build-args }} --no-bundle

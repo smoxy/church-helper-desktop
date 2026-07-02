@@ -1,7 +1,7 @@
 import { Resource } from '../../../types';
 import { useResource } from '../../../hooks/useResource';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card';
-import { FileHeadphone, FilePlay, FileText, MonitorPlay, Check, Download, LoaderCircle, Zap } from "lucide-react";
+import { FileHeadphone, FilePlay, FileText, MonitorPlay, Check, Download, LoaderCircle, Zap, Clock } from "lucide-react";
 
 interface ResourceCardProps {
     resource: Resource;
@@ -9,7 +9,7 @@ interface ResourceCardProps {
 }
 
 export function ResourceCard({ resource, onClick }: ResourceCardProps) {
-    const { isDownloaded, isDownloading } = useResource(resource);
+    const { isDownloaded, isDownloading, isPending, queuePosition, revealInFolder } = useResource(resource);
 
     const getFileIcon = (type: string | null, isYoutube: boolean) => {
         if (isYoutube) return <MonitorPlay className="h-5 w-5 text-red-500" />;
@@ -22,12 +22,23 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
     const isYoutube = resource.download_url.includes("youtube.com") || resource.download_url.includes("youtu.be");
 
     return (
-        <Card
-            className="overflow-hidden cursor-pointer hover:border-primary/50 transition-colors group relative"
-            onClick={onClick}
-        >
+        <Card className="overflow-hidden cursor-pointer hover:border-primary/50 transition-colors group relative">
+            {/* Stretched button: makes the whole card clickable/keyboard-focusable
+                as a real <button>, kept as a SIBLING (not ancestor) of the
+                download-status button below so no interactive element is
+                nested inside another (illegal per ARIA). It sits at a lower
+                z-index than the status indicator, so the indicator wins
+                hit-testing over its own small area while this button catches
+                clicks everywhere else on the card. */}
+            <button
+                type="button"
+                onClick={onClick}
+                aria-label={resource.title}
+                className="absolute inset-0 z-10 rounded-lg cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+            />
+
             {/* Download Status Indicator (Top Right of Card) */}
-            <div className="absolute top-2 right-2 z-10 flex gap-1">
+            <div className="absolute top-2 right-2 z-20 flex gap-1">
                 {resource.optimized_video_url && (
                     <div className="bg-green-500/90 text-white p-1.5 rounded-full shadow-xs" title="Video ottimizzato disponibile">
                         <Zap className="h-3 w-3" />
@@ -37,10 +48,23 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
                     <div className="bg-muted text-muted-foreground p-1.5 rounded-full shadow-xs" title="Downloading...">
                         <LoaderCircle className="h-3 w-3 animate-spin" />
                     </div>
-                ) : isDownloaded ? (
-                    <div className="bg-success text-success-foreground p-1.5 rounded-full shadow-xs" title="Downloaded">
-                        <Check className="h-3 w-3" />
+                ) : isPending ? (
+                    <div
+                        className="bg-amber-500/90 text-white p-1.5 rounded-full shadow-xs"
+                        title={queuePosition ? `In coda, posizione ${queuePosition}` : "In coda"}
+                    >
+                        <Clock className="h-3 w-3" />
                     </div>
+                ) : isDownloaded ? (
+                    <button
+                        type="button"
+                        onClick={() => void revealInFolder()}
+                        className="bg-success text-success-foreground p-1.5 rounded-full shadow-xs hover:bg-success/90 transition-colors cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        title="Apri nella cartella"
+                        aria-label="Apri nella cartella"
+                    >
+                        <Check className="h-3 w-3" />
+                    </button>
                 ) : (
                     <div className="bg-black/30 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" title="Click to view">
                         <Download className="h-3 w-3" />
@@ -53,10 +77,12 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
                     <img
                         src={resource.thumbnail_url}
                         alt={resource.title}
-                        className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                        loading="lazy"
+                        decoding="async"
+                        className="w-full h-full object-cover"
                     />
                     {/* Category Badge overlay on image */}
-                    <div className="absolute bottom-2 left-2 bg-black/60 text-white text-[10px] px-2 py-0.5 rounded-sm uppercase font-bold tracking-wider backdrop-blur-xs">
+                    <div className="absolute bottom-2 left-2 bg-black/60 text-white text-[10px] px-2 py-0.5 rounded-sm uppercase font-bold tracking-wider">
                         {resource.category}
                     </div>
                 </div>

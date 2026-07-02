@@ -3,7 +3,7 @@ import {listen} from '@tauri-apps/api/event';
 import {create} from 'zustand';
 
 import {useToastStore} from './toastStore';
-import {AppConfig, AppStatus, ErrataDetectedPayload, Resource, ResourceListResponse, WeekIdentifier} from '../types';
+import {AppConfig, AppStatus, CategoryCount, ErrataDetectedPayload, Resource, ResourceListResponse, ResourceStatus, WeekIdentifier} from '../types';
 
 export interface ActiveDownload {
   progress: number;
@@ -37,12 +37,20 @@ interface AppState {
   resources: Resource[];
   activeDownloads: Record<number, ActiveDownload>;
   summary: ResourceSummary|null;
+  // Batched per-resource status (downloaded flag + cached sizes), keyed by
+  // resource id. Populated by fetchResourcesStatus; consumed by useResource.
+  resourceStatuses: Record<number, ResourceStatus>;
+  // Full category catalog from the backend `categories/counts` fetch, kept
+  // separate from `resources` so Settings can offer categories that aren't in
+  // the current week. Loaded on init and refreshed by `categories-updated`.
+  allCategories: CategoryCount[];
   archivedWeeks: WeekIdentifier[];
   isLoading: boolean;
   error: string|null;
 
   // Actions
   fetchInitialData: () => Promise<void>;
+  fetchResourcesStatus: () => Promise<void>;
   updateConfig: (config: Partial<AppConfig>) => Promise<void>;
   forcePoll: () => Promise<void>;
   selectWorkDirectory: () => Promise<void>;
@@ -58,6 +66,12 @@ interface AppState {
   cancelDownload: (resourceId: number) => Promise<void>;
 }
 
+// Config fields whose change can alter the derived downloaded/size state
+// returned by get_resources_status (see updateConfig below).
+const STATUS_AFFECTING_CONFIG_FIELDS =
+    new Set<keyof AppConfig>(
+        ['prefer_optimized', 'work_directory', 'auto_download_categories']);
+
 // Simple debounce helper
 function debounce<T extends (...args: never[]) => unknown>(
   func: T,
@@ -72,9 +86,12 @@ function debounce<T extends (...args: never[]) => unknown>(
 
 export const useAppStore = create<AppState>(
     (set, get) => {
-      // Create debounced version of fetchSummary for event listeners
+      // Create debounced versions for event listeners
       const debouncedFetchSummary = debounce(() => {
         get().fetchSummary();
+      }, 300);
+      const debouncedFetchStatuses = debounce(() => {
+        get().fetchResourcesStatus();
       }, 300);
 
       return {
@@ -86,17 +103,25 @@ export const useAppStore = create<AppState>(
       error: null,
       activeDownloads: {},
       summary: null,
+      resourceStatuses: {},
+      allCategories: [],
 
       fetchInitialData: async () => {
         try {
           set({isLoading: true, error: null});
 
-          const [config, status, resources, summary] = await Promise.all([
-            invoke<AppConfig>('get_config'),
-            invoke<AppStatus>('get_status'),
-            invoke<Resource[]>('get_resources'),
-            invoke<ResourceSummary>('get_resource_summary'),
-          ]);
+          const
+              [config, status, resources, summary, resourceStatuses,
+               allCategories] =
+                  await Promise.all([
+                    invoke<AppConfig>('get_config'),
+                    invoke<AppStatus>('get_status'),
+                    invoke<Resource[]>('get_resources'),
+                    invoke<ResourceSummary>('get_resource_summary'),
+                    invoke<Record<number, ResourceStatus>>(
+                        'get_resources_status'),
+                    invoke<CategoryCount[]>('get_all_categories'),
+                  ]);
 
           // If work directory is set, fetch archived weeks
           let archivedWeeks: WeekIdentifier[] = [];
@@ -114,6 +139,8 @@ export const useAppStore = create<AppState>(
             status,
             resources,
             summary,
+            resourceStatuses,
+            allCategories,
             archivedWeeks,
             isLoading: false
           });
@@ -124,6 +151,7 @@ export const useAppStore = create<AppState>(
             // Also refresh status to update last poll time
             invoke<AppStatus>('get_status').then(status => set({status}));
             debouncedFetchSummary();
+            debouncedFetchStatuses();
           });
 
           await listen<string>('poll-error', (event) => {
@@ -132,6 +160,11 @@ export const useAppStore = create<AppState>(
 
           await listen('poll-tick', () => {
             invoke<AppStatus>('get_status').then(status => set({status}));
+          });
+
+          // Full category catalog refreshed by the backend after each poll.
+          await listen<CategoryCount[]>('categories-updated', (event) => {
+            set({allCategories: event.payload});
           });
 
           // Global download progress listener
@@ -252,6 +285,7 @@ export const useAppStore = create<AppState>(
               };
             });
             debouncedFetchSummary();
+            debouncedFetchStatuses();
           });
 
           // Listen for download failures
@@ -317,6 +351,7 @@ export const useAppStore = create<AppState>(
               return {activeDownloads: rest};
             });
             debouncedFetchSummary();
+            debouncedFetchStatuses();
           });
 
           // Errata corrige detected: the backend has already archived the old
@@ -328,6 +363,7 @@ export const useAppStore = create<AppState>(
             invoke<AppStatus>('get_status').then(status => set({status}));
             invoke<Resource[]>('get_resources').then(resources => set({resources}));
             debouncedFetchSummary();
+            debouncedFetchStatuses();
 
             const count = event.payload.resourceIds.length;
             useToastStore.getState().addToast(
@@ -342,6 +378,17 @@ export const useAppStore = create<AppState>(
         }
       },
 
+      fetchResourcesStatus: async () => {
+        try {
+          const resourceStatuses =
+              await invoke<Record<number, ResourceStatus>>(
+                  'get_resources_status');
+          set({resourceStatuses});
+        } catch (e) {
+          console.error('Failed to fetch resource statuses', e);
+        }
+      },
+
       updateConfig: async (updates) => {
         const currentConfig = get().config;
         if (!currentConfig) return;
@@ -350,6 +397,14 @@ export const useAppStore = create<AppState>(
         try {
           await invoke('set_config', {config: newConfig});
           set({config: newConfig});
+          // prefer_optimized / work_directory / auto-download changes alter
+          // derived downloaded/size state, so refresh the batched statuses;
+          // other fields (e.g. theme) don't affect it, skip the refetch.
+          const updatedFields = Object.keys(updates);
+          const affectsStatuses = updatedFields.some(
+              field => STATUS_AFFECTING_CONFIG_FIELDS.has(
+                  field as keyof AppConfig));
+          if (affectsStatuses) debouncedFetchStatuses();
         } catch (e) {
           set({error: `Failed to update config: ${e}`});
           throw e;
@@ -362,6 +417,7 @@ export const useAppStore = create<AppState>(
           const response = await invoke<ResourceListResponse>('force_poll');
           const status = await invoke<AppStatus>('get_status');
           set({resources: response.resources, status, isLoading: false});
+          debouncedFetchStatuses();
         } catch (e) {
           set({error: `Manual poll failed: ${e}`, isLoading: false});
         }

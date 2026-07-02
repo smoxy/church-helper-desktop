@@ -1,3 +1,4 @@
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../../stores/appStore";
 import { Button } from "../../ui/button";
 import { Play, Pause, X, CloudDownload, CircleCheck } from "lucide-react";
@@ -40,7 +41,13 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
         pauseDownload,
         resumeDownload,
         cancelDownload
-    } = useAppStore();
+    } = useAppStore(useShallow(s => ({
+        activeDownloads: s.activeDownloads,
+        resources: s.resources,
+        pauseDownload: s.pauseDownload,
+        resumeDownload: s.resumeDownload,
+        cancelDownload: s.cancelDownload,
+    })));
 
     // Local state for speed calculation
     const [downloadStats, setDownloadStats] = useState<Record<number, { speed: number, eta: number, lastBytes: number, lastTime: number }>>({});
@@ -106,6 +113,21 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
         return () => clearInterval(interval);
     }, [open]);
 
+    const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        if (open) closeButtonRef.current?.focus();
+    }, [open]);
+
+    useEffect(() => {
+        if (!open) return;
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") onClose();
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [open, onClose]);
+
     if (!open) return null;
 
     const activeList = Object.entries(activeDownloads)
@@ -123,7 +145,7 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
 
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-200" onClick={onClose}>
-            <div className="bg-card text-card-foreground rounded-xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+            <div role="dialog" aria-modal="true" aria-label="Downloads" className="bg-card text-card-foreground rounded-xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
 
                 {/* Header */}
                 <div className="p-6 border-b flex justify-between items-start">
@@ -131,7 +153,7 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
                         <h2 className="text-xl font-bold">Downloads</h2>
                         <p className="text-sm text-muted-foreground">Manage your active downloads and queue.</p>
                     </div>
-                    <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
+                    <button ref={closeButtonRef} onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground transition-colors">
                         <X className="h-6 w-6" />
                     </button>
                 </div>

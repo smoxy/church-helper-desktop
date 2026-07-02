@@ -1,8 +1,10 @@
+import { useEffect, useMemo, useRef } from 'react';
 import { Resource } from '../../../types';
 import { useResource } from '../../../hooks/useResource';
+import { useResourceFileSize } from '../../../hooks/useResourceFileSize';
 import { formatBytes } from '../../../lib/utils';
 import { OptimizedVideoPicker } from './OptimizedVideoPicker';
-import { LoaderCircle, Download, Check, Pause, Play, Trash2, TriangleAlert, RotateCcw, X } from "lucide-react";
+import { LoaderCircle, Download, Check, Pause, Play, Trash2, TriangleAlert, RotateCcw, X, FolderOpen, Clock } from "lucide-react";
 
 interface ResourceDetailProps {
     resource: Resource;
@@ -14,10 +16,9 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
         isDownloaded,
         isDownloading,
         isPaused,
+        isPending,
+        queuePosition,
         isAutoDownloadEnabled,
-        fileSize,
-        originalSizeBytes,
-        optimizedSizeBytes,
         error,
         progress,
         integrity,
@@ -25,6 +26,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
         pause,
         resume,
         cancel,
+        revealInFolder,
         toggleAutoDownload,
         preferOptimized,
         optimizedVideos,
@@ -32,11 +34,42 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
         selectVideo
     } = useResource(resource);
 
+    // Sizes: batched from the store when available, otherwise fetched lazily
+    // (HEAD) only here in the detail view (and when the variant changes).
+    const { originalSizeBytes, optimizedSizeBytes } =
+        useResourceFileSize(resource, selectedVideoUrl);
+
+    const fileSize = useMemo(() => {
+        const bytes = preferOptimized && optimizedSizeBytes
+            ? optimizedSizeBytes
+            : originalSizeBytes;
+        return bytes ? formatBytes(bytes) : null;
+    }, [preferOptimized, originalSizeBytes, optimizedSizeBytes]);
+
+    const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        closeButtonRef.current?.focus();
+    }, []);
+
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") onClose();
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [onClose]);
+
     const handleMainAction = () => {
-        if (isDownloading) {
+        if (isDownloaded && !isCorrupted) {
+            void revealInFolder();
+        } else if (isDownloading) {
             void pause();
         } else if (isPaused) {
             void resume();
+        } else if (isPending) {
+            // Queued: no action, button is disabled.
+            return;
         } else {
             void download();
         }
@@ -65,10 +98,10 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 backdrop-blur-xs" onClick={onClose}>
-            <div className="bg-card text-card-foreground rounded-xl shadow-2xl max-w-2xl w-full p-6 animate-in fade-in zoom-in duration-200" onClick={e => e.stopPropagation()}>
+            <div role="dialog" aria-modal="true" aria-label={resource.title} className="bg-card text-card-foreground rounded-xl shadow-2xl max-w-2xl w-full p-6 animate-in fade-in zoom-in duration-200" onClick={e => e.stopPropagation()}>
                 <div className="flex justify-between items-start mb-6">
                     <h2 className="text-2xl font-bold text-primary">{resource.title}</h2>
-                    <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+                    <button ref={closeButtonRef} onClick={onClose} aria-label="Close" className="text-muted-foreground hover:text-foreground">
                         <X className="h-6 w-6" />
                     </button>
                 </div>
@@ -76,7 +109,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
                         {resource.thumbnail_url ? (
-                            <img src={resource.thumbnail_url} alt={resource.title} className="w-full h-auto rounded-lg shadow-md mb-4 object-cover aspect-video" />
+                            <img src={resource.thumbnail_url} alt={resource.title} loading="lazy" decoding="async" className="w-full h-auto rounded-lg shadow-md mb-4 object-cover aspect-video" />
                         ) : (
                             <div className="w-full h-48 bg-muted rounded-lg mb-4 flex items-center justify-center text-muted-foreground">
                                 No Thumbnail
@@ -141,16 +174,20 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                         {/* Main Action Button */}
                                         <button
                                             onClick={handleMainAction}
-                                            disabled={isDownloaded && !isCorrupted}
+                                            disabled={isPending}
                                             className={`
                                                 relative flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-bold transition-all shadow-md active:scale-95 flex-1
                                                 ${isCorrupted ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90' :
                                                     isPaused ? 'bg-yellow-500 text-white hover:bg-yellow-600' :
                                                         isDownloading ? 'bg-muted text-muted-foreground border-2 border-primary/20' :
-                                                            isDownloaded ? 'bg-success text-success-foreground' :
-                                                                'bg-primary text-primary-foreground hover:bg-primary/90'}
+                                                            isPending ? 'bg-amber-500/10 text-amber-600 border-2 border-amber-500/30 cursor-not-allowed' :
+                                                                isDownloaded ? 'bg-success text-success-foreground cursor-pointer hover:bg-success/90' :
+                                                                    'bg-primary text-primary-foreground hover:bg-primary/90'}
                                             `}
-                                            title={isCorrupted ? "File corrupted. Click to retry." : ""}
+                                            title={isCorrupted ? "File corrupted. Click to retry." :
+                                                isDownloaded ? "Apri nella cartella" :
+                                                    isPending ? (queuePosition ? `In coda (posizione ${queuePosition})` : "In coda") : ""}
+                                            aria-label={isDownloaded && !isCorrupted ? "Downloaded. Apri nella cartella" : undefined}
                                         >
                                             {isDownloading ? (
                                                 <>
@@ -162,6 +199,11 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                                 <>
                                                     <Play className="h-5 w-5 fill-current" />
                                                     Resume ({progress}%)
+                                                </>
+                                            ) : isPending ? (
+                                                <>
+                                                    <Clock className="h-5 w-5" />
+                                                    {queuePosition ? `In coda (${queuePosition}º)` : "In coda"}
                                                 </>
                                             ) : isCorrupted ? (
                                                 <>
@@ -181,17 +223,31 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                             )}
                                         </button>
 
-                                        {/* Stop/Cancel Button */}
-                                        {(isDownloading || isPaused) && (
+                                        {/* Stop/Cancel Button: also shown while queued so a
+                                            pending download can be removed from the queue
+                                            (cancelDownload calls the backend's remove_queued
+                                            for pending items). */}
+                                        {(isDownloading || isPaused || isPending) && (
                                             <button
                                                 onClick={cancel}
                                                 className="p-3 bg-muted text-muted-foreground rounded-lg hover:bg-destructive hover:text-destructive-foreground transition-colors shadow-xs"
-                                                title="Stop and Delete"
+                                                title={isPending ? "Remove from queue" : "Stop and Delete"}
                                             >
                                                 <Trash2 className="h-5 w-5" />
                                             </button>
                                         )}
                                     </div>
+
+                                    {/* Reveal in file manager: only once the file is on disk */}
+                                    {isDownloaded && !isCorrupted && (
+                                        <button
+                                            onClick={() => void revealInFolder()}
+                                            className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-border bg-card text-foreground hover:bg-muted transition-colors active:scale-95"
+                                        >
+                                            <FolderOpen className="h-4 w-4" />
+                                            Apri nella cartella
+                                        </button>
+                                    )}
 
                                     {/* Warnings / Errors */}
                                     {isCorrupted && (
@@ -234,7 +290,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                     <button
                                         onClick={toggleAutoDownload}
                                         className={`
-                                            relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-all duration-300 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2
+                                            relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-all duration-300 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2
                                             ${isAutoDownloadEnabled
                                                 ? 'bg-success ring-4 ring-success/30 shadow-[0_0_15px_-3px_rgba(34,197,94,0.6)]'
                                                 : 'bg-gray-200 dark:bg-gray-700 border border-transparent'}

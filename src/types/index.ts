@@ -31,6 +31,9 @@ export interface Resource {
   optimized_videos?: OptimizedVideo[]|null;
 }
 
+// UI colour theme. Mirrors the Rust `ThemeSetting` enum (src-tauri/src/models.rs).
+export type ThemeSetting = 'System'|'Light'|'Dark';
+
 export interface AppConfig {
   work_directory: string|null;
   polling_enabled: boolean;
@@ -40,9 +43,10 @@ export interface AppConfig {
   download_mode: 'Queue'|'Parallel';
   prefer_optimized: boolean;
   autostart_enabled: boolean;
-  // Whether the one-time "the app keeps running in the tray" notice has
-  // already been shown (backend-owned; see the `tray-close-notice` event).
-  tray_close_notice_shown: boolean;
+  // Whether the one-time OS notice about the app staying in the tray has
+  // already been shown (backend-owned; set once in lib.rs on first close-to-tray).
+  tray_close_os_notice_shown: boolean;
+  theme: ThemeSetting;
 }
 
 export interface AppStatus {
@@ -59,10 +63,30 @@ export interface ResourceListResponse {
   resources: Resource[];
 }
 
+// One category and its resource count from the `categories/counts` endpoint.
+// Mirrors the Rust `CategoryCount` struct (src-tauri/src/models.rs). Delivered
+// to the UI by the `get_all_categories` command and the `categories-updated`
+// event so Settings can list categories beyond the current week's resources.
+export interface CategoryCount {
+  name: string;
+  count: number;
+}
+
 // Payload of the `errata-detected` event, emitted by the backend after a poll
 // finds one or more resources superseded by an errata corrige. Mirrors the
 // `serde_json::json!({ "resourceIds": ... })` payload in
 // src-tauri/src/services/errata.rs::process_errata.
 export interface ErrataDetectedPayload {
   resourceIds: number[];
+}
+
+// Batched per-resource status returned by the `get_resources_status` command.
+// Mirrors the Rust `ResourceStatus` struct (src-tauri/src/commands.rs). The
+// backing HashMap<i64, _> serializes its integer keys as strings, so the
+// command result is consumed as Record<number, ResourceStatus>. Sizes come
+// only from the cached HEAD sizes (null when unknown/uncached).
+export interface ResourceStatus {
+  downloaded: boolean;
+  file_size: number|null;
+  optimized_file_size: number|null;
 }
