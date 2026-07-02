@@ -24,3 +24,4 @@ dist-ssr
 *.sw?
 .pa11yci
 src-tauri/Cargo.lock
+.tessera/
