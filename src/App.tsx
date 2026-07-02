@@ -31,6 +31,18 @@ const router = createBrowserRouter([
  */
 function App() {
   const theme = useAppStore(s => s.config?.theme);
+  const initEventListeners = useAppStore(s => s.initEventListeners);
+
+  // Register the Tauri event listeners once, at the app root, for the whole
+  // session. Doing it here (instead of on a page mount) means navigating
+  // between Dashboard and Settings never stacks extra listener copies — the
+  // duplication that made every download event run its handler N times and
+  // inflated the "session saved" counter. initEventListeners is itself
+  // idempotent, so the StrictMode double-invoke in dev registers only one set.
+  useEffect(() => {
+    void initEventListeners();
+  }, [initEventListeners]);
+
   useEffect(() => {
     // Config not loaded yet: leave initThemeFromCache's pre-paint hint
     // (see main.tsx) in place instead of forcing 'System', which would

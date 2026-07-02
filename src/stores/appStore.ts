@@ -1,5 +1,6 @@
 import {invoke} from '@tauri-apps/api/core';
 import {listen} from '@tauri-apps/api/event';
+import type {UnlistenFn} from '@tauri-apps/api/event';
 import {create} from 'zustand';
 
 import {useCelebrationStore} from './celebrationStore';
@@ -53,6 +54,12 @@ interface AppState {
 
   // Actions
   fetchInitialData: () => Promise<void>;
+  // Registers the process-global Tauri event listeners exactly once for the
+  // app's lifetime. Kept separate from fetchInitialData (which fetches data and
+  // may run on every page mount) so navigation never re-registers listeners —
+  // duplicated listeners made every event fire N times and inflated the
+  // session savings counter. Call once from App.tsx.
+  initEventListeners: () => Promise<void>;
   fetchResourcesStatus: () => Promise<void>;
   patchResourceStatus: (id: number, patch: Partial<ResourceStatus>) => void;
   updateConfig: (config: Partial<AppConfig>) => Promise<void>;
@@ -86,6 +93,26 @@ function debounce<T extends (...args: never[]) => unknown>(
     if (timeout) clearTimeout(timeout);
     timeout = setTimeout(() => func(...args), wait);
   };
+}
+
+// Tauri event listeners are process-global singletons registered against the
+// webview; registering a set more than once makes every event run its handler
+// once per copy. That is the root cause of the inflated "session saved" figure:
+// each duplicate download-complete re-ran the incremental accumulator. These
+// module-level guards ensure the set is registered exactly once for the app's
+// lifetime, independent of how many times React mounts/remounts a page.
+let eventListenersInitialized = false;
+let registeredUnlisten: UnlistenFn[] = [];
+
+// On a Vite hot-reload this module is replaced: tear down the old listeners and
+// reset the guard so the fresh module re-registers exactly one set (without the
+// stale copies from the previous module instance lingering on the webview).
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    registeredUnlisten.forEach((unlisten) => unlisten());
+    registeredUnlisten = [];
+    eventListenersInitialized = false;
+  });
 }
 
 export const useAppStore = create<AppState>(
@@ -155,31 +182,53 @@ export const useAppStore = create<AppState>(
             archivedWeeks,
             isLoading: false
           });
+        } catch (e) {
+          set({
+            error: tGlobal('store.error.initFailed', {error: errorMessage(e)}),
+            isLoading: false
+          });
+        }
+      },
 
+      initEventListeners: async () => {
+        // Idempotent for the app's lifetime. The guard is flipped synchronously
+        // *before* the first await so React StrictMode's double-invoke (dev)
+        // can't slip a second registration through the await gap. Called once
+        // from App.tsx — never from a page mount — so navigating between pages
+        // never re-registers, and every event runs its handler exactly once.
+        if (eventListenersInitialized) return;
+        eventListenersInitialized = true;
+        // Promise.allSettled (not Promise.all): a single failed `listen()`
+        // call must not discard the UnlistenFns of the ones that *did*
+        // succeed. With Promise.all, one rejection loses every fulfilled
+        // handle silently, leaking those listeners registered against the
+        // webview for the app's lifetime (no way to tear them down later).
+        try {
+          const results = await Promise.allSettled([
           // Listen for updates
-          await listen<ResourceListResponse>('resources-updated', (event) => {
+          listen<ResourceListResponse>('resources-updated', (event) => {
             set({resources: event.payload.resources});
             // Also refresh status to update last poll time
             invoke<AppStatus>('get_status').then(status => set({status}));
             debouncedFetchSummary();
             debouncedFetchStatuses();
-          });
+          }),
 
-          await listen<string>('poll-error', (event) => {
+          listen<string>('poll-error', (event) => {
             set({error: `Poll error: ${event.payload}`});
-          });
+          }),
 
-          await listen('poll-tick', () => {
+          listen('poll-tick', () => {
             invoke<AppStatus>('get_status').then(status => set({status}));
-          });
+          }),
 
           // Full category catalog refreshed by the backend after each poll.
-          await listen<CategoryCount[]>('categories-updated', (event) => {
+          listen<CategoryCount[]>('categories-updated', (event) => {
             set({allCategories: event.payload});
-          });
+          }),
 
           // Global download progress listener
-          await listen<{
+          listen<{
             id: number,
             progress: number,
             current_bytes?: number,
@@ -205,10 +254,10 @@ export const useAppStore = create<AppState>(
                 }
               };
             });
-          });
+          }),
 
           // Listen for queue status changes
-          await listen<QueueStatusPayload>('queue-status-changed', (event) => {
+          listen<QueueStatusPayload>('queue-status-changed', (event) => {
             set(state => {
               const {queued, active: _active} = event.payload;
               const newActiveDownloads = {...state.activeDownloads};
@@ -236,10 +285,10 @@ export const useAppStore = create<AppState>(
               return {activeDownloads: newActiveDownloads};
             });
             debouncedFetchSummary();
-          });
+          }),
 
           // Listen for download start from queue
-          await listen<number>('download-started', (event) => {
+          listen<number>('download-started', (event) => {
             const resourceId = event.payload;
             console.log(
                 `[DownloadEvent] Received download-started for resource ${
@@ -274,10 +323,10 @@ export const useAppStore = create<AppState>(
               };
             });
             debouncedFetchSummary();
-          });
+          }),
 
           // Listen for download completion from auto-download queue
-          await listen<DownloadCompletePayload>('download-complete', (event) => {
+          listen<DownloadCompletePayload>('download-complete', (event) => {
             const {
               id: resourceId,
               optimized,
@@ -326,7 +375,7 @@ export const useAppStore = create<AppState>(
                 totalSavedBytes,
               });
             }
-          });
+          }),
 
           // Backend resolved an original file size that wasn't cached yet at
           // download-complete time (see queue.rs's detached background
@@ -334,12 +383,12 @@ export const useAppStore = create<AppState>(
           // "no savings info" copy to the full savings layout, and fold the
           // saving into the session/total counters (counted exactly once
           // across download-complete + savings-resolved, never both).
-          await listen<SavingsResolvedPayload>('savings-resolved', (event) => {
+          listen<SavingsResolvedPayload>('savings-resolved', (event) => {
             useCelebrationStore.getState().resolveSavings(event.payload);
-          });
+          }),
 
           // Listen for download failures
-          await listen<{id: number, error: string}>('download-failed', (event) => {
+          listen<{id: number, error: string}>('download-failed', (event) => {
             const { id: resourceId, error } = event.payload;
             console.log(`[DownloadEvent] Received download-failed for resource ${resourceId}: ${error}`);
             
@@ -372,12 +421,12 @@ export const useAppStore = create<AppState>(
               };
             });
             debouncedFetchSummary();
-          });
+          }),
 
           // Listen for download pause (emitted by the queue worker when a
           // download stops on the pause signal). Only reflect it if we track
           // the resource; a pause event for an unknown download is ignored.
-          await listen<number>('download-paused', (event) => {
+          listen<number>('download-paused', (event) => {
             const resourceId = event.payload;
             set(state => {
               const current = state.activeDownloads[resourceId];
@@ -389,12 +438,12 @@ export const useAppStore = create<AppState>(
                 }
               };
             });
-          });
+          }),
 
           // Listen for download cancellation (an in-flight download stopped on
           // the cancel signal; removing a still-queued item does not emit this).
           // Drop it from the map.
-          await listen<number>('download-cancelled', (event) => {
+          listen<number>('download-cancelled', (event) => {
             const resourceId = event.payload;
             set(state => {
               const {[resourceId]: _removed, ...rest} = state.activeDownloads;
@@ -402,14 +451,14 @@ export const useAppStore = create<AppState>(
             });
             debouncedFetchSummary();
             debouncedFetchStatuses();
-          });
+          }),
 
           // Errata corrige detected: the backend has already archived the old
           // file, marked the registry, and re-queued the updated download
           // (see errata.rs::process_errata). The UI stays dumb — just refresh
           // status/resources from the backend and surface a non-invasive
           // toast; no client-side comparison logic.
-          await listen<ErrataDetectedPayload>('errata-detected', (event) => {
+          listen<ErrataDetectedPayload>('errata-detected', (event) => {
             invoke<AppStatus>('get_status').then(status => set({status}));
             invoke<Resource[]>('get_resources').then(resources => set({resources}));
             debouncedFetchSummary();
@@ -421,13 +470,35 @@ export const useAppStore = create<AppState>(
                     tGlobal('store.toast.errataSingle') :
                     tGlobal('store.toast.errataMultiple', {count}),
                 'info');
-          });
+          }),
+          ]);
 
-        } catch (e) {
-          set({
-            error: tGlobal('store.error.initFailed', {error: errorMessage(e)}),
-            isLoading: false
+          const unlisten: UnlistenFn[] = [];
+          results.forEach((result, index) => {
+            if (result.status === 'fulfilled') {
+              unlisten.push(result.value);
+            } else {
+              // Log and move on: the guard stays up (see below) so the
+              // listeners that DID succeed are never re-registered — a retry
+              // here would double-fire every event they already own.
+              console.error(
+                  `Failed to register event listener #${index}`,
+                  result.reason);
+            }
           });
+          registeredUnlisten = unlisten;
+          console.log(
+              `[EventListeners] ${unlisten.length}/${
+                  results.length} listeners active`);
+        } catch (e) {
+          // Unexpected failure building/awaiting the batch itself — distinct
+          // from a per-listener rejection, which Promise.allSettled already
+          // absorbs above without throwing. No listener is known to have
+          // registered here, so it's safe to reset the guard and let a later
+          // call retry the whole batch.
+          eventListenersInitialized = false;
+          registeredUnlisten = [];
+          console.error('Failed to register event listeners', e);
         }
       },
 
