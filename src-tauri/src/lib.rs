@@ -12,7 +12,7 @@ pub mod services;
 pub use commands::AppState;
 pub use error::AppError;
 pub use models::{AppConfig, Resource, WeekIdentifier};
-pub use services::PollingService;
+pub use services::{PollingService, RetentionScheduler};
 
 use tauri::Manager;
 
@@ -133,6 +133,13 @@ pub fn run() {
                 let polling_service = PollingService::new();
                 polling_service.start(app.handle().clone(), config.polling_interval_minutes);
             }
+
+            // Enforce the retention policy once at startup and then daily.
+            // Independent of `polling_enabled`: retention is local disk
+            // hygiene (archived weeks older than `retention_days` moved to
+            // the system trash), not tied to remote polling being on.
+            let retention_scheduler = RetentionScheduler::new();
+            retention_scheduler.start(app.handle().clone());
 
             Ok(())
         })
