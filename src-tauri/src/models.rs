@@ -24,6 +24,8 @@ pub struct AppConfig {
     pub download_mode: DownloadMode,
     /// Prefer optimized video URL when available
     pub prefer_optimized: bool,
+    /// Whether the app should launch automatically at OS startup (opt-in)
+    pub autostart_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -41,7 +43,8 @@ impl Default for AppConfig {
             retention_days: Some(7),      // Default: 7 days
             auto_download_categories: Vec::new(),
             download_mode: DownloadMode::Queue,
-            prefer_optimized: true, // Default: prefer optimized videos
+            prefer_optimized: true,   // Default: prefer optimized videos
+            autostart_enabled: false, // Default: disabled (opt-in)
         }
     }
 }
@@ -240,6 +243,10 @@ mod tests {
         assert_eq!(config.polling_interval_minutes, 60);
         assert_eq!(config.retention_days, Some(7));
         assert!(config.work_directory.is_none());
+        assert!(
+            !config.autostart_enabled,
+            "autostart must default to disabled (opt-in only)"
+        );
     }
 
     #[test]
@@ -369,6 +376,7 @@ mod tests {
             auto_download_categories: vec!["decime".to_string(), "video".to_string()],
             download_mode: DownloadMode::Parallel,
             prefer_optimized: false,
+            autostart_enabled: true,
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: AppConfig = serde_json::from_str(&json).unwrap();

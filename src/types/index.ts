@@ -25,6 +25,7 @@ export interface AppConfig {
   auto_download_categories: string[];
   download_mode: 'Queue'|'Parallel';
   prefer_optimized: boolean;
+  autostart_enabled: boolean;
 }
 
 export interface AppStatus {

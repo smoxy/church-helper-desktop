@@ -411,6 +411,54 @@ pub fn set_retention_days(
     Ok(())
 }
 
+/// Enable or disable launching the app automatically at OS startup.
+///
+/// Toggles the actual OS-level autostart entry (Windows registry autorun /
+/// Linux XDG `.desktop` autostart, via tauri-plugin-autostart) first, and
+/// only persists the preference to config/store if that succeeds — so a
+/// failed OS-level toggle never leaves the saved config out of sync with
+/// reality.
+#[tauri::command]
+pub fn set_autostart_enabled(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let autostart_manager = app.autolaunch();
+    if enabled {
+        autostart_manager
+            .enable()
+            .map_err(|e| format!("Failed to enable autostart: {}", e))?;
+    } else {
+        autostart_manager
+            .disable()
+            .map_err(|e| format!("Failed to disable autostart: {}", e))?;
+    }
+
+    let mut config = state
+        .config
+        .write()
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+    config.autostart_enabled = enabled;
+
+    // Save to store
+    use tauri_plugin_store::StoreExt;
+    let store = app
+        .store("settings.json")
+        .map_err(|e| format!("Failed to access store: {}", e))?;
+
+    let json =
+        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+    store.set("config", json);
+    store
+        .save()
+        .map_err(|e| format!("Failed to save store: {}", e))?;
+
+    Ok(())
+}
+
 /// Get archived weeks
 #[tauri::command]
 pub fn get_archived_weeks(state: State<'_, AppState>) -> Result<Vec<WeekIdentifier>, String> {

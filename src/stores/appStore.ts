@@ -48,6 +48,7 @@ interface AppState {
   togglePolling: (enabled: boolean) => Promise<void>;
   setPollingInterval: (minutes: number) => Promise<void>;
   setRetentionDays: (days: number|null) => Promise<void>;
+  setAutostartEnabled: (enabled: boolean) => Promise<void>;
   fetchArchivedWeeks: () => Promise<void>;
   fetchSummary: () => Promise<void>;
   startDownload: (resource: Resource) => Promise<void>;
@@ -365,6 +366,21 @@ export const useAppStore = create<AppState>(
           set({config});
         } catch (e) {
           set({error: `Failed to set retention: ${e}`});
+        }
+      },
+
+      setAutostartEnabled: async (enabled) => {
+        try {
+          // Toggles the real OS-level autostart entry and persists the
+          // preference (backend command set_autostart_enabled); re-throw so
+          // the caller can show an accurate success/error toast instead of
+          // assuming success (this changes OS state, not just app config).
+          await invoke('set_autostart_enabled', {enabled});
+          const config = await invoke<AppConfig>('get_config');
+          set({config});
+        } catch (e) {
+          set({error: `Failed to set autostart: ${e}`});
+          throw e;
         }
       },
 

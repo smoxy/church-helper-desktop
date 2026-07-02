@@ -26,6 +26,10 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             // Initialize application state
             let app_state = AppState::default();
@@ -62,6 +66,30 @@ pub fn run() {
                 .write()
                 .map_err(|e| format!("Failed to write initial status: {}", e))?
                 .polling_active = config.polling_enabled;
+
+            // Sync the OS-level autostart entry with the saved preference.
+            // The two can drift apart outside of our control (reinstall, OS
+            // reset, user manually removing the registry/XDG autostart
+            // entry), so reconcile on every startup instead of trusting the
+            // config blindly.
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let autostart_manager = app.autolaunch();
+                let currently_enabled = autostart_manager.is_enabled().unwrap_or(false);
+                if config.autostart_enabled && !currently_enabled {
+                    if let Err(e) = autostart_manager.enable() {
+                        tracing::error!("Failed to sync autostart (enable): {}", e);
+                    } else {
+                        tracing::info!("Autostart enabled to match saved configuration");
+                    }
+                } else if !config.autostart_enabled && currently_enabled {
+                    if let Err(e) = autostart_manager.disable() {
+                        tracing::error!("Failed to sync autostart (disable): {}", e);
+                    } else {
+                        tracing::info!("Autostart disabled to match saved configuration");
+                    }
+                }
+            }
 
             // Try to load cached resources
             let cache_store = app.store("cache.json")?;
@@ -154,6 +182,7 @@ pub fn run() {
             commands::set_polling_enabled,
             commands::set_polling_interval,
             commands::set_retention_days,
+            commands::set_autostart_enabled,
             commands::get_archived_weeks,
             commands::is_resource_youtube,
             commands::download_resource,
