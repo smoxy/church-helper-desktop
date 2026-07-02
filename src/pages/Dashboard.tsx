@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Button } from "../components/ui/button";
 import { RefreshCw } from "lucide-react";
 import { format } from "date-fns";
+import { errorMessage } from "../lib/utils";
 import { Resource } from "../types";
 import { ResourceDetail } from "../components/features/resource/ResourceDetail";
 import { ResourceCard } from "../components/features/resource/ResourceCard";
@@ -33,7 +34,7 @@ export default function Dashboard() {
             await forcePoll();
             addToast("Week Material updated", "success");
         } catch (e) {
-            addToast(`Refresh failed: ${e}`, "error");
+            addToast(`Refresh failed: ${errorMessage(e)}`, "error");
         }
     };
 

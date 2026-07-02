@@ -3,6 +3,17 @@ export interface WeekIdentifier {
   week_number: number;
 }
 
+// Structured error carried across the Tauri IPC boundary. Mirrors the Rust
+// `CommandError` struct (src-tauri/src/error.rs): a command's rejected `invoke`
+// resolves with this JSON object as its reason. `code` is a stable kebab-case
+// identifier the UI can branch on (e.g. 'work-dir-not-set', 'api-unreachable');
+// `message` is the human-readable detail to show the user. Use `errorMessage()`
+// / `isCommandError()` from lib/utils to consume caught values safely.
+export interface CommandError {
+  code: string;
+  message: string;
+}
+
 // A single optimized video variant produced by the re-encoder from a
 // resource's original zip (adr-0008: matching per provenienza). Mirrors
 // `OptimizedVideo` in src-tauri/src/models.rs exactly.

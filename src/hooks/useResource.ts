@@ -3,6 +3,7 @@ import {useEffect, useMemo, useState} from 'react';
 
 import {useAppStore} from '../stores/appStore';
 import {useToastStore} from '../stores/toastStore';
+import {errorMessage} from '../lib/utils';
 import {OptimizedVideo, Resource} from '../types';
 
 export function useResource(resource: Resource) {
@@ -144,7 +145,7 @@ export function useResource(resource: Resource) {
     try {
       await invoke('reveal_resource', {resource: effectiveResource});
     } catch (error) {
-      addToast(`Impossibile aprire la cartella: ${error}`, 'error');
+      addToast(`Impossibile aprire la cartella: ${errorMessage(error)}`, 'error');
     }
   };
 
@@ -162,7 +163,7 @@ export function useResource(resource: Resource) {
               resource.category}"`,
           'success');
     } catch (error) {
-      addToast(`Failed to toggle auto-download: ${error}`, 'error');
+      addToast(`Failed to toggle auto-download: ${errorMessage(error)}`, 'error');
     }
   };
 

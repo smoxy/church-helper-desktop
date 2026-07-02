@@ -2,7 +2,7 @@
 //!
 //! These commands implement the "Dumb UI, Smart Backend" architecture.
 
-use crate::constants::api_base_url;
+use crate::error::{CommandError, FileError};
 use crate::models::{
     AppConfig, AppStatus, CategoryCount, DownloadedFile, Resource, ResourceListResponse,
     WeekIdentifier,
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 /// Application state managed by Tauri
 pub struct AppState {
@@ -67,7 +67,7 @@ pub struct DownloadResponse {
 
 /// Open a native folder picker dialog
 #[tauri::command]
-pub async fn select_work_directory(app: AppHandle) -> Result<Option<String>, String> {
+pub async fn select_work_directory(app: AppHandle) -> Result<Option<String>, CommandError> {
     use tauri_plugin_dialog::DialogExt;
 
     let path = app.dialog().file().blocking_pick_folder();
@@ -97,59 +97,55 @@ impl Default for AppState {
 
 /// Get the current configuration
 #[tauri::command]
-pub fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
-    let config = state
-        .config
-        .read()
-        .map_err(|e| format!("Failed to read config: {}", e))?;
+pub fn get_config(state: State<'_, AppState>) -> Result<AppConfig, CommandError> {
+    let config = state.config.read()?;
     Ok(config.clone())
 }
 
-/// Update the configuration
-/// Update the configuration
+/// Persist `config` to the `config` key of the `settings.json` store. Shared by
+/// every config-mutating command so the serialize-and-save path lives in one
+/// place. Synchronous: never `.await` while a config lock is held.
+fn persist_config(app: &AppHandle, config: &AppConfig) -> Result<(), CommandError> {
+    use tauri_plugin_store::StoreExt;
+    let store = app.store("settings.json")?;
+
+    let json = serde_json::to_value(config).map_err(|e| {
+        CommandError::new(
+            "config-serialize-failed",
+            format!("Failed to serialize config: {e}"),
+        )
+    })?;
+
+    store.set("config", json);
+    store.save()?;
+    Ok(())
+}
+
 /// Update the configuration
 #[tauri::command]
 pub async fn set_config(
     state: State<'_, AppState>,
     app: AppHandle,
     mut config: AppConfig,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     // Validate before saving
     config
         .validate()
-        .map_err(|e| format!("Invalid config: {:?}", e))?;
+        .map_err(|e| CommandError::new("config-invalid", format!("Invalid config: {e:?}")))?;
 
     // `tray_close_os_notice_shown` is backend-owned (set once in lib.rs when the
     // window is first hidden to the tray); never let a stale value round-tripped
     // by the frontend overwrite it.
     {
-        let current = state
-            .config
-            .read()
-            .map_err(|e| format!("Failed to read config: {}", e))?;
+        let current = state.config.read()?;
         config.tray_close_os_notice_shown = current.tray_close_os_notice_shown;
     }
 
-    // Save to store
-    use tauri_plugin_store::StoreExt;
-    let store = app
-        .store("settings.json")
-        .map_err(|e| format!("Failed to access store: {}", e))?;
-
-    let json =
-        serde_json::to_value(&config).map_err(|e| format!("Failed to serialize config: {}", e))?;
-
-    store.set("config", json);
-    store
-        .save()
-        .map_err(|e| format!("Failed to save store: {}", e))?;
+    persist_config(&app, &config)?;
 
     // Update state
     {
-        let mut current = state
-            .config
-            .write()
-            .map_err(|e| format!("Failed to write config: {}", e))?;
+        let mut current = state.config.write()?;
         *current = config.clone();
     }
 
@@ -162,21 +158,15 @@ pub async fn set_config(
 
 /// Get the current application status
 #[tauri::command]
-pub fn get_status(state: State<'_, AppState>) -> Result<AppStatus, String> {
-    let status = state
-        .status
-        .read()
-        .map_err(|e| format!("Failed to read status: {}", e))?;
+pub fn get_status(state: State<'_, AppState>) -> Result<AppStatus, CommandError> {
+    let status = state.status.read()?;
     Ok(status.clone())
 }
 
 /// Get the currently loaded resources
 #[tauri::command]
-pub fn get_resources(state: State<'_, AppState>) -> Result<Vec<Resource>, String> {
-    let resources = state
-        .resources
-        .read()
-        .map_err(|e| format!("Failed to read resources: {}", e))?;
+pub fn get_resources(state: State<'_, AppState>) -> Result<Vec<Resource>, CommandError> {
+    let resources = state.resources.read()?;
     Ok(resources.clone())
 }
 
@@ -184,251 +174,88 @@ pub fn get_resources(state: State<'_, AppState>) -> Result<Vec<Resource>, String
 /// fetch). Used by the UI's initial load; live updates arrive via the
 /// `categories-updated` event.
 #[tauri::command]
-pub fn get_all_categories(state: State<'_, AppState>) -> Result<Vec<CategoryCount>, String> {
-    let categories = state
-        .all_categories
-        .read()
-        .map_err(|e| format!("Failed to read categories: {}", e))?;
+pub fn get_all_categories(state: State<'_, AppState>) -> Result<Vec<CategoryCount>, CommandError> {
+    let categories = state.all_categories.read()?;
     Ok(categories.clone())
 }
 
-/// Trigger an immediate poll of the API
+/// Trigger an immediate poll of the API. Thin wrapper over the shared
+/// `services::poll_once` flow (the same one the background polling loop runs),
+/// so the manual "refresh now" action and the periodic poll can never diverge.
 #[tauri::command]
-pub async fn force_poll(
-    state: State<'_, AppState>,
-    app: AppHandle,
-) -> Result<ResourceListResponse, String> {
-    // Fetch from API
-    let url = format!("{}/api/resources/latest-week", api_base_url());
-
-    let response = state
-        .shared_http_client
-        .get(&url)
-        .send()
+pub async fn force_poll(app: AppHandle) -> Result<ResourceListResponse, CommandError> {
+    // `poll_once` still surfaces its failure as a flat string (it aggregates
+    // HTTP/parse/lock failures across a whole cycle); wrap it under one stable
+    // code while preserving the detailed message it built.
+    crate::services::poll_once(&app)
         .await
-        .map_err(|e| format!("API request failed: {}", e))?;
-
-    let api_response: ResourceListResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-
-    // Get old resources for cache invalidation
-    let old_resources = {
-        let resources = state
-            .resources
-            .read()
-            .map_err(|e| format!("Failed to read resources: {}", e))?;
-        resources.clone()
-    };
-
-    // Update state
-    {
-        let mut resources = state
-            .resources
-            .write()
-            .map_err(|e| format!("Failed to update resources: {}", e))?;
-        *resources = api_response.resources.clone();
-    }
-
-    // Invalidate cache for changed/removed URLs
-    {
-        let mut cache = state
-            .file_size_cache
-            .write()
-            .map_err(|e| format!("Failed to write cache: {}", e))?;
-
-        // Build a map of old URLs by resource ID
-        let old_url_map: std::collections::HashMap<i64, String> = old_resources
-            .iter()
-            .map(|r| (r.id, r.download_url.clone()))
-            .collect();
-
-        // Build a set of current URLs
-        let current_urls: std::collections::HashSet<String> = api_response
-            .resources
-            .iter()
-            .map(|r| r.download_url.clone())
-            .collect();
-
-        // Remove cache entries for URLs that changed
-        for new_resource in &api_response.resources {
-            if let Some(old_url) = old_url_map.get(&new_resource.id) {
-                if old_url != &new_resource.download_url {
-                    cache.remove(old_url);
-                    tracing::trace!("Invalidated cache for changed URL: {}", old_url);
-                }
-            }
-        }
-
-        // Remove cache entries for URLs that no longer exist
-        let keys_to_remove: Vec<String> = cache
-            .keys()
-            .filter(|url| !current_urls.contains(*url))
-            .cloned()
-            .collect();
-
-        for key in &keys_to_remove {
-            cache.remove(key);
-        }
-
-        if !keys_to_remove.is_empty() {
-            tracing::debug!("Removed {} stale cache entries", keys_to_remove.len());
-        }
-    }
-
-    // Set when this poll's resources belong to a different week than the
-    // last known one, so we can archive the now-previous week(s) below
-    // (bl-desktop-archiving-not-called) once the status write lock (a
-    // non-Send std::sync guard) is released and out of scope.
-    let mut new_current_week: Option<WeekIdentifier> = None;
-
-    // Update status
-    {
-        let mut status = state
-            .status
-            .write()
-            .map_err(|e| format!("Failed to update status: {}", e))?;
-        status.last_poll_time = Some(chrono::Utc::now());
-        status.total_resources = api_response.resources.len();
-
-        // Determine current week from resources
-        if let Some(week) = crate::models::latest_week(&api_response.resources) {
-            if status.current_week.as_ref() != Some(&week) {
-                new_current_week = Some(week.clone());
-            }
-            status.current_week = Some(week);
-        }
-    }
-
-    // Emit event to frontend
-    let _ = app.emit("resources-updated", &api_response);
-
-    // Second, independent GET for the full category catalog, shared with
-    // `services::polling::poll_api` so the two poll paths stay identical.
-    // Best-effort: its failures never affect this command's result.
-    crate::services::refresh_categories(&app).await;
-
-    // Save to cache
-    use tauri_plugin_store::StoreExt;
-    let store = app.store("cache.json").map_err(|e| e.to_string())?;
-    let json = serde_json::to_value(&api_response.resources).map_err(|e| e.to_string())?;
-    store.set("resources", json);
-
-    // Save file size cache (exclude negative cache entries from persistence)
-    let cache_snapshot = {
-        let cache = state.file_size_cache.read().map_err(|e| e.to_string())?;
-        cache
-            .iter()
-            .filter(|(_, &size)| size != u64::MAX) // Exclude negative cache
-            .map(|(k, v)| (k.clone(), *v))
-            .collect::<std::collections::HashMap<String, u64>>()
-    };
-    let cache_json = serde_json::to_value(&cache_snapshot).map_err(|e| e.to_string())?;
-    store.set("file_size_cache", cache_json);
-
-    store.save().map_err(|e| e.to_string())?;
-
-    // Reconcile the errata registry against this fresh snapshot BEFORE the
-    // auto-download scan (same ordering rationale as `polling.rs::poll_api`):
-    // a re-queued errata corrige is already in the queue when the scan runs,
-    // so its check_file_exists pass is deduped instead of racing a second
-    // download of the same file (adr-0007).
-    crate::services::process_errata(&app, &api_response.resources).await;
-
-    // Check for auto-downloads after force poll
-    tracing::debug!("Scanning resources for auto-download after force poll");
-    state.download_queue.scan_and_queue(app.clone()).await;
-
-    // The current week just changed: archive the folders of the now-past
-    // week(s) so enforce_retention (already scheduled daily) has something
-    // to trash after retention_days (bl-desktop-archiving-not-called).
-    if let Some(week) = new_current_week {
-        tracing::info!("Current week changed to {}, archiving previous weeks", week);
-        crate::services::archive_previous_weeks_once(&app, &week).await;
-    }
-
-    Ok(api_response)
+        .map_err(|e| CommandError::new("poll-failed", e))
 }
 
-/// Set the work directory
 /// Set the work directory
 #[tauri::command]
 pub fn set_work_directory(
     state: State<'_, AppState>,
     app: AppHandle,
     path: String,
-) -> Result<(), String> {
-    let path_buf = PathBuf::from(&path);
+) -> Result<(), CommandError> {
+    let path_buf = validate_work_directory(&path)?;
 
-    // Verify directory exists
+    let mut config = state.config.write()?;
+    config.work_directory = Some(path_buf);
+
+    persist_config(&app, &config)
+}
+
+/// Validate a user-selected work directory, returning the resolved path or a
+/// typed error the frontend can branch on (`work-dir-not-found` /
+/// `not-a-directory`). Extracted from `set_work_directory` so the mapping from
+/// filesystem state to error code is unit-testable without Tauri state.
+fn validate_work_directory(path: &str) -> Result<PathBuf, CommandError> {
+    let path_buf = PathBuf::from(path);
+
     if !path_buf.exists() {
-        return Err(format!("Directory does not exist: {}", path));
+        return Err(CommandError::new(
+            "work-dir-not-found",
+            format!("Directory does not exist: {path}"),
+        ));
     }
 
     if !path_buf.is_dir() {
-        return Err(format!("Path is not a directory: {}", path));
+        return Err(CommandError::new(
+            "not-a-directory",
+            format!("Path is not a directory: {path}"),
+        ));
     }
 
-    let mut config = state
-        .config
-        .write()
-        .map_err(|e| format!("Failed to write config: {}", e))?;
-    config.work_directory = Some(path_buf);
-
-    // Save to store
-    use tauri_plugin_store::StoreExt;
-    let store = app
-        .store("settings.json")
-        .map_err(|e| format!("Failed to access store: {}", e))?;
-
-    let json =
-        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?;
-
-    store.set("config", json);
-    store
-        .save()
-        .map_err(|e| format!("Failed to save store: {}", e))?;
-
-    Ok(())
+    Ok(path_buf)
 }
 
-/// Toggle polling on/off
 /// Toggle polling on/off
 #[tauri::command]
 pub fn set_polling_enabled(
     state: State<'_, AppState>,
     app: AppHandle,
     enabled: bool,
-) -> Result<(), String> {
-    // Update config + capture the interval to (re)start with, then release the
-    // lock before touching the polling service.
-    let (interval, config_json) = {
-        let mut config = state
-            .config
-            .write()
-            .map_err(|e| format!("Failed to write config: {}", e))?;
+) -> Result<(), CommandError> {
+    // Update config + capture the interval to (re)start with and a config
+    // snapshot to persist, then release the lock before touching the polling
+    // service.
+    let (interval, config_snapshot) = {
+        let mut config = state.config.write()?;
         config.polling_enabled = enabled;
-        let json = serde_json::to_value(&*config)
-            .map_err(|e| format!("Failed to serialize config: {}", e))?;
-        (config.polling_interval_minutes, json)
+        (config.polling_interval_minutes, config.clone())
     };
 
     {
-        let mut status = state
-            .status
-            .write()
-            .map_err(|e| format!("Failed to write status: {}", e))?;
+        let mut status = state.status.write()?;
         status.polling_active = enabled;
     }
 
     // Actually start/stop the background task so the UI toggle takes effect
     // (previously this command only flipped config/status flags, a no-op).
     {
-        let mut guard = state
-            .polling_service
-            .write()
-            .map_err(|e| format!("Failed to access polling service: {}", e))?;
+        let mut guard = state.polling_service.write()?;
         if enabled {
             match guard.as_ref() {
                 // Already running: nothing to do.
@@ -448,48 +275,33 @@ pub fn set_polling_enabled(
         }
     }
 
-    // Save to store
-    use tauri_plugin_store::StoreExt;
-    let store = app
-        .store("settings.json")
-        .map_err(|e| format!("Failed to access store: {}", e))?;
-
-    store.set("config", config_json);
-    store
-        .save()
-        .map_err(|e| format!("Failed to save store: {}", e))?;
-
-    Ok(())
+    persist_config(&app, &config_snapshot)
 }
 
-/// Set the polling interval in minutes
 /// Set the polling interval in minutes
 #[tauri::command]
 pub fn set_polling_interval(
     state: State<'_, AppState>,
     app: AppHandle,
     minutes: u32,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     if !(1..=1440).contains(&minutes) {
-        return Err("Polling interval must be between 1 and 1440 minutes".to_string());
+        return Err(CommandError::new(
+            "invalid-polling-interval",
+            "Polling interval must be between 1 and 1440 minutes",
+        ));
     }
 
-    let config_json = {
-        let mut config = state
-            .config
-            .write()
-            .map_err(|e| format!("Failed to write config: {}", e))?;
+    let config_snapshot = {
+        let mut config = state.config.write()?;
         config.polling_interval_minutes = minutes;
-        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?
+        config.clone()
     };
 
     // If polling is currently running, restart it so the new interval takes
     // effect immediately instead of only after the next app launch.
     {
-        let guard = state
-            .polling_service
-            .read()
-            .map_err(|e| format!("Failed to access polling service: {}", e))?;
+        let guard = state.polling_service.read()?;
         if let Some(service) = guard.as_ref() {
             if service.is_running() {
                 service.restart(app.clone(), minutes);
@@ -497,49 +309,20 @@ pub fn set_polling_interval(
         }
     }
 
-    // Save to store
-    use tauri_plugin_store::StoreExt;
-    let store = app
-        .store("settings.json")
-        .map_err(|e| format!("Failed to access store: {}", e))?;
-
-    store.set("config", config_json);
-    store
-        .save()
-        .map_err(|e| format!("Failed to save store: {}", e))?;
-
-    Ok(())
+    persist_config(&app, &config_snapshot)
 }
 
-/// Set the retention policy
 /// Set the retention policy
 #[tauri::command]
 pub fn set_retention_days(
     state: State<'_, AppState>,
     app: AppHandle,
     days: Option<u32>,
-) -> Result<(), String> {
-    let mut config = state
-        .config
-        .write()
-        .map_err(|e| format!("Failed to write config: {}", e))?;
+) -> Result<(), CommandError> {
+    let mut config = state.config.write()?;
     config.retention_days = days;
 
-    // Save to store
-    use tauri_plugin_store::StoreExt;
-    let store = app
-        .store("settings.json")
-        .map_err(|e| format!("Failed to access store: {}", e))?;
-
-    let json =
-        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?;
-
-    store.set("config", json);
-    store
-        .save()
-        .map_err(|e| format!("Failed to save store: {}", e))?;
-
-    Ok(())
+    persist_config(&app, &config)
 }
 
 /// Enable or disable launching the app automatically at OS startup.
@@ -554,54 +337,40 @@ pub fn set_autostart_enabled(
     state: State<'_, AppState>,
     app: AppHandle,
     enabled: bool,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     use tauri_plugin_autostart::ManagerExt;
     let autostart_manager = app.autolaunch();
     if enabled {
-        autostart_manager
-            .enable()
-            .map_err(|e| format!("Failed to enable autostart: {}", e))?;
+        autostart_manager.enable().map_err(|e| {
+            CommandError::new(
+                "autostart-failed",
+                format!("Failed to enable autostart: {e}"),
+            )
+        })?;
     } else {
-        autostart_manager
-            .disable()
-            .map_err(|e| format!("Failed to disable autostart: {}", e))?;
+        autostart_manager.disable().map_err(|e| {
+            CommandError::new(
+                "autostart-failed",
+                format!("Failed to disable autostart: {e}"),
+            )
+        })?;
     }
 
-    let mut config = state
-        .config
-        .write()
-        .map_err(|e| format!("Failed to write config: {}", e))?;
+    let mut config = state.config.write()?;
     config.autostart_enabled = enabled;
 
-    // Save to store
-    use tauri_plugin_store::StoreExt;
-    let store = app
-        .store("settings.json")
-        .map_err(|e| format!("Failed to access store: {}", e))?;
-
-    let json =
-        serde_json::to_value(&*config).map_err(|e| format!("Failed to serialize config: {}", e))?;
-
-    store.set("config", json);
-    store
-        .save()
-        .map_err(|e| format!("Failed to save store: {}", e))?;
-
-    Ok(())
+    persist_config(&app, &config)
 }
 
 /// Get archived weeks
 #[tauri::command]
-pub fn get_archived_weeks(state: State<'_, AppState>) -> Result<Vec<WeekIdentifier>, String> {
-    let config = state
-        .config
-        .read()
-        .map_err(|e| format!("Failed to read config: {}", e))?;
+pub fn get_archived_weeks(state: State<'_, AppState>) -> Result<Vec<WeekIdentifier>, CommandError> {
+    let config = state.config.read()?;
 
     let work_dir = config
         .work_directory
         .as_ref()
-        .ok_or("Work directory not configured")?;
+        .ok_or(FileError::WorkDirectoryNotSet)?;
 
     let service = crate::services::FileRetentionService::new(work_dir.clone());
     Ok(service.get_archived_weeks())
@@ -620,18 +389,19 @@ pub async fn download_resource(
     state: State<'_, AppState>,
     app: AppHandle,
     resource: Resource,
-) -> Result<(), String> {
-    let config = state.config.read().map_err(|e| e.to_string())?.clone();
+) -> Result<(), CommandError> {
+    let config = state.config.read()?.clone();
 
     let work_dir = config
         .work_directory
-        .ok_or("Work directory not configured")?;
+        .ok_or(FileError::WorkDirectoryNotSet)?;
 
     let week_dir = resource.week().as_dir_name();
     let dest_dir = work_dir.join(week_dir);
 
     if !dest_dir.exists() {
-        std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&dest_dir)
+            .map_err(|e| CommandError::new("create-directory-failed", e.to_string()))?;
     }
 
     // Add to queue with priority (manual downloads go first)
@@ -645,12 +415,12 @@ pub async fn download_resource(
 
 /// Pause an active download
 #[tauri::command]
-pub fn pause_download(state: State<'_, AppState>, resource_id: i64) -> Result<(), String> {
+pub fn pause_download(state: State<'_, AppState>, resource_id: i64) -> Result<(), CommandError> {
     // Use try_read to avoid blocking if a write lock is held
     let signals = state
         .download_signals
         .try_read()
-        .map_err(|_| "Download signals locked, try again".to_string())?;
+        .map_err(|_| CommandError::new("signals-locked", "Download signals locked, try again"))?;
     if let Some(signal) = signals.get(&resource_id) {
         signal.store(STATUS_PAUSED, Ordering::Relaxed);
     }
@@ -663,7 +433,7 @@ pub async fn cancel_download(
     state: State<'_, AppState>,
     app: AppHandle,
     resource_id: i64,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     // A5: if the resource is still waiting in the queue, drop it there.
     // Setting the download signal would be a no-op for something not yet
     // active, so the item would otherwise reappear on the next status emit.
@@ -676,7 +446,7 @@ pub async fn cancel_download(
     let signals = state
         .download_signals
         .try_read()
-        .map_err(|_| "Download signals locked, try again".to_string())?;
+        .map_err(|_| CommandError::new("signals-locked", "Download signals locked, try again"))?;
     if let Some(signal) = signals.get(&resource_id) {
         signal.store(STATUS_CANCELLED, Ordering::Relaxed);
     }
@@ -688,12 +458,12 @@ pub async fn cancel_download(
 pub fn check_resource_status(
     state: State<'_, AppState>,
     resource: Resource,
-) -> Result<bool, String> {
+) -> Result<bool, CommandError> {
     // Use try_read to avoid blocking if a write lock is held
     let config = state
         .config
         .try_read()
-        .map_err(|_| "Config locked, try again".to_string())?;
+        .map_err(|_| CommandError::new("config-locked", "Config locked, try again"))?;
 
     if let Some(work_dir) = &config.work_directory {
         let dest_path = crate::services::download::resolve_dest_path(
@@ -713,9 +483,9 @@ pub fn check_resource_status(
 /// actually landed, which stays authoritative even if the URL-derived filename
 /// later changes. Falls back to `resolve_dest_path` (work dir + week + URL
 /// filename) for files that predate the registry or have no entry yet.
-fn resolve_resource_path(state: &AppState, resource: &Resource) -> Result<PathBuf, String> {
+fn resolve_resource_path(state: &AppState, resource: &Resource) -> Result<PathBuf, CommandError> {
     {
-        let registry = state.downloaded_files.read().map_err(|e| e.to_string())?;
+        let registry = state.downloaded_files.read()?;
         if let Some(entry) = registry
             .iter()
             .rev()
@@ -725,11 +495,11 @@ fn resolve_resource_path(state: &AppState, resource: &Resource) -> Result<PathBu
         }
     }
 
-    let config = state.config.read().map_err(|e| e.to_string())?;
+    let config = state.config.read()?;
     let work_dir = config
         .work_directory
         .as_ref()
-        .ok_or("Work directory not configured")?;
+        .ok_or(FileError::WorkDirectoryNotSet)?;
     Ok(crate::services::download::resolve_dest_path(
         resource,
         work_dir,
@@ -746,7 +516,7 @@ pub fn reveal_resource(
     state: State<'_, AppState>,
     app: AppHandle,
     resource: Resource,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     use tauri_plugin_opener::OpenerExt;
 
     let path = resolve_resource_path(state.inner(), &resource)?;
@@ -755,7 +525,10 @@ pub fn reveal_resource(
         let dir = path.parent().unwrap_or(path.as_path());
         app.opener()
             .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
-            .map_err(|e| format!("Impossibile aprire la cartella: {}", e))?;
+            // Bare detail only: the frontend toast already prefixes
+            // "Impossibile aprire la cartella:" (useResource.ts), so prefixing
+            // here too would double it.
+            .map_err(|e| CommandError::new("reveal-failed", e.to_string()))?;
     }
 
     Ok(())
@@ -763,18 +536,18 @@ pub fn reveal_resource(
 
 /// Get the size of a file from its URL without downloading it
 #[tauri::command]
-pub async fn get_file_size(state: State<'_, AppState>, url: String) -> Result<u64, String> {
+pub async fn get_file_size(state: State<'_, AppState>, url: String) -> Result<u64, CommandError> {
     // Check cache first
     {
-        let cache = state
-            .file_size_cache
-            .read()
-            .map_err(|e| format!("Failed to read cache: {}", e))?;
+        let cache = state.file_size_cache.read()?;
         if let Some(&size) = cache.get(&url) {
             if size == u64::MAX {
                 // Negative cache hit - this URL previously failed
                 tracing::debug!("Cache hit (negative) for file size: {}", url);
-                return Err("File size unavailable (cached failure)".to_string());
+                return Err(CommandError::new(
+                    "file-size-unavailable",
+                    "File size unavailable (cached failure)",
+                ));
             }
             tracing::debug!("Cache hit for file size: {}", url);
             return Ok(size);
@@ -794,7 +567,10 @@ pub async fn get_file_size(state: State<'_, AppState>, url: String) -> Result<u6
                 cache.insert(url.clone(), u64::MAX);
                 tracing::debug!("Cached negative result (request failed) for: {}", url);
             });
-            format!("Failed to fetch headers: {}", e)
+            CommandError::new(
+                "head-request-failed",
+                format!("Failed to fetch headers: {e}"),
+            )
         })?;
 
     if !response.status().is_success() {
@@ -807,7 +583,10 @@ pub async fn get_file_size(state: State<'_, AppState>, url: String) -> Result<u6
                 url
             );
         });
-        return Err(format!("Request failed with status: {}", response.status()));
+        return Err(CommandError::new(
+            "http-status-error",
+            format!("Request failed with status: {}", response.status()),
+        ));
     }
 
     let content_length = response
@@ -819,10 +598,7 @@ pub async fn get_file_size(state: State<'_, AppState>, url: String) -> Result<u6
     match content_length {
         Some(size) => {
             // Save successful result to cache
-            let mut cache = state
-                .file_size_cache
-                .write()
-                .map_err(|e| format!("Failed to write cache: {}", e))?;
+            let mut cache = state.file_size_cache.write()?;
             cache.insert(url.clone(), size);
             tracing::debug!("Cached file size for: {}", url);
             Ok(size)
@@ -833,7 +609,10 @@ pub async fn get_file_size(state: State<'_, AppState>, url: String) -> Result<u6
                 cache.insert(url.clone(), u64::MAX);
                 tracing::debug!("Cached negative result (no Content-Length) for: {}", url);
             });
-            Err("Content-Length header missing or invalid".to_string())
+            Err(CommandError::new(
+                "content-length-missing",
+                "Content-Length header missing or invalid",
+            ))
         }
     }
 }
@@ -923,25 +702,17 @@ pub(crate) fn compute_resources_status(
 #[tauri::command]
 pub async fn get_resources_status(
     state: State<'_, AppState>,
-) -> Result<HashMap<i64, ResourceStatus>, String> {
+) -> Result<HashMap<i64, ResourceStatus>, CommandError> {
     // Snapshot everything under short read locks, then compute off the async
     // runtime. No lock guard is ever held across the await (spawn_blocking).
     let (resources, registry, work_dir, prefer_optimized, size_cache) = {
-        let resources = state.resources.read().map_err(|e| e.to_string())?.clone();
-        let registry = state
-            .downloaded_files
-            .read()
-            .map_err(|e| e.to_string())?
-            .clone();
+        let resources = state.resources.read()?.clone();
+        let registry = state.downloaded_files.read()?.clone();
         let (work_dir, prefer_optimized) = {
-            let config = state.config.read().map_err(|e| e.to_string())?;
+            let config = state.config.read()?;
             (config.work_directory.clone(), config.prefer_optimized)
         };
-        let size_cache = state
-            .file_size_cache
-            .read()
-            .map_err(|e| e.to_string())?
-            .clone();
+        let size_cache = state.file_size_cache.read()?.clone();
         (resources, registry, work_dir, prefer_optimized, size_cache)
     };
 
@@ -955,22 +726,20 @@ pub async fn get_resources_status(
         )
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| CommandError::new("task-join-failed", e.to_string()))
 }
 
 #[tauri::command]
-pub async fn get_resource_summary(state: State<'_, AppState>) -> Result<ResourceSummary, String> {
+pub async fn get_resource_summary(
+    state: State<'_, AppState>,
+) -> Result<ResourceSummary, CommandError> {
     // Clone data that needs to be used after await points or potentially long operations
     // This avoids holding non-Send RwLockGuard across await points
     let (resources, registry, work_dir, prefer_optimized) = {
-        let resources = state.resources.read().map_err(|e| e.to_string())?.clone();
-        let registry = state
-            .downloaded_files
-            .read()
-            .map_err(|e| e.to_string())?
-            .clone();
+        let resources = state.resources.read()?.clone();
+        let registry = state.downloaded_files.read()?.clone();
         let (work_dir, prefer_optimized) = {
-            let config = state.config.read().map_err(|e| e.to_string())?;
+            let config = state.config.read()?;
             (config.work_directory.clone(), config.prefer_optimized)
         };
         (resources, registry, work_dir, prefer_optimized)
@@ -997,7 +766,7 @@ pub async fn get_resource_summary(state: State<'_, AppState>) -> Result<Resource
         .count()
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| CommandError::new("task-join-failed", e.to_string()))?;
 
     Ok(ResourceSummary {
         total,
@@ -1052,6 +821,31 @@ mod tests {
         std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
         std::fs::write(&dest, b"x").unwrap();
         dest
+    }
+
+    #[test]
+    fn test_validate_work_directory_ok_for_existing_dir() {
+        let tmp = TempDir::new().unwrap();
+        let resolved = validate_work_directory(&tmp.path().to_string_lossy()).unwrap();
+        assert_eq!(resolved, tmp.path());
+    }
+
+    #[test]
+    fn test_validate_work_directory_missing_path_is_typed_error() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        let err = validate_work_directory(&missing.to_string_lossy()).unwrap_err();
+        assert_eq!(err.code, "work-dir-not-found");
+        assert!(err.message.contains("Directory does not exist"));
+    }
+
+    #[test]
+    fn test_validate_work_directory_file_is_not_a_directory() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        let err = validate_work_directory(&file.to_string_lossy()).unwrap_err();
+        assert_eq!(err.code, "not-a-directory");
     }
 
     #[test]

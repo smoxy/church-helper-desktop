@@ -132,6 +132,8 @@ jobs:
       # GitHub Release.
       - name: Build Tauri App (test build, no release)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          CHURCH_HELPER_API_BASE: ${{ vars.CHURCH_HELPER_API_BASE }}
         run: npm run tauri build -- --target x86_64-pc-windows-msvc
 
       # Real release build: signs the updater artifacts (if
@@ -145,6 +147,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CHURCH_HELPER_API_BASE: ${{ vars.CHURCH_HELPER_API_BASE }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'church-helper-desktop ${{ github.ref_name }}'
@@ -278,6 +281,8 @@ jobs:
       # GitHub Release.
       - name: Build Linux Deb (test build, no release)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          CHURCH_HELPER_API_BASE: ${{ vars.CHURCH_HELPER_API_BASE }}
         run: npm run tauri build -- --bundles deb
 
       # Real release build: signs the updater artifact (if
@@ -292,6 +297,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CHURCH_HELPER_API_BASE: ${{ vars.CHURCH_HELPER_API_BASE }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'church-helper-desktop ${{ github.ref_name }}'

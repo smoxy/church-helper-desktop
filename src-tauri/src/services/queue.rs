@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 /// Queue service for managing downloads
 pub struct DownloadQueue {
@@ -28,6 +28,11 @@ pub struct DownloadQueue {
     /// shape (`Vec<i64>`) is part of the `queue-status-changed` wire event
     /// consumed by the frontend and must not change.
     active_weeks: Arc<Mutex<HashMap<i64, WeekIdentifier>>>,
+    /// Wakes the worker when there may be new work: a task was queued, a slot
+    /// was freed by a finished download, or the mode changed the concurrency
+    /// limit. The worker parks on `notified()` whenever the queue is empty or
+    /// at the concurrency limit, so it no longer busy-waits.
+    notify: Arc<Notify>,
 }
 
 /// Pure enqueue guard (A2): a resource may be queued only if it is neither
@@ -46,6 +51,15 @@ fn drain_queued(queue: &mut VecDeque<Resource>, id: i64) -> bool {
     queue.len() != before
 }
 
+/// Concurrency limit implied by the download mode. Free-standing so the
+/// worker's slot arithmetic can be unit-tested without spawning it.
+fn concurrency_limit(mode: &DownloadMode) -> usize {
+    match mode {
+        DownloadMode::Queue => 1,
+        DownloadMode::Parallel => 4,
+    }
+}
+
 impl Default for DownloadQueue {
     fn default() -> Self {
         Self::new()
@@ -62,6 +76,7 @@ impl DownloadQueue {
             worker_started: Arc::new(AtomicBool::new(false)),
             active_ids: Arc::new(Mutex::new(Vec::new())),
             active_weeks: Arc::new(Mutex::new(HashMap::new())),
+            notify: Arc::new(Notify::new()),
         }
     }
 
@@ -80,21 +95,19 @@ impl DownloadQueue {
 
     /// Update the concurrency limit based on mode
     pub async fn update_mode(&self, mode: DownloadMode) {
-        let mut current_mode = self.mode.lock().await;
-        if *current_mode != mode {
-            *current_mode = mode.clone();
-
-            // Adjust semaphore permits
-            // Note: Semaphore::add_permits increases capacity.
-            // Semaphore doesn't support reducing capacity easily dynamically in this crate?
-            // Actually, we can just replace the semaphore or use a different logic.
-            // Since we can't easily resize a semaphore, we might just spawn tasks differently.
-            //
-            // Better approach: The `process_queue` loop checks the limit.
-            // Or easier: Just use a fixed high limit for Parallel (e.g., 4) and 1 for Queue.
-            // And `acquire` permits accordingly?
-            //
-            // Let's use a cleaner approach: a worker loop that pulls from queue.
+        let changed = {
+            let mut current_mode = self.mode.lock().await;
+            if *current_mode != mode {
+                *current_mode = mode;
+                true
+            } else {
+                false
+            }
+        };
+        // Raising the limit (e.g. Queue -> Parallel) frees slots, so the worker
+        // must re-evaluate; a lower limit is a harmless spurious wake.
+        if changed {
+            self.notify.notify_one();
         }
     }
 
@@ -118,6 +131,7 @@ impl DownloadQueue {
             }
         }
         self.emit_queue_status(&app).await;
+        self.notify.notify_one();
         self.ensure_worker_started(app).await;
     }
 
@@ -143,6 +157,7 @@ impl DownloadQueue {
             }
         }
         self.emit_queue_status(&app).await;
+        self.notify.notify_one();
         self.ensure_worker_started(app).await;
     }
 
@@ -159,6 +174,7 @@ impl DownloadQueue {
         };
         if removed {
             self.emit_queue_status(app).await;
+            self.notify.notify_one();
         }
         removed
     }
@@ -190,28 +206,43 @@ impl DownloadQueue {
         }
     }
 
-    /// Ensure the worker is started (called once)
+    /// Ensure the worker is started (idempotent: the CAS lets exactly one
+    /// caller win and spawn it).
     async fn ensure_worker_started(&self, app: AppHandle) {
-        // Check if worker already started
         if self
             .worker_started
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            // We successfully changed from false to true, so we start the worker
             self.start_worker(app).await;
         }
-        // Otherwise, worker is already running, do nothing
     }
 
     /// scan resources and add to queue if matching auto-download criteria
     pub async fn scan_and_queue(&self, app: AppHandle) {
         let state = app.state::<crate::commands::AppState>();
 
-        // Read config and resources
+        // Read config and resources. A poisoned lock is a non-recoverable
+        // internal invariant break; log and skip this scan rather than panic
+        // (no-unwrap guard) — the next poll/scan will retry.
         let (config, resources) = {
-            let config = state.config.read().unwrap().clone();
-            let resources = state.resources.read().unwrap().clone();
+            let config = match state.config.read() {
+                Ok(config) => config.clone(),
+                Err(e) => {
+                    tracing::error!("scan_and_queue: config lock poisoned, skipping scan: {}", e);
+                    return;
+                }
+            };
+            let resources = match state.resources.read() {
+                Ok(resources) => resources.clone(),
+                Err(e) => {
+                    tracing::error!(
+                        "scan_and_queue: resources lock poisoned, skipping scan: {}",
+                        e
+                    );
+                    return;
+                }
+            };
             (config, resources)
         };
 
@@ -259,28 +290,31 @@ impl DownloadQueue {
         let active_count = self.active_count.clone();
         let active_ids = self.active_ids.clone();
         let active_weeks = self.active_weeks.clone();
+        let notify = self.notify.clone();
 
         tracing::info!("Download queue worker started");
 
-        // Spawn a detached task to manage coordination
-        // This task never exits, continuously processing the queue
+        // Spawn a detached task to manage coordination. This task never exits;
+        // instead of busy-waiting it parks on `notify.notified()` whenever it
+        // can make no progress (queue empty or at the concurrency limit). The
+        // producers (add_task*, remove_queued), a mode change, and every
+        // finished download's `notify_one` wake it back up.
         tauri::async_runtime::spawn(async move {
             loop {
                 // Determine concurrency limit
                 let limit = {
                     let mode = mode_lock.lock().await;
-                    match *mode {
-                        DownloadMode::Queue => 1,
-                        DownloadMode::Parallel => 4,
-                    }
+                    concurrency_limit(&mode)
                 };
 
                 // Check if we can start more downloads
                 let current_active = active_count.load(Ordering::SeqCst);
 
                 if current_active >= limit {
-                    // At capacity, wait before checking again
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    // At capacity: park until a slot frees up or the limit
+                    // grows. A `notify_one` issued before this point is latched
+                    // by `Notify`, so a completion racing this check is not lost.
+                    notify.notified().await;
                     continue;
                 }
 
@@ -313,6 +347,7 @@ impl DownloadQueue {
                     let active_count_clone = active_count.clone();
                     let active_ids_clone = active_ids.clone();
                     let active_weeks_clone = active_weeks.clone();
+                    let notify_clone = notify.clone();
                     let app_clone = app.clone();
                     // Separate handle for the supervisor: its cleanup must run
                     // even if `app_clone` is moved into the download body below.
@@ -353,7 +388,13 @@ impl DownloadQueue {
 
                             if let Ok(config) = crate::commands::get_config(state) {
                                 if let Some(work_dir) = config.work_directory {
-                                    let download_service = crate::services::DownloadService::new();
+                                    let download_service =
+                                        crate::services::DownloadService::with_client(
+                                            app_clone
+                                                .state::<crate::commands::AppState>()
+                                                .shared_http_client
+                                                .clone(),
+                                        );
                                     let week_dir = resource.week().as_dir_name();
                                     let dest_dir = work_dir.join(week_dir);
                                     let prefer_optimized = config.prefer_optimized;
@@ -463,6 +504,10 @@ impl DownloadQueue {
                             previous,
                             previous.saturating_sub(1)
                         );
+                        // A slot just freed: wake the worker so it can pull the
+                        // next queued task. Must follow `fetch_sub` so the woken
+                        // worker observes the decremented count.
+                        notify_clone.notify_one();
 
                         // Remove from active IDs
                         {
@@ -491,8 +536,10 @@ impl DownloadQueue {
                     // In queue mode, the limit check will prevent starting another
                     continue;
                 } else {
-                    // Queue is empty, wait a bit before checking again
-                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    // Queue is empty: park until a producer enqueues something.
+                    // An enqueue's `notify_one` racing this branch is latched by
+                    // `Notify`, so the wakeup is not lost.
+                    notify.notified().await;
                 }
             }
         });
@@ -586,6 +633,14 @@ mod tests {
         queue.push_back(make_resource(1, 2026, 1, 19));
         let active = vec![2_i64];
         assert!(can_enqueue(&queue, &active, 3));
+    }
+
+    #[test]
+    fn test_concurrency_limit_matches_mode() {
+        // The worker's slot arithmetic depends on these exact values (1 vs 4);
+        // the busy-wait removal did not change them.
+        assert_eq!(concurrency_limit(&DownloadMode::Queue), 1);
+        assert_eq!(concurrency_limit(&DownloadMode::Parallel), 4);
     }
 
     #[test]

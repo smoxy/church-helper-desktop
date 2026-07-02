@@ -117,13 +117,111 @@ pub enum AppError {
     Config(#[from] ConfigError),
 }
 
-// Implement Serialize for AppError to work with Tauri commands
-impl serde::Serialize for AppError {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
+/// Structured error carried across the Tauri IPC boundary.
+///
+/// Tauri serializes a command's `Err(E)` as the JSON rejection payload of the
+/// corresponding `invoke(...)` promise. Returning `CommandError` from a command
+/// therefore delivers `{ "code": "...", "message": "..." }` to the frontend
+/// (mirrored by the `CommandError` interface in `src/types/index.ts`) instead
+/// of a bare string. The UI branches on the stable `code` while showing
+/// `message` to the user (see `errorMessage()` in `src/lib/utils.ts`).
+///
+/// `code` is a stable kebab-case identifier (e.g. `work-dir-not-set`,
+/// `api-unreachable`, `store-failed`, `lock-poisoned`). `message` preserves the
+/// human-readable detail the commands previously produced with `format!`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CommandError {
+    pub code: String,
+    pub message: String,
+}
+
+impl CommandError {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}] {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for CommandError {}
+
+impl From<AppError> for CommandError {
+    fn from(err: AppError) -> Self {
+        let code = match &err {
+            AppError::File(e) => match e {
+                FileError::WorkDirectoryNotSet => "work-dir-not-set",
+                FileError::WorkDirectoryNotFound(_) => "work-dir-not-found",
+                FileError::CreateDirectoryFailed { .. } => "create-directory-failed",
+                FileError::MoveFileFailed { .. } => "move-file-failed",
+                FileError::DeleteFileFailed { .. } => "delete-file-failed",
+                FileError::ReadDirectoryFailed { .. } => "read-directory-failed",
+                FileError::TrashFailed { .. } => "trash-failed",
+            },
+            AppError::Download(e) => match e {
+                DownloadError::HttpError(_) => "http-error",
+                DownloadError::WriteError { .. } => "write-error",
+                DownloadError::ShortcutCreationFailed(_) => "shortcut-creation-failed",
+                DownloadError::InvalidFilename => "invalid-filename",
+                DownloadError::Paused => "download-paused",
+                DownloadError::Cancelled => "download-cancelled",
+            },
+            AppError::Polling(e) => match e {
+                PollingError::ApiError(_) => "api-unreachable",
+                PollingError::ParseError(_) => "response-parse-failed",
+                PollingError::PollingDisabled => "polling-disabled",
+            },
+            AppError::Config(e) => match e {
+                ConfigError::LoadFailed(_) => "config-load-failed",
+                ConfigError::SaveFailed(_) => "config-save-failed",
+                ConfigError::ValidationFailed(_) => "config-invalid",
+            },
+        };
+        CommandError::new(code, err.to_string())
+    }
+}
+
+impl From<FileError> for CommandError {
+    fn from(err: FileError) -> Self {
+        AppError::from(err).into()
+    }
+}
+
+impl From<DownloadError> for CommandError {
+    fn from(err: DownloadError) -> Self {
+        AppError::from(err).into()
+    }
+}
+
+impl From<PollingError> for CommandError {
+    fn from(err: PollingError) -> Self {
+        AppError::from(err).into()
+    }
+}
+
+impl From<ConfigError> for CommandError {
+    fn from(err: ConfigError) -> Self {
+        AppError::from(err).into()
+    }
+}
+
+// A poisoned lock is a non-recoverable internal invariant break; collapse every
+// `RwLock`/`Mutex` guard into one stable code rather than one per call site.
+impl<T> From<std::sync::PoisonError<T>> for CommandError {
+    fn from(err: std::sync::PoisonError<T>) -> Self {
+        CommandError::new("lock-poisoned", err.to_string())
+    }
+}
+
+impl From<tauri_plugin_store::Error> for CommandError {
+    fn from(err: tauri_plugin_store::Error) -> Self {
+        CommandError::new("store-failed", err.to_string())
     }
 }
 
@@ -148,9 +246,38 @@ mod tests {
     }
 
     #[test]
-    fn test_app_error_serialization() {
-        let err = AppError::File(FileError::WorkDirectoryNotSet);
-        let json = serde_json::to_string(&err).unwrap();
-        assert!(json.contains("Work directory not configured"));
+    fn test_command_error_serializes_as_code_and_message() {
+        let err = CommandError::new("work-dir-not-set", "Work directory not configured");
+        let value: serde_json::Value = serde_json::to_value(&err).unwrap();
+        assert_eq!(value["code"], "work-dir-not-set");
+        assert_eq!(value["message"], "Work directory not configured");
+        // Exactly the two fields the frontend contract expects.
+        assert_eq!(value.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_app_error_maps_to_stable_code() {
+        let err: CommandError = AppError::File(FileError::WorkDirectoryNotSet).into();
+        assert_eq!(err.code, "work-dir-not-set");
+        assert_eq!(err.message, "Work directory not configured");
+    }
+
+    #[test]
+    fn test_polling_api_error_maps_to_api_unreachable() {
+        let err: CommandError = PollingError::PollingDisabled.into();
+        assert_eq!(err.code, "polling-disabled");
+        // Nested variant routing through AppError keeps the display message.
+        assert_eq!(err.message, "Polling is not enabled");
+    }
+
+    #[test]
+    fn test_poison_error_maps_to_lock_poisoned() {
+        let lock = std::sync::RwLock::new(0u8);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = lock.write().unwrap();
+            panic!("poison it");
+        });
+        let err: CommandError = lock.read().unwrap_err().into();
+        assert_eq!(err.code, "lock-poisoned");
     }
 }

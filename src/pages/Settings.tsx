@@ -9,6 +9,7 @@ import { Input } from "../components/ui/input";
 import { Switch } from "../components/ui/switch";
 import { FolderOpen } from "lucide-react";
 import rinoovaIcon from "../assets/sponsor/logo-rinoova-icon.svg";
+import { errorMessage } from "../lib/utils";
 import type { ThemeSetting } from "../types";
 
 const THEME_OPTIONS: { value: ThemeSetting; label: string }[] = [
@@ -100,7 +101,7 @@ export default function Settings() {
             await updateConfig({ auto_download_categories: newCats });
             addToast(`Auto-download ${checked ? 'enabled' : 'disabled'} for "${category}"`, "success");
         } catch (e) {
-            addToast(`Failed to update category: ${e}`, "error");
+            addToast(`Failed to update category: ${errorMessage(e)}`, "error");
             // Revert to config state on error
             if (config) setLocalAutoDownloadCats(config.auto_download_categories);
         }
@@ -113,7 +114,7 @@ export default function Settings() {
             await updateConfig({ download_mode: mode });
             addToast(`Download mode set to ${mode}`, "success");
         } catch (e) {
-            addToast(`Failed to update mode: ${e}`, "error");
+            addToast(`Failed to update mode: ${errorMessage(e)}`, "error");
             if (config) setLocalDownloadMode(config.download_mode);
         }
     };
@@ -124,7 +125,7 @@ export default function Settings() {
             await updateConfig({ theme });
             addToast(`Tema impostato su ${THEME_OPTIONS.find(o => o.value === theme)?.label}`, "success");
         } catch (e) {
-            addToast(`Impossibile aggiornare il tema: ${e}`, "error");
+            addToast(`Impossibile aggiornare il tema: ${errorMessage(e)}`, "error");
         }
     };
 
@@ -135,7 +136,7 @@ export default function Settings() {
             await updateConfig({ prefer_optimized: checked });
             addToast(checked ? "Video ottimizzati preferiti" : "Video originali preferiti", "success");
         } catch (e) {
-            addToast(`Failed to update preference: ${e}`, "error");
+            addToast(`Failed to update preference: ${errorMessage(e)}`, "error");
             if (config) setLocalPreferOptimized(config.prefer_optimized);
         }
     };
@@ -155,7 +156,7 @@ export default function Settings() {
             await setPollingInterval(localInterval);
             addToast("Polling interval updated", "success");
         } catch (e) {
-            addToast(`Failed to update interval: ${e}`, "error");
+            addToast(`Failed to update interval: ${errorMessage(e)}`, "error");
         }
     };
 
@@ -173,7 +174,7 @@ export default function Settings() {
             await setRetentionDays(localRetention);
             addToast("Retention policy updated", "success");
         } catch (e) {
-            addToast(`Failed to update retention: ${e}`, "error");
+            addToast(`Failed to update retention: ${errorMessage(e)}`, "error");
         }
     };
 
@@ -182,7 +183,7 @@ export default function Settings() {
             await togglePollingAction(enabled);
             addToast(enabled ? "Polling enabled" : "Polling paused", "success");
         } catch (e) {
-            addToast(`Failed to toggle polling: ${e}`, "error");
+            addToast(`Failed to toggle polling: ${errorMessage(e)}`, "error");
         }
     };
 
@@ -191,7 +192,7 @@ export default function Settings() {
             await setAutostartEnabled(enabled);
             addToast(enabled ? "Avvio automatico abilitato" : "Avvio automatico disabilitato", "success");
         } catch (e) {
-            addToast(`Impossibile aggiornare l'avvio automatico: ${e}`, "error");
+            addToast(`Impossibile aggiornare l'avvio automatico: ${errorMessage(e)}`, "error");
         }
     };
 
@@ -204,7 +205,7 @@ export default function Settings() {
             // currently selectWorkDirectory in appStore doesn't return anything but updates state.
             addToast("Work directory updated", "success");
         } catch (e) {
-            addToast(`Failed to select directory: ${e}`, "error");
+            addToast(`Failed to select directory: ${errorMessage(e)}`, "error");
         }
     }
 

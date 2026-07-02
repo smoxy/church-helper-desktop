@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::watch;
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, sleep, Duration};
 
 /// Polling service that runs in the background
 pub struct PollingService {
@@ -62,15 +62,23 @@ impl PollingService {
                 interval_mins
             );
 
+            // Dedicated cancel receiver for the retry backoffs (used by the
+            // initial poll and by every tick). The loop's `select!` below
+            // already borrows `cancel_rx` in its own arm, so the retry helper
+            // can't borrow that same receiver a second time; this clone observes
+            // the identical cancel signal.
+            let mut retry_cancel_rx = cancel_rx.clone();
+
             // Poll immediately on startup so the user sees fresh data within
             // seconds instead of waiting a full `interval_mins` for the first
-            // fetch. Explicit call (rather than relying on the implicit
-            // first-tick-fires-immediately behavior of `tokio::time::interval`)
-            // so the intent is obvious and independent of interval semantics.
+            // fetch. Retries (cancellably) on a cold gateway; a cancel arriving
+            // during a startup backoff exits before the loop even begins.
             tracing::info!("Performing initial poll on startup");
-            if let Err(e) = poll_api(&app).await {
-                tracing::error!("Initial polling failed: {}", e);
-                let _ = app.emit("poll-error", e.to_string());
+            if let PollCycle::Cancelled =
+                poll_once_with_cancellable_retry(&app, &mut retry_cancel_rx).await
+            {
+                tracing::info!("Polling cancelled during initial poll");
+                return;
             }
 
             let duration = Duration::from_secs(interval_mins as u64 * 60);
@@ -87,15 +95,23 @@ impl PollingService {
                     _ = ticker.tick() => {
                         tracing::debug!("Polling tick (interval: {} minutes)", interval_mins);
 
-                        // Perform the poll
-                        if let Err(e) = poll_api(&app).await {
-                            tracing::error!("Polling failed: {}", e);
-                            let _ = app.emit("poll-error", e.to_string());
+                        // The retry backoffs live here (not in `poll_once`) so
+                        // they are cancellable: a cancel during a backoff breaks
+                        // out immediately instead of stalling the task for up to
+                        // the whole schedule, which would let a `restart` spawn a
+                        // second overlapping poller.
+                        if let PollCycle::Cancelled =
+                            poll_once_with_cancellable_retry(&app, &mut retry_cancel_rx).await
+                        {
+                            tracing::info!("Polling cancelled during retry backoff");
+                            break;
                         }
                     }
                     // Fires on `stop`/`restart` (value set to `true`) or if the
                     // sender is dropped (service dropped at shutdown): either
-                    // way this task must exit.
+                    // way this task must exit. Cancellation while idling on the
+                    // tick is caught here; cancellation mid-poll/backoff is
+                    // caught by `retry_cancel_rx` inside the handler above.
                     _ = cancel_rx.changed() => {
                         tracing::info!("Polling service cancelled");
                         break;
@@ -142,13 +158,148 @@ impl Default for PollingService {
     }
 }
 
-/// Perform a single poll of the API
-async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// Wait schedule for the polling loop's automatic retries of a failed poll
+/// cycle: at most two extra attempts (10s then 30s) before giving up until the
+/// next tick. A cold gateway routinely answers the first request with a
+/// 504/HTML error page (which then fails the JSON decode); pausing and retrying
+/// usually catches it once warm, sparing the user a blank screen — which on a
+/// fresh install with a 60min interval would otherwise last an hour.
+const POLL_RETRY_BACKOFFS: [Duration; 2] = [Duration::from_secs(10), Duration::from_secs(30)];
+
+/// Result of a full poll cycle from the polling loop's perspective.
+enum PollCycle {
+    /// The cycle ended on its own — a poll succeeded, or every retry was spent.
+    /// The loop moves on to the next tick.
+    Finished,
+    /// A cancel signal arrived during a retry backoff; the loop must exit.
+    Cancelled,
+}
+
+/// Outcome of [`run_with_backoff`].
+enum RetryOutcome<E> {
+    /// One of the attempts succeeded.
+    Succeeded,
+    /// Every attempt failed; carries the last error for the caller to report.
+    GaveUp(E),
+    /// The cancel receiver fired during a backoff sleep — aborted immediately.
+    Cancelled,
+}
+
+/// Run `attempt`, retrying on error along `backoffs`. The backoff sleeps sit
+/// inside a `tokio::select!` on `cancel_rx`, so cancellation during a wait is
+/// observed *immediately* rather than after the sleep elapses. Deliberately
+/// free of any `AppHandle` so the retry/cancel control flow is unit-testable.
+async fn run_with_backoff<F, Fut, T, E>(
+    cancel_rx: &mut watch::Receiver<bool>,
+    backoffs: &[Duration],
+    mut attempt: F,
+) -> RetryOutcome<E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let mut last_err = match attempt().await {
+        Ok(_) => return RetryOutcome::Succeeded,
+        Err(e) => e,
+    };
+    for &backoff in backoffs {
+        tokio::select! {
+            _ = sleep(backoff) => {}
+            _ = cancel_rx.changed() => return RetryOutcome::Cancelled,
+        }
+        match attempt().await {
+            Ok(_) => return RetryOutcome::Succeeded,
+            Err(e) => last_err = e,
+        }
+    }
+    RetryOutcome::GaveUp(last_err)
+}
+
+/// Run one `poll_once` cycle, retrying failures with the cancellable
+/// `POLL_RETRY_BACKOFFS` schedule. `poll_once` itself is a single fail-fast
+/// attempt, so `commands::force_poll` — which shares it — returns to the UI
+/// immediately and never inherits these waits.
+async fn poll_once_with_cancellable_retry(
+    app: &AppHandle,
+    cancel_rx: &mut watch::Receiver<bool>,
+) -> PollCycle {
+    match run_with_backoff(cancel_rx, &POLL_RETRY_BACKOFFS, || poll_once(app)).await {
+        RetryOutcome::Succeeded => PollCycle::Finished,
+        RetryOutcome::GaveUp(e) => {
+            tracing::error!(
+                "Polling gave up after {} retries: {}",
+                POLL_RETRY_BACKOFFS.len(),
+                e
+            );
+            let _ = app.emit("poll-error", e);
+            PollCycle::Finished
+        }
+        RetryOutcome::Cancelled => PollCycle::Cancelled,
+    }
+}
+
+/// Classify the latest-week HTTP status: any 2xx passes, anything else is a
+/// clear `"API {status}"` error. Split out (with no I/O) so the retry policy is
+/// unit-testable without a live server.
+fn check_poll_status(status: reqwest::StatusCode) -> Result<(), String> {
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(format!("API {}", status))
+    }
+}
+
+/// Decode a latest-week body, logging the first ~300 chars on failure. The
+/// caller passes the already-read body (via `response.text()`) precisely so a
+/// malformed 2xx payload is available to diagnose here instead of being lost
+/// inside `response.json()`.
+fn parse_latest_week_body(body: &str) -> Result<ResourceListResponse, String> {
+    serde_json::from_str(body).map_err(|e| {
+        let preview: String = body.chars().take(300).collect();
+        tracing::warn!("Poll decode failed: {}; body starts: {}", e, preview);
+        format!("Failed to parse response: {}", e)
+    })
+}
+
+/// Single latest-week fetch attempt: status is checked *before* decoding, and
+/// the body is read as text first so a bad payload can be logged.
+async fn fetch_latest_week(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<ResourceListResponse, String> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("API request failed: {}", e))?;
+
+    let status = response.status();
+    if let Err(e) = check_poll_status(status) {
+        tracing::warn!("Poll fetch returned non-success status: {}", status);
+        return Err(e);
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+    parse_latest_week_body(&body)
+}
+
+/// Perform one full poll cycle: fetch the latest week (a single fail-fast
+/// attempt), invalidate the file-size cache for changed/removed URLs, update
+/// state and status, persist `cache.json`, emit UI events, refresh the category
+/// catalog, reconcile errata, scan for auto-downloads, and archive past weeks
+/// on a week change. Shared by the background polling loop and
+/// `commands::force_poll` so the two entry points never drift; the background
+/// loop wraps this in `poll_once_with_cancellable_retry` for retries, while
+/// `force_poll` runs it once so the UI never blocks on a backoff.
+pub async fn poll_once(app: &AppHandle) -> Result<ResourceListResponse, String> {
     let state = app.state::<AppState>();
     let url = format!("{}/api/resources/latest-week", api_base_url());
 
-    let response = state.shared_http_client.get(&url).send().await?;
-    let api_response: ResourceListResponse = response.json().await?;
+    let api_response = fetch_latest_week(&state.shared_http_client, &url).await?;
 
     // Get old resources for cache invalidation
     let old_resources = {
@@ -225,11 +376,11 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
     }
 
     // Emit event to frontend
-    app.emit("resources-updated", &api_response)?;
-    app.emit("poll-tick", ())?;
+    let _ = app.emit("resources-updated", &api_response);
+    let _ = app.emit("poll-tick", ());
 
     // Second, independent GET for the full category catalog (best-effort:
-    // its own errors never fail the poll). Shared with `commands::force_poll`.
+    // its own errors never fail the poll).
     refresh_categories(app).await;
 
     // Save to cache
@@ -274,7 +425,7 @@ async fn poll_api(app: &AppHandle) -> Result<(), Box<dyn std::error::Error + Sen
         crate::services::archive_previous_weeks_once(app, &week).await;
     }
 
-    Ok(())
+    Ok(api_response)
 }
 
 /// A parsed-but-empty categories response (`{}` or
@@ -289,8 +440,8 @@ fn is_empty_categories_response(parsed: &CategoriesCountResponse) -> bool {
 }
 
 /// Fetch the full category catalog (`categories/counts`) and publish it to the
-/// UI. Called by both `poll_api` and `commands::force_poll` so the two entry
-/// points never drift; kept out of the resource-fetch error path on purpose —
+/// UI. Called from `poll_once` (shared by the background loop and
+/// `force_poll`), kept out of the resource-fetch error path on purpose —
 /// this is a best-effort enrichment. On any network failure, parse failure,
 /// *or* a parsed-but-empty payload (see `is_empty_categories_response`) it
 /// logs and leaves `AppState::all_categories` untouched (last-known values
@@ -385,5 +536,94 @@ mod tests {
         let parsed: CategoriesCountResponse =
             serde_json::from_str(json).expect("categories must parse");
         assert!(!is_empty_categories_response(&parsed));
+    }
+
+    #[test]
+    fn success_status_passes() {
+        assert!(check_poll_status(reqwest::StatusCode::OK).is_ok());
+        assert!(check_poll_status(reqwest::StatusCode::NO_CONTENT).is_ok());
+    }
+
+    #[test]
+    fn non_success_status_is_a_clear_error() {
+        // The cold-gateway case from the field: a 504 must surface as a clear,
+        // status-bearing error rather than an opaque decode failure.
+        let err = check_poll_status(reqwest::StatusCode::GATEWAY_TIMEOUT)
+            .expect_err("504 must be an error");
+        assert!(err.starts_with("API "), "error should name the API: {err}");
+        assert!(err.contains("504"), "error should carry the status: {err}");
+    }
+
+    #[test]
+    fn valid_body_decodes() {
+        let parsed = parse_latest_week_body(r#"{"count":0,"resources":[]}"#)
+            .expect("well-formed body must decode");
+        assert_eq!(parsed.count, 0);
+        assert!(parsed.resources.is_empty());
+    }
+
+    #[test]
+    fn html_error_page_body_fails_to_decode() {
+        // The gateway's 504 HTML page is what actually blew up `response.json()`
+        // in production; here it must fail decode cleanly (and be logged).
+        let err = parse_latest_week_body("<html><body>504 Gateway Timeout</body></html>")
+            .expect_err("HTML body must not decode as the API response");
+        assert!(err.starts_with("Failed to parse response"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn backoff_returns_on_first_success_without_retrying() {
+        let (_tx, mut rx) = watch::channel(false);
+        let mut calls = 0;
+        let outcome: RetryOutcome<String> = run_with_backoff(
+            &mut rx,
+            &[Duration::from_secs(10), Duration::from_secs(30)],
+            || {
+                calls += 1;
+                async { Ok::<(), String>(()) }
+            },
+        )
+        .await;
+        assert!(matches!(outcome, RetryOutcome::Succeeded));
+        assert_eq!(calls, 1, "a first-attempt success must not retry");
+    }
+
+    #[tokio::test]
+    async fn backoff_gives_up_after_exhausting_the_schedule() {
+        let (_tx, mut rx) = watch::channel(false);
+        let mut calls = 0;
+        // Tiny backoffs keep the test fast; no cancel is ever sent.
+        let outcome: RetryOutcome<i32> = run_with_backoff(
+            &mut rx,
+            &[Duration::from_millis(1), Duration::from_millis(1)],
+            || {
+                calls += 1;
+                let n = calls;
+                async move { Err::<(), i32>(n) }
+            },
+        )
+        .await;
+        match outcome {
+            RetryOutcome::GaveUp(last) => assert_eq!(last, 3, "carries the last error"),
+            _ => panic!("expected GaveUp"),
+        }
+        assert_eq!(calls, 3, "initial attempt + two retries");
+    }
+
+    #[tokio::test]
+    async fn backoff_cancels_immediately_instead_of_waiting_it_out() {
+        let (tx, mut rx) = watch::channel(false);
+        // Cancel up front: the backoff `select!` must observe it and return
+        // without sleeping out the (deliberately huge) backoff.
+        tx.send(true).unwrap();
+        let mut calls = 0;
+        let outcome: RetryOutcome<()> =
+            run_with_backoff(&mut rx, &[Duration::from_secs(3600)], || {
+                calls += 1;
+                async { Err::<(), ()>(()) }
+            })
+            .await;
+        assert!(matches!(outcome, RetryOutcome::Cancelled));
+        assert_eq!(calls, 1, "only the initial attempt runs before the cancel");
     }
 }

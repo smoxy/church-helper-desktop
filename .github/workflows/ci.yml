@@ -111,4 +111,6 @@ jobs:
         run: npm ci
 
       - name: Build (warm cache, no bundle)
+        env:
+          CHURCH_HELPER_API_BASE: ${{ vars.CHURCH_HELPER_API_BASE }}
         run: npm run tauri build -- ${{ matrix.build-args }} --no-bundle

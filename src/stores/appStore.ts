@@ -3,6 +3,7 @@ import {listen} from '@tauri-apps/api/event';
 import {create} from 'zustand';
 
 import {useToastStore} from './toastStore';
+import {errorMessage} from '../lib/utils';
 import {AppConfig, AppStatus, CategoryCount, ErrataDetectedPayload, Resource, ResourceListResponse, ResourceStatus, WeekIdentifier} from '../types';
 
 export interface ActiveDownload {
@@ -374,7 +375,7 @@ export const useAppStore = create<AppState>(
           });
 
         } catch (e) {
-          set({error: `Initialization failed: ${e}`, isLoading: false});
+          set({error: `Initialization failed: ${errorMessage(e)}`, isLoading: false});
         }
       },
 
@@ -406,7 +407,7 @@ export const useAppStore = create<AppState>(
                   field as keyof AppConfig));
           if (affectsStatuses) debouncedFetchStatuses();
         } catch (e) {
-          set({error: `Failed to update config: ${e}`});
+          set({error: `Failed to update config: ${errorMessage(e)}`});
           throw e;
         }
       },
@@ -419,7 +420,7 @@ export const useAppStore = create<AppState>(
           set({resources: response.resources, status, isLoading: false});
           debouncedFetchStatuses();
         } catch (e) {
-          set({error: `Manual poll failed: ${e}`, isLoading: false});
+          set({error: `Manual poll failed: ${errorMessage(e)}`, isLoading: false});
         }
       },
 
@@ -435,7 +436,7 @@ export const useAppStore = create<AppState>(
             set({config, archivedWeeks});
           }
         } catch (e) {
-          set({error: `Failed to select directory: ${e}`});
+          set({error: `Failed to select directory: ${errorMessage(e)}`});
         }
       },
 
@@ -449,7 +450,7 @@ export const useAppStore = create<AppState>(
           ]);
           set({config, status});
         } catch (e) {
-          set({error: `Failed to toggle polling: ${e}`});
+          set({error: `Failed to toggle polling: ${errorMessage(e)}`});
         }
       },
 
@@ -459,7 +460,7 @@ export const useAppStore = create<AppState>(
           const config = await invoke<AppConfig>('get_config');
           set({config});
         } catch (e) {
-          set({error: `Failed to set interval: ${e}`});
+          set({error: `Failed to set interval: ${errorMessage(e)}`});
         }
       },
 
@@ -469,7 +470,7 @@ export const useAppStore = create<AppState>(
           const config = await invoke<AppConfig>('get_config');
           set({config});
         } catch (e) {
-          set({error: `Failed to set retention: ${e}`});
+          set({error: `Failed to set retention: ${errorMessage(e)}`});
         }
       },
 
@@ -483,7 +484,7 @@ export const useAppStore = create<AppState>(
           const config = await invoke<AppConfig>('get_config');
           set({config});
         } catch (e) {
-          set({error: `Failed to set autostart: ${e}`});
+          set({error: `Failed to set autostart: ${errorMessage(e)}`});
           throw e;
         }
       },
@@ -528,16 +529,13 @@ export const useAppStore = create<AppState>(
           // The download-started, download-progress, and download-complete
           // events will update the state automatically
         } catch (error: unknown) {
-          const errorMessage = typeof error === 'string' ?
-              error :
-              (error instanceof Error ? error.message : undefined) ||
-                  'Download failed';
+          const message = errorMessage(error) || 'Download failed';
 
           set(state => ({
                 activeDownloads: {
                   ...state.activeDownloads,
                   [resource.id]:
-                      {progress: 0, status: 'error', error: errorMessage}
+                      {progress: 0, status: 'error', error: message}
                 }
               }));
         }

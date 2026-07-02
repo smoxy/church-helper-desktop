@@ -10,7 +10,7 @@ pub mod services;
 
 // Re-export commonly used types
 pub use commands::AppState;
-pub use error::AppError;
+pub use error::{AppError, CommandError};
 pub use models::{AppConfig, Resource, WeekIdentifier};
 pub use services::{PollingService, RetentionScheduler};
 
@@ -48,18 +48,54 @@ pub fn run() {
 
             // Load config from store
             use tauri_plugin_store::StoreExt;
+
+            // A settings.json whose raw bytes aren't valid JSON is silently
+            // discarded by tauri-plugin-store on load: `get("config")` then
+            // returns None and the defaults below would overwrite the file,
+            // destroying the user's data without a trace. Detect that up front
+            // (before the store swallows it) and back the file up. The
+            // valid-JSON-but-unparseable `config` case is handled in the Err
+            // arm below, once the store is open.
+            if raw_settings_is_corrupt(app.handle()) {
+                tracing::error!(
+                    "settings.json is not valid JSON; backing it up before it is reset to defaults"
+                );
+                backup_corrupt_config(app.handle());
+            }
+
             let store = app.store("settings.json")?;
 
-            // Try to load existing config
+            // Load the persisted config, tracking whether valid defaults must be
+            // (re)written so both "no config yet" and "corrupt/unparseable
+            // config" leave a valid file behind. Without that rewrite a bad file
+            // would be re-detected and re-backed-up on every launch, piling up
+            // `.bak-<ts>` copies.
             let mut config = AppConfig::default();
-            if let Some(json) = store.get("config") {
-                if let Ok(loaded_config) = serde_json::from_value(json.clone()) {
-                    tracing::info!("Loaded configuration from store");
-                    config = loaded_config;
+            let mut write_defaults = false;
+            match store.get("config") {
+                Some(json) => match serde_json::from_value::<AppConfig>(json.clone()) {
+                    Ok(loaded_config) => {
+                        tracing::info!("Loaded configuration from store");
+                        config = loaded_config;
+                    }
+                    // Valid JSON but an incompatible `config` schema (much
+                    // older/newer build): back the raw file up, then fall
+                    // through to rewriting defaults so it doesn't recur.
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to parse persisted configuration, backing up and resetting to defaults: {}",
+                            e
+                        );
+                        backup_corrupt_config(app.handle());
+                        write_defaults = true;
+                    }
+                },
+                None => {
+                    tracing::info!("Initializing default configuration");
+                    write_defaults = true;
                 }
-            } else {
-                // Save default config if not exists
-                tracing::info!("Initializing default configuration");
+            }
+            if write_defaults {
                 let json =
                     serde_json::to_value(&config).expect("Failed to serialize default config");
                 store.set("config", json);
@@ -375,6 +411,74 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Best-effort backup of the settings store whose persisted `config` failed
+/// to deserialize, written next to the store as `settings.json.bak-<unix-ts>`
+/// before the app proceeds with defaults, so a corrupt or
+/// incompatible-schema config is preserved for inspection/recovery instead of
+/// vanishing. Copies the whole on-disk store (not just the `config` key) so
+/// other persisted keys survive too. Any failure here is logged and ignored:
+/// it must never block startup.
+/// Whether `raw` parses as arbitrary JSON. Pure, so the corrupt-config
+/// detection is unit-testable without a store on disk.
+fn is_valid_json(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw).is_ok()
+}
+
+/// Whether settings.json exists but its raw bytes are not valid JSON.
+/// tauri-plugin-store silently discards such a file on load (yielding an empty
+/// store), so this is checked *before* the store is opened, to preserve the
+/// file via `backup_corrupt_config`. A missing file (first run) or an
+/// unreadable one is not "corrupt" — there is nothing to back up.
+fn raw_settings_is_corrupt(app: &tauri::AppHandle) -> bool {
+    let Ok(path) = tauri_plugin_store::resolve_store_path(app, "settings.json") else {
+        return false;
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => !is_valid_json(&raw),
+        Err(_) => false,
+    }
+}
+
+fn backup_corrupt_config(app: &tauri::AppHandle) {
+    let store_path = match tauri_plugin_store::resolve_store_path(app, "settings.json") {
+        Ok(path) => path,
+        Err(e) => {
+            tracing::error!(
+                "Could not resolve settings store path to back up corrupt config: {}",
+                e
+            );
+            return;
+        }
+    };
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let backup_name = format!(
+        "{}.bak-{}",
+        store_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("settings.json"),
+        timestamp
+    );
+    let backup_path = store_path.with_file_name(backup_name);
+
+    match std::fs::copy(&store_path, &backup_path) {
+        Ok(_) => tracing::info!(
+            "Backed up corrupt configuration to {}",
+            backup_path.display()
+        ),
+        Err(e) => tracing::error!(
+            "Failed to back up corrupt configuration to {}: {}",
+            backup_path.display(),
+            e
+        ),
+    }
 }
 
 /// Build the system tray icon with a minimal "Apri" (show) / "Esci" (quit)
@@ -760,4 +864,25 @@ fn show_update_error_dialog(
         .title("Aggiornamento non riuscito")
         .kind(MessageDialogKind::Error)
         .blocking_show();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_json_is_accepted() {
+        assert!(is_valid_json(r#"{"config":{"polling_enabled":true}}"#));
+        assert!(is_valid_json("{}"));
+        assert!(is_valid_json("[1,2,3]"));
+    }
+
+    #[test]
+    fn corrupt_json_is_rejected() {
+        // The exact shapes tauri-plugin-store silently swallows on load: a
+        // truncated/malformed object, an empty file, and a stray HTML page.
+        assert!(!is_valid_json("{ this is : not json"));
+        assert!(!is_valid_json(""));
+        assert!(!is_valid_json("<html>504</html>"));
+    }
 }

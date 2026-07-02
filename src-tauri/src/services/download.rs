@@ -75,6 +75,7 @@ impl DownloadService {
     ) -> Result<(PathBuf, String), DownloadError> {
         use futures_util::StreamExt;
         use tauri::Emitter;
+        use tokio::io::AsyncWriteExt;
 
         // Determine which URL to use
         let download_url = if prefer_optimized {
@@ -109,10 +110,8 @@ impl DownloadService {
 
         // Check for existing partial download
         let mut resume_offset = 0;
-        if part_path.exists() {
-            if let Ok(metadata) = std::fs::metadata(&part_path) {
-                resume_offset = metadata.len();
-            }
+        if let Ok(metadata) = tokio::fs::metadata(&part_path).await {
+            resume_offset = metadata.len();
         }
 
         // Build request
@@ -135,20 +134,21 @@ impl DownloadService {
             // Server ignored range, restart download
             resume_offset = 0;
             // Truncate file if it existed
-            if let Ok(file) = std::fs::File::create(&part_path) {
-                let _ = file.set_len(0);
+            if let Ok(file) = tokio::fs::File::create(&part_path).await {
+                let _ = file.set_len(0).await;
             }
         }
 
         let content_length = response.content_length().map(|len| len + resume_offset);
 
         // Open file
-        let mut file = std::fs::OpenOptions::new()
+        let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .append(resume_offset > 0 && is_partial)
             .truncate(resume_offset == 0 || !is_partial) // Truncate if new download
             .open(&part_path)
+            .await
             .map_err(|e| DownloadError::WriteError {
                 path: part_path.clone(),
                 source: e,
@@ -170,17 +170,25 @@ impl DownloadService {
             if let Some(sig) = &signal {
                 let status = sig.load(Ordering::Relaxed);
                 if status == STATUS_PAUSED {
-                    // Keep .part file for resume
+                    // Flush and close before returning so the on-disk length
+                    // matches what resume reads back from `metadata.len()`;
+                    // otherwise still-buffered bytes would be re-fetched and
+                    // duplicated past the resume offset. Keep the .part file.
+                    let _ = file.flush().await;
+                    drop(file);
                     return Err(DownloadError::Paused);
                 } else if status == STATUS_CANCELLED {
-                    // Delete partial file on cancel
-                    let _ = std::fs::remove_file(&part_path);
+                    // Close the handle before deleting so no in-flight write
+                    // races the remove and leaves a zombie .part behind.
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&part_path).await;
                     return Err(DownloadError::Cancelled);
                 }
             }
 
             let chunk = item?;
             file.write_all(&chunk)
+                .await
                 .map_err(|e| DownloadError::WriteError {
                     path: part_path.clone(),
                     source: e,
@@ -229,17 +237,36 @@ impl DownloadService {
             }
         }
 
-        // Rename .part file upon success
-        std::fs::rename(&part_path, &dest_path).map_err(|e| DownloadError::WriteError {
-            path: dest_path.clone(),
+        // Flush and close the file handle before renaming so all buffered
+        // chunk data is persisted and the OS handle is released (required for
+        // rename on Windows).
+        file.flush().await.map_err(|e| DownloadError::WriteError {
+            path: part_path.clone(),
             source: e,
         })?;
+        drop(file);
 
-        // Calculate hash of the completed file
-        let hash = calculate_file_hash(&dest_path).map_err(|e| DownloadError::WriteError {
-            path: dest_path.clone(),
-            source: e,
-        })?;
+        // Rename .part file upon success
+        tokio::fs::rename(&part_path, &dest_path)
+            .await
+            .map_err(|e| DownloadError::WriteError {
+                path: dest_path.clone(),
+                source: e,
+            })?;
+
+        // Calculate hash of the completed file off the async runtime: the
+        // chunked read is blocking I/O, so run it on a blocking thread.
+        let hash_path = dest_path.clone();
+        let hash = tokio::task::spawn_blocking(move || calculate_file_hash(&hash_path))
+            .await
+            .map_err(|e| DownloadError::WriteError {
+                path: dest_path.clone(),
+                source: std::io::Error::other(e),
+            })?
+            .map_err(|e| DownloadError::WriteError {
+                path: dest_path.clone(),
+                source: e,
+            })?;
 
         Ok((dest_path, hash))
     }
