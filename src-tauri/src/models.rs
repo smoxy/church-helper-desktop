@@ -66,6 +66,18 @@ pub enum ConfigValidationError {
     InvalidPollingInterval(u32),
 }
 
+/// A single optimized video variant produced by the re-encoder from a
+/// resource's original zip (adr-0008: matching per provenienza).
+///
+/// Per `contract-resources-api`, the list is ordered by `size_bytes` desc by
+/// the producer; `label` is a slug-or-human-readable name for the variant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OptimizedVideo {
+    pub url: String,
+    pub label: String,
+    pub size_bytes: u64,
+}
+
 /// Resource from the API response
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Resource {
@@ -81,6 +93,15 @@ pub struct Resource {
     #[serde(deserialize_with = "deserialize_naive_to_utc")]
     pub created_at: DateTime<Utc>,
     pub optimized_video_url: Option<String>,
+    /// All optimized video variants available for this resource (adr-0008).
+    /// Additive field: a missing key or an explicit JSON `null` (older
+    /// servers, pre adr-0008) both deserialize to `None` — serde treats
+    /// `Option<T>` struct fields as implicitly optional on deserialization,
+    /// so no custom deserializer is needed here. Purely informational for
+    /// the UI: `get_effective_download_url` below is intentionally
+    /// unaffected by this field and keeps using only `optimized_video_url`
+    /// (the producer's compat-default, always the first/largest element).
+    pub optimized_videos: Option<Vec<OptimizedVideo>>,
 }
 
 fn deserialize_naive_to_utc<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
@@ -311,6 +332,7 @@ mod tests {
             is_active: true,
             created_at: Utc::now(),
             optimized_video_url: None,
+            optimized_videos: None,
         };
         assert!(youtube_resource.is_youtube());
 
@@ -360,6 +382,7 @@ mod tests {
             is_active: true,
             created_at: dt,
             optimized_video_url: None,
+            optimized_videos: None,
         };
         let week = resource.week();
         assert_eq!(week.year, 2026);
@@ -418,5 +441,114 @@ mod tests {
         assert_eq!(response.resources.len(), 2);
         assert!(!response.resources[0].is_youtube());
         assert!(response.resources[1].is_youtube());
+    }
+
+    /// contract-resources-api / adr-0008: `optimized_videos` is additive and
+    /// must be tolerated when entirely absent from the payload (pre-adr-0008
+    /// / old server), not just when present-but-null.
+    #[test]
+    fn test_optimized_videos_missing_key_deserializes_to_none() {
+        let json = r#"{
+            "id": 1,
+            "category": "decime",
+            "title": "Decime",
+            "description": "Test",
+            "download_url": "https://example.com/file.zip",
+            "thumbnail_url": null,
+            "file_type": null,
+            "is_active": true,
+            "created_at": "2026-01-17T23:51:02.358083"
+        }"#;
+
+        let resource: Resource = serde_json::from_str(json).unwrap();
+        assert_eq!(resource.optimized_videos, None);
+        assert_eq!(resource.optimized_video_url, None);
+    }
+
+    /// Same tolerance, but for a server that emits the field explicitly as
+    /// `null` (e.g. no optimized variant for this specific resource) rather
+    /// than omitting the key.
+    #[test]
+    fn test_optimized_videos_null_deserializes_to_none() {
+        let json = r#"{
+            "id": 1,
+            "category": "decime",
+            "title": "Decime",
+            "description": "Test",
+            "download_url": "https://example.com/file.zip",
+            "thumbnail_url": null,
+            "file_type": null,
+            "is_active": true,
+            "created_at": "2026-01-17T23:51:02.358083",
+            "optimized_video_url": null,
+            "optimized_videos": null
+        }"#;
+
+        let resource: Resource = serde_json::from_str(json).unwrap();
+        assert_eq!(resource.optimized_videos, None);
+    }
+
+    /// adr-0008 "multi-video": a zip resource produces several optimized
+    /// variants. Verifies field mapping (url/label/size_bytes) and that
+    /// `get_effective_download_url` stays on the compat-default
+    /// `optimized_video_url` (first/largest element) regardless of how many
+    /// variants `optimized_videos` carries — the full list is UI-only.
+    #[test]
+    fn test_optimized_videos_multi_element_parses_all_fields() {
+        let json = r#"{
+            "id": 102,
+            "category": "missioni",
+            "title": "Missioni dal Mondo",
+            "description": "Archivio zip",
+            "download_url": "https://example.com/missioni_102.zip",
+            "thumbnail_url": null,
+            "file_type": "zip",
+            "is_active": true,
+            "created_at": "2026-06-29T11:14:03+02:00",
+            "optimized_video_url": "https://example.com/files/servizio-completo.mp4",
+            "optimized_videos": [
+                {
+                    "url": "https://example.com/files/servizio-completo.mp4",
+                    "label": "Servizio completo",
+                    "size_bytes": 8100000
+                },
+                {
+                    "url": "https://example.com/files/intervista-pastore.mp4",
+                    "label": "Intervista al pastore",
+                    "size_bytes": 4950000
+                },
+                {
+                    "url": "https://example.com/files/saluti-finali.mp4",
+                    "label": "Saluti finali",
+                    "size_bytes": 2150000
+                }
+            ]
+        }"#;
+
+        let resource: Resource = serde_json::from_str(json).unwrap();
+        let videos = resource
+            .optimized_videos
+            .as_ref()
+            .expect("optimized_videos should be Some for a multi-video resource");
+        assert_eq!(videos.len(), 3);
+        assert_eq!(videos[0].label, "Servizio completo");
+        assert_eq!(videos[0].size_bytes, 8_100_000);
+        assert_eq!(
+            videos[0].url,
+            "https://example.com/files/servizio-completo.mp4"
+        );
+        assert_eq!(videos[1].label, "Intervista al pastore");
+        assert_eq!(videos[2].label, "Saluti finali");
+
+        // get_effective_download_url is unaffected by the full list: it
+        // still resolves solely from optimized_video_url (compat default).
+        assert_eq!(
+            resource.get_effective_download_url(true),
+            "https://example.com/files/servizio-completo.mp4"
+        );
+        assert_eq!(
+            resource.get_effective_download_url(false),
+            "https://example.com/missioni_102.zip"
+        );
     }
 }

@@ -71,6 +71,7 @@ mod tests {
             is_active: true,
             created_at,
             optimized_video_url: None,
+            optimized_videos: None,
         }
     }
 
