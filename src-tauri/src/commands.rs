@@ -230,6 +230,12 @@ pub async fn force_poll(
         }
     }
 
+    // Set when this poll's resources belong to a different week than the
+    // last known one, so we can archive the now-previous week(s) below
+    // (bl-desktop-archiving-not-called) once the status write lock (a
+    // non-Send std::sync guard) is released and out of scope.
+    let mut new_current_week: Option<WeekIdentifier> = None;
+
     // Update status
     {
         let mut status = state
@@ -241,7 +247,11 @@ pub async fn force_poll(
 
         // Determine current week from resources
         if let Some(resource) = api_response.resources.first() {
-            status.current_week = Some(resource.week());
+            let week = resource.week();
+            if status.current_week.as_ref() != Some(&week) {
+                new_current_week = Some(week.clone());
+            }
+            status.current_week = Some(week);
         }
     }
 
@@ -271,6 +281,14 @@ pub async fn force_poll(
     // Check for auto-downloads after force poll
     tracing::debug!("Scanning resources for auto-download after force poll");
     state.download_queue.scan_and_queue(app.clone()).await;
+
+    // The current week just changed: archive the folders of the now-past
+    // week(s) so enforce_retention (already scheduled daily) has something
+    // to trash after retention_days (bl-desktop-archiving-not-called).
+    if let Some(week) = new_current_week {
+        tracing::info!("Current week changed to {}, archiving previous weeks", week);
+        crate::services::archive_previous_weeks_once(&app, &week).await;
+    }
 
     Ok(api_response)
 }

@@ -7,6 +7,7 @@
 //! `POST /stub/scenario/:name` for the relevant scenario.
 
 use church_helper_desktop_lib::models::ResourceListResponse;
+use church_helper_desktop_lib::services::FileRetentionService;
 
 const MULTI_VIDEO_JSON: &str = include_str!("fixtures/stub_multi_video_latest_week.json");
 const OLD_WEEKS_JSON: &str = include_str!("fixtures/stub_old_weeks_latest_week.json");
@@ -91,4 +92,50 @@ fn test_stub_old_weeks_scenario_parses_and_spans_distinct_weeks() {
         "old-weeks fixture must span 3 distinct weeks, got {:?}",
         weeks
     );
+}
+
+/// bl-desktop-archiving-not-called end to end (as far as a `cargo test` can
+/// go without a full Tauri app): builds a work directory with one folder per
+/// week actually reported by the REAL stub payload, treats the most recent
+/// of the three as "current", and checks `archive_previous_weeks` moves the
+/// other two into `.archive/` while leaving the current one alone.
+#[test]
+fn test_old_weeks_fixture_drives_archive_previous_weeks() {
+    let response: ResourceListResponse =
+        serde_json::from_str(OLD_WEEKS_JSON).expect("stub old-weeks payload must deserialize");
+
+    let mut weeks: Vec<_> = response.resources.iter().map(|r| r.week()).collect();
+    weeks.sort_by_key(|w| (w.year, w.week_number));
+    let current = weeks
+        .last()
+        .cloned()
+        .expect("fixture has at least one week");
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    for week in &weeks {
+        let dir = temp_dir.path().join(week.as_dir_name());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("video.mp4"), b"fixture content").unwrap();
+    }
+
+    let service = FileRetentionService::new(temp_dir.path().to_path_buf());
+    let archived = service
+        .archive_previous_weeks(&current, &std::collections::HashSet::new())
+        .unwrap();
+
+    assert_eq!(archived, (weeks.len() - 1) as u32);
+    assert!(
+        temp_dir.path().join(current.as_dir_name()).exists(),
+        "current week folder must stay at the top level"
+    );
+    for week in &weeks {
+        if week != &current {
+            assert!(
+                !temp_dir.path().join(week.as_dir_name()).exists(),
+                "past week {} should have been moved out of the top level",
+                week
+            );
+            assert!(service.week_archive_path(week).join("video.mp4").exists());
+        }
+    }
 }

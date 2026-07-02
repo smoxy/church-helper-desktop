@@ -34,6 +34,13 @@ pub enum FileError {
         source: std::io::Error,
     },
 
+    #[error("Failed to read directory {path}: {source}")]
+    ReadDirectoryFailed {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("Failed to move to trash: {path}: {source}")]
     TrashFailed {
         path: PathBuf,
