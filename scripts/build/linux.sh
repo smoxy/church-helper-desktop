@@ -9,6 +9,10 @@
 #   la "release" lo ignora per sicurezza e va usata contro la produzione.
 # - Cross-arch: x86_64 da host arm64 (e viceversa) richiede binfmt/qemu:
 #     docker run --privileged --rm tonistiigi/binfmt --install amd64
+#   ATTENZIONE (verificato 2026-07-02): rustc sotto qemu-user va in SIGSEGV su
+#   questo host — l'emulazione NON è affidabile per compilare Rust. Per x86_64
+#   usa un host x86_64 nativo (lo script è identico) o la CI GitHub, che su tag
+#   v* compila già su runner ubuntu-latest x86_64 (.github/workflows/build.yml).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
