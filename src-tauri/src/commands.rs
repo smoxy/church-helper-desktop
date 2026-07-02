@@ -5,7 +5,7 @@
 use crate::constants::API_BASE_URL;
 use crate::models::{AppConfig, AppStatus, Resource, ResourceListResponse, WeekIdentifier};
 use crate::services::download::{STATUS_CANCELLED, STATUS_PAUSED};
-use crate::services::DownloadQueue;
+use crate::services::{DownloadQueue, PollingService, RetentionScheduler};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,6 +28,13 @@ pub struct AppState {
     pub file_size_cache: RwLock<HashMap<String, u64>>,
     /// Shared HTTP client for all requests (connection pooling)
     pub shared_http_client: reqwest::Client,
+    /// Handle to the background polling scheduler (`None` if
+    /// `polling_enabled` is off), so it can be stopped cleanly on app exit
+    /// (tray menu "Esci"). Set once at setup, taken and stopped on shutdown.
+    pub polling_service: RwLock<Option<PollingService>>,
+    /// Handle to the background retention scheduler, so it can be stopped
+    /// cleanly on app exit alongside `polling_service`.
+    pub retention_scheduler: RwLock<Option<RetentionScheduler>>,
 }
 
 /// Response for download command
@@ -58,6 +65,8 @@ impl Default for AppState {
             download_queue: Arc::new(DownloadQueue::new()),
             file_size_cache: RwLock::new(HashMap::new()),
             shared_http_client: reqwest::Client::new(),
+            polling_service: RwLock::new(None),
+            retention_scheduler: RwLock::new(None),
         }
     }
 }
