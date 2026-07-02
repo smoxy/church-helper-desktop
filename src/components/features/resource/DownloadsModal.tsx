@@ -1,6 +1,6 @@
 import { useAppStore } from "../../../stores/appStore";
 import { Button } from "../../ui/button";
-import { Play, Pause, X, CloudDownload, CheckCircle2 } from "lucide-react";
+import { Play, Pause, X, CloudDownload, CircleCheck } from "lucide-react";
 import { useEffect, useState, useRef } from "react";
 
 interface DownloadsModalProps {
@@ -231,7 +231,7 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
                                     return (
                                         <div key={id} className="flex items-center gap-4 p-4 rounded-xl border bg-success/5 border-success/20 group">
                                             <div className="h-10 w-10 rounded-full bg-success/10 flex items-center justify-center text-success shrink-0">
-                                                <CheckCircle2 className="h-5 w-5" />
+                                                <CircleCheck className="h-5 w-5" />
                                             </div>
                                             <div className="flex-1 min-w-0">
                                                 <h4 className="text-sm font-bold truncate">{resource.title}</h4>

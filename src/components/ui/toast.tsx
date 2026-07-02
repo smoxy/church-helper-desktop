@@ -1,6 +1,6 @@
 import React from 'react';
 import { useToastStore, ToastType } from '../../stores/toastStore';
-import { CheckCircle, AlertCircle, Info, X } from 'lucide-react';
+import { CircleCheckBig, CircleAlert, Info, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 export const ToastContainer: React.FC = () => {
@@ -27,8 +27,8 @@ const ToastItem: React.FC<ToastItemProps> = ({ toast }) => {
     const { removeToast } = useToastStore();
 
     const icons = {
-        success: <CheckCircle className="h-5 w-5 text-white" />,
-        error: <AlertCircle className="h-5 w-5 text-white" />,
+        success: <CircleCheckBig className="h-5 w-5 text-white" />,
+        error: <CircleAlert className="h-5 w-5 text-white" />,
         info: <Info className="h-5 w-5 text-white" />,
     };
 

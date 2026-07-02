@@ -1,7 +1,7 @@
 import { Resource } from '../../../types';
 import { useResource } from '../../../hooks/useResource';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card';
-import { FileAudio, FileVideo, FileText, MonitorPlay, Check, Download, Loader2, Zap } from "lucide-react";
+import { FileHeadphone, FilePlay, FileText, MonitorPlay, Check, Download, LoaderCircle, Zap } from "lucide-react";
 
 interface ResourceCardProps {
     resource: Resource;
@@ -14,8 +14,8 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
     const getFileIcon = (type: string | null, isYoutube: boolean) => {
         if (isYoutube) return <MonitorPlay className="h-5 w-5 text-red-500" />;
         const t = type?.toLowerCase() || "";
-        if (t.includes("audio") || t.includes("mp3")) return <FileAudio className="h-5 w-5 text-yellow-500" />;
-        if (t.includes("video") || t.includes("mp4")) return <FileVideo className="h-5 w-5 text-blue-500" />;
+        if (t.includes("audio") || t.includes("mp3")) return <FileHeadphone className="h-5 w-5 text-yellow-500" />;
+        if (t.includes("video") || t.includes("mp4")) return <FilePlay className="h-5 w-5 text-blue-500" />;
         return <FileText className="h-5 w-5 text-gray-500" />;
     };
 
@@ -35,7 +35,7 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
                 )}
                 {isDownloading ? (
                     <div className="bg-muted text-muted-foreground p-1.5 rounded-full shadow-sm" title="Downloading...">
-                        <Loader2 className="h-3 w-3 animate-spin" />
+                        <LoaderCircle className="h-3 w-3 animate-spin" />
                     </div>
                 ) : isDownloaded ? (
                     <div className="bg-success text-success-foreground p-1.5 rounded-full shadow-sm" title="Downloaded">

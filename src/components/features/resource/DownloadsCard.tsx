@@ -1,6 +1,6 @@
 import { useAppStore } from '../../../stores/appStore';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
-import { Download, Loader2, Pause, Play, Trash2 } from 'lucide-react';
+import { Download, LoaderCircle, Pause, Play, Trash2 } from 'lucide-react';
 
 export function DownloadsCard() {
     const { resources, activeDownloads, pauseDownload, resumeDownload, cancelDownload } = useAppStore();
@@ -34,7 +34,7 @@ export function DownloadsCard() {
             </CardHeader>
             <CardContent>
                 <div className="text-2xl font-bold flex items-center gap-2">
-                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                    <LoaderCircle className="h-5 w-5 animate-spin text-primary" />
                     {activeDownloadsList.length}
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">

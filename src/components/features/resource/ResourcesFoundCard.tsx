@@ -1,5 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "../../ui/card";
-import { FileText, Download, CheckCircle2, CloudDownload } from "lucide-react";
+import { FileText, Download, CircleCheck, CloudDownload } from "lucide-react";
 import { ResourceSummary, ActiveDownload } from "../../../stores/appStore";
 
 interface ResourcesFoundCardProps {
@@ -80,7 +80,7 @@ export function ResourcesFoundCard({
                                 <span className={`text-2xl font-black tracking-tighter ${summary.downloaded === summary.total && summary.total > 0 ? 'text-green-600' : 'text-green-600'}`}>
                                     {summary.downloaded}
                                 </span>
-                                <CheckCircle2 className={`h-4 w-4 ${summary.downloaded === summary.total && summary.total > 0 ? 'text-green-600' : 'text-green-600/50'}`} />
+                                <CircleCheck className={`h-4 w-4 ${summary.downloaded === summary.total && summary.total > 0 ? 'text-green-600' : 'text-green-600/50'}`} />
                             </div>
                             <span className="text-[10px] font-bold text-muted-foreground uppercase opacity-70">Ready</span>
                         </div>

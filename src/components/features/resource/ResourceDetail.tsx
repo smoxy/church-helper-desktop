@@ -2,7 +2,7 @@ import { Resource } from '../../../types';
 import { useResource } from '../../../hooks/useResource';
 import { formatBytes } from '../../../lib/utils';
 import { OptimizedVideoPicker } from './OptimizedVideoPicker';
-import { Loader2, Download, Check, Pause, Play, Trash2, AlertTriangle, RotateCcw, X } from "lucide-react";
+import { LoaderCircle, Download, Check, Pause, Play, Trash2, TriangleAlert, RotateCcw, X } from "lucide-react";
 
 interface ResourceDetailProps {
     resource: Resource;
@@ -96,7 +96,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                         {canShowSavingsWarning && (
                                             <div className="group relative">
                                                 <div className="bg-yellow-500/90 text-white p-1 rounded-full cursor-help">
-                                                    <AlertTriangle className="h-4 w-4" />
+                                                    <TriangleAlert className="h-4 w-4" />
                                                 </div>
                                                 {/* Tooltip */}
                                                 <div className="absolute right-0 top-full mt-2 w-64 p-3 bg-popover text-popover-foreground text-xs rounded-md shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 border border-border">
@@ -154,7 +154,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                         >
                                             {isDownloading ? (
                                                 <>
-                                                    <Loader2 className="h-5 w-5 animate-spin" />
+                                                    <LoaderCircle className="h-5 w-5 animate-spin" />
                                                     <span className="font-mono">{progress}%</span>
                                                     <Pause className="h-4 w-4 opacity-70 ml-1" />
                                                 </>
@@ -196,7 +196,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                     {/* Warnings / Errors */}
                                     {isCorrupted && (
                                         <div className="flex items-center gap-2 text-xs text-destructive font-semibold bg-destructive/10 p-2 rounded">
-                                            <AlertTriangle className="h-4 w-4" />
+                                            <TriangleAlert className="h-4 w-4" />
                                             Hashes do not match source. File may be corrupted.
                                         </div>
                                     )}
