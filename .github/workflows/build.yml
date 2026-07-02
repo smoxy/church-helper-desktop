@@ -13,6 +13,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install Node.js
         uses: actions/setup-node@v6
@@ -47,22 +49,68 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           # Il tag e' l'unica fonte di verita' per la versione rilasciata:
-          # deve essere semver stretto vX.Y.Z (niente pre-release/build
-          # metadata) altrimenti la release fallisce subito con un errore
-          # chiaro invece di produrre artefatti con versione ambigua.
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Tag '$TAG' non e' un semver valido nella forma vX.Y.Z (es. v1.2.3). Interrompo la release."
+          # formati ammessi: vX.Y.Z (stabile) o vX.Y.Z-rcN (release
+          # candidate, N intero >= 1, es. v1.2.3-rc1). Tutto il resto
+          # fa fallire subito la release con un errore chiaro invece di
+          # produrre artefatti con versione ambigua.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[1-9][0-9]*)?$ ]]; then
+            echo "::error::Tag '$TAG' non e' valido. Formati ammessi: vX.Y.Z (release stabile) oppure vX.Y.Z-rcN (release candidate, N>=1), es. v1.2.3 o v1.2.3-rc1. Interrompo la release."
             exit 1
           fi
-          VERSION=${TAG#v}
-          CURRENT=$(jq -r '.version' ./src-tauri/tauri.conf.json)
-          if [ "$CURRENT" != "$VERSION" ]; then
-            echo "::warning::Versione committata in tauri.conf.json ($CURRENT) diversa da quella del tag ($VERSION): vince il tag, i file vengono allineati solo per questa build CI."
+
+          if [[ "$TAG" == *-rc* ]]; then
+            IS_RC=true
+          else
+            IS_RC=false
           fi
-          echo "Updating version to $VERSION"
-          jq --arg v "$VERSION" '.version = $v' ./src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./src-tauri/tauri.conf.json
-          jq --arg v "$VERSION" '.version = $v' ./package.json > tmp.json && mv tmp.json ./package.json
-          sed -i.bak "0,/^version = \".*\"/s//version = \"$VERSION\"/" ./src-tauri/Cargo.toml && rm -f ./src-tauri/Cargo.toml.bak
+
+          # Vincolo di branch: le rc sono ammesse solo su commit non ancora
+          # su main, le stabili solo su commit gia' contenuti in main.
+          # Richiede fetch-depth: 0 nel checkout per avere storia
+          # sufficiente al merge-base.
+          git fetch origin main --quiet
+          if git merge-base --is-ancestor HEAD origin/main; then
+            ON_MAIN=true
+          else
+            ON_MAIN=false
+          fi
+
+          if [ "$IS_RC" = true ] && [ "$ON_MAIN" = true ]; then
+            echo "::error::Tag '$TAG' e' una release candidate ma il commit taggato e' gia' contenuto in main. Le rc sono ammesse solo su commit non ancora mergiati in main. Interrompo la release."
+            exit 1
+          fi
+
+          if [ "$IS_RC" = false ] && [ "$ON_MAIN" = false ]; then
+            echo "::error::Tag '$TAG' e' una release stabile ma il commit taggato non e' contenuto in main. Le release stabili sono ammesse solo su commit gia' presenti in main. Interrompo la release."
+            exit 1
+          fi
+
+          VERSION=${TAG#v}
+          # WiX/MSI (Windows) non accetta un ProductVersion con
+          # pre-release: per le rc nei file di versione scriviamo solo la
+          # parte X.Y.Z, il tag/release name completo resta quello vero.
+          BASE_VERSION=${VERSION%-rc*}
+
+          # Anti-injection: la versione estratta dal tag deve ripassare
+          # una regex stretta prima di finire in sed/jq, anche se il
+          # pattern del tag sopra la vincola gia'.
+          if [[ ! "$BASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Versione '$BASE_VERSION' estratta dal tag '$TAG' non e' un semver X.Y.Z valido. Interrompo la release."
+            exit 1
+          fi
+
+          if [ "$IS_RC" = true ]; then
+            echo "::notice::Tag rc: nei file di versione viene scritta solo la parte $BASE_VERSION (WiX/MSI non accetta prerelease nel ProductVersion). La release GitHub sara' marcata prerelease: non verra' servita dall'auto-update (latest.json ignora le prerelease)."
+          fi
+
+          CURRENT=$(jq -r '.version' ./src-tauri/tauri.conf.json)
+          if [ "$CURRENT" != "$BASE_VERSION" ]; then
+            echo "::warning::Versione committata in tauri.conf.json ($CURRENT) diversa da quella del tag ($BASE_VERSION): vince il tag, i file vengono allineati solo per questa build CI."
+          fi
+          echo "Updating version to $BASE_VERSION"
+          jq --arg v "$BASE_VERSION" '.version = $v' ./src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./src-tauri/tauri.conf.json
+          jq --arg v "$BASE_VERSION" '.version = $v' ./package.json > tmp.json && mv tmp.json ./package.json
+          sed -i.bak "0,/^version = \".*\"/s//version = \"$BASE_VERSION\"/" ./src-tauri/Cargo.toml && rm -f ./src-tauri/Cargo.toml.bak
 
       - name: Check updater signing key
         if: startsWith(github.ref, 'refs/tags/v')
@@ -101,7 +149,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'church-helper-desktop ${{ github.ref_name }}'
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
           includeUpdaterJson: true
           args: --target x86_64-pc-windows-msvc
 
@@ -112,6 +160,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install dependencies
         run: |
@@ -144,23 +194,70 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           # Il tag e' l'unica fonte di verita' per la versione rilasciata:
-          # deve essere semver stretto vX.Y.Z (niente pre-release/build
-          # metadata) altrimenti la release fallisce subito con un errore
-          # chiaro invece di produrre artefatti con versione ambigua.
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Tag '$TAG' non e' un semver valido nella forma vX.Y.Z (es. v1.2.3). Interrompo la release."
+          # formati ammessi: vX.Y.Z (stabile) o vX.Y.Z-rcN (release
+          # candidate, N intero >= 1, es. v1.2.3-rc1). Tutto il resto
+          # fa fallire subito la release con un errore chiaro invece di
+          # produrre artefatti con versione ambigua.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[1-9][0-9]*)?$ ]]; then
+            echo "::error::Tag '$TAG' non e' valido. Formati ammessi: vX.Y.Z (release stabile) oppure vX.Y.Z-rcN (release candidate, N>=1), es. v1.2.3 o v1.2.3-rc1. Interrompo la release."
             exit 1
           fi
-          VERSION=${TAG#v}
-          sudo apt-get install -y jq
-          CURRENT=$(jq -r '.version' src-tauri/tauri.conf.json)
-          if [ "$CURRENT" != "$VERSION" ]; then
-            echo "::warning::Versione committata in tauri.conf.json ($CURRENT) diversa da quella del tag ($VERSION): vince il tag, i file vengono allineati solo per questa build CI."
+
+          if [[ "$TAG" == *-rc* ]]; then
+            IS_RC=true
+          else
+            IS_RC=false
           fi
-          echo "Updating version to $VERSION"
-          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
-          jq --arg v "$VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
-          sed -i.bak "0,/^version = \".*\"/s//version = \"$VERSION\"/" src-tauri/Cargo.toml && rm -f src-tauri/Cargo.toml.bak
+
+          # Vincolo di branch: le rc sono ammesse solo su commit non ancora
+          # su main, le stabili solo su commit gia' contenuti in main.
+          # Richiede fetch-depth: 0 nel checkout per avere storia
+          # sufficiente al merge-base.
+          git fetch origin main --quiet
+          if git merge-base --is-ancestor HEAD origin/main; then
+            ON_MAIN=true
+          else
+            ON_MAIN=false
+          fi
+
+          if [ "$IS_RC" = true ] && [ "$ON_MAIN" = true ]; then
+            echo "::error::Tag '$TAG' e' una release candidate ma il commit taggato e' gia' contenuto in main. Le rc sono ammesse solo su commit non ancora mergiati in main. Interrompo la release."
+            exit 1
+          fi
+
+          if [ "$IS_RC" = false ] && [ "$ON_MAIN" = false ]; then
+            echo "::error::Tag '$TAG' e' una release stabile ma il commit taggato non e' contenuto in main. Le release stabili sono ammesse solo su commit gia' presenti in main. Interrompo la release."
+            exit 1
+          fi
+
+          VERSION=${TAG#v}
+          # WiX/MSI (Windows) non accetta un ProductVersion con
+          # pre-release: per le rc nei file di versione scriviamo solo la
+          # parte X.Y.Z, il tag/release name completo resta quello vero.
+          BASE_VERSION=${VERSION%-rc*}
+
+          sudo apt-get install -y jq
+
+          # Anti-injection: la versione estratta dal tag deve ripassare
+          # una regex stretta prima di finire in sed/jq, anche se il
+          # pattern del tag sopra la vincola gia'.
+          if [[ ! "$BASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Versione '$BASE_VERSION' estratta dal tag '$TAG' non e' un semver X.Y.Z valido. Interrompo la release."
+            exit 1
+          fi
+
+          if [ "$IS_RC" = true ]; then
+            echo "::notice::Tag rc: nei file di versione viene scritta solo la parte $BASE_VERSION (WiX/MSI non accetta prerelease nel ProductVersion). La release GitHub sara' marcata prerelease: non verra' servita dall'auto-update (latest.json ignora le prerelease)."
+          fi
+
+          CURRENT=$(jq -r '.version' src-tauri/tauri.conf.json)
+          if [ "$CURRENT" != "$BASE_VERSION" ]; then
+            echo "::warning::Versione committata in tauri.conf.json ($CURRENT) diversa da quella del tag ($BASE_VERSION): vince il tag, i file vengono allineati solo per questa build CI."
+          fi
+          echo "Updating version to $BASE_VERSION"
+          jq --arg v "$BASE_VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          jq --arg v "$BASE_VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
+          sed -i.bak "0,/^version = \".*\"/s//version = \"$BASE_VERSION\"/" src-tauri/Cargo.toml && rm -f src-tauri/Cargo.toml.bak
 
       - name: Check updater signing key
         if: startsWith(github.ref, 'refs/tags/v')
@@ -199,6 +296,6 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'church-helper-desktop ${{ github.ref_name }}'
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
           includeUpdaterJson: true
           args: --bundles deb
