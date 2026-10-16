@@ -53,7 +53,12 @@ docker run --rm --platform "$PLATFORM" \
 
 SUFFIX=""; [ "$MODE" = debug ] && SUFFIX="-debug"
 OUT="church-helper-desktop-$ARCH$SUFFIX"
-# Guardia: la versione deve essere finita nel binario (letterale in package_info).
+# Controllo di coerenza BEST-EFFORT (non una prova): cerca la versione come
+# sottostringa nel binario (letterale in package_info, tauri-codegen context.rs:273-282).
+# Non distingue 0.4.0-dev.2 da 0.4.0-dev.21 né da una versione di un crate
+# dipendente uguale a quella di tag esatto. La garanzia vera che il binario non sia
+# vecchio è `cargo:rerun-if-env-changed=TAURI_CONFIG` (tauri-build lib.rs:472):
+# cambiando la versione cargo ricompila il crate.
 grep -aqF -- "$APP_VERSION" "$CACHE/$MODE/church-helper-desktop" \
   || { echo "ERRORE: la versione $APP_VERSION non risulta nel binario: build non valida"; exit 1; }
 install -m755 "$CACHE/$MODE/church-helper-desktop" "$OUT"

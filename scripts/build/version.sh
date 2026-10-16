@@ -38,27 +38,44 @@ chd_local_version() {
     return 0
   fi
 
-  local base
-  base="$(git -C "$repo" tag --merged HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname 2>/dev/null \
-    | grep -E "$_CHD_STABLE_TAG_RE" | head -n 1 || true)"
+  # Gli errori di git (non è un repo, git assente, HEAD senza commit) devono
+  # restare visibili: non si confondono con "nessun tag stabile".
+  if ! git -C "$repo" rev-parse --git-dir >/dev/null; then
+    echo "impossibile leggere il repository git in '$repo': non posso derivare la versione." >&2
+    return 1
+  fi
+  local tags base
+  tags="$(git -C "$repo" tag --merged HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname)" \
+    || { echo "git tag fallito: non posso derivare la versione." >&2; return 1; }
+  base="$(printf '%s\n' "$tags" | grep -E "$_CHD_STABLE_TAG_RE" | head -n 1 || true)"
   if [ -z "$base" ]; then
     echo "nessun tag stabile vX.Y.Z raggiungibile da HEAD: non posso derivare la versione." >&2
     echo "Scarica i tag (git fetch --tags) oppure imposta a mano, es.: VERSION=0.4.0-dev.1 $0" >&2
     return 1
   fi
 
+  # refs/tags/ esplicito: un branch con lo stesso nome del tag renderebbe ambiguo "${base}..HEAD".
   local count
-  count="$(git -C "$repo" rev-list --count "${base}..HEAD")"
-  local ver="${base#v}"
-  if [ "$count" -eq 0 ]; then
-    printf '%s\n' "$ver"
-    return 0
+  count="$(git -C "$repo" rev-list --count "refs/tags/${base}..HEAD")" \
+    || { echo "git rev-list fallito su ${base}..HEAD: non posso derivare la versione." >&2; return 1; }
+  if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+    echo "numero di commit da $base non numerico ('$count'): non posso derivare la versione." >&2
+    return 1
   fi
 
-  local major minor
-  major="${ver%%.*}"
-  minor="${ver#*.}"; minor="${minor%%.*}"
-  printf '%s.%s.0-dev.%s\n' "$major" "$((minor + 1))" "$count"
+  local ver="${base#v}" major minor
+  if [ "$count" -ne 0 ]; then
+    major="${ver%%.*}"
+    minor="${ver#*.}"; minor="${minor%%.*}"
+    ver="${major}.$((minor + 1)).0-dev.${count}"
+  fi
+
+  # Ultima rete: tauri-codegen rifiuta un semver non valido con un errore opaco.
+  if [[ ! "$ver" =~ $_CHD_SEMVER_RE ]]; then
+    echo "versione derivata '$ver' non è un semver valido." >&2
+    return 1
+  fi
+  printf '%s\n' "$ver"
 }
 
 # Eseguito direttamente (non via `source`): stampa la versione.

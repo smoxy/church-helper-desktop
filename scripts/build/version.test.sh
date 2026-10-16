@@ -88,6 +88,21 @@ expect_error "solo tag rc" "nessun tag stabile"
 g tag foo
 expect_error "tag non semver" "nessun tag stabile"
 
+# --- non è un repository git: errore esplicito, non "nessun tag" --------------
+mkdir -p "$WORK/norepo"
+REPO="$WORK/norepo"
+GIT_CEILING_DIRECTORIES="$WORK" expect_error "directory senza repository git" "impossibile leggere il repository"
+
+# --- repository senza commit ----------------------------------------------------
+new_repo nocommit
+expect_error "repository senza commit" "non posso derivare la versione"
+
+# --- branch con lo stesso nome del tag: refs/tags/ evita l'ambiguità ----------
+new_repo ambiguous
+commit a; g tag v0.3.0
+g checkout -q -b v0.3.0 2>/dev/null; commit b; commit c
+expect_version "branch omonimo del tag v0.3.0" "0.4.0-dev.2"
+
 # --- eseguito come script: stampa la versione e fallisce con exit != 0 ---------
 if out="$(VERSION=9.9.9 "$HERE/version.sh" 2>&1)" && [ "$out" = "9.9.9" ]; then
   ok "version.sh eseguito direttamente rispetta VERSION"
