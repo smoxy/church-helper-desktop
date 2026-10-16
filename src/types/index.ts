@@ -50,6 +50,39 @@ export interface Resource {
   // (errata published under a new id). Absent/null on older servers. The
   // errata handling is entirely backend-side; the UI never reads it.
   supersedes_resource_id?: number|null;
+  // Projection Saturday ("YYYY-MM-DD"), computed by the backend
+  // (Resource::projection_date in src-tauri/src/models.rs, same week rule as
+  // the folder the file is saved under). The UI only formats it.
+  projection_date?: string|null;
+  // Shared metadata contract (2026-10-16), all additive: the backend parses
+  // them leniently (absent/malformed -> null or empty), the UI tolerates
+  // absence too. `title_original` is the raw source title (uppercase).
+  title_original?: string|null;
+  duration_s?: number|null;
+  storyboard?: Storyboard|null;
+  tags?: ResourceTag[];
+}
+
+// Hover-scrub sprite: `frames` frames of frame_width x frame_height on a
+// cols x rows JPEG grid, row-major. `timestamps` (seconds) has one entry per
+// frame, or is empty when the server's list was unusable. Mirrors
+// `Storyboard` in src-tauri/src/models.rs.
+export interface Storyboard {
+  url: string;
+  frames: number;
+  cols: number;
+  rows: number;
+  frame_width: number;
+  frame_height: number;
+  timestamps: number[];
+}
+
+// One certain-data tag. `facet` is "categoria" | "trimestre" | "numero" |
+// "data" | "durata" today; other values may appear later and are ignored by
+// the UI. Mirrors `ResourceTag` in src-tauri/src/models.rs.
+export interface ResourceTag {
+  facet: string;
+  value: string;
 }
 
 // UI colour theme. Mirrors the Rust `ThemeSetting` enum (src-tauri/src/models.rs).

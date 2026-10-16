@@ -126,6 +126,20 @@ const en = {
   // --- src/components/features/resource/ResourceMedia.tsx ---
   'resourceMedia.noPreview': 'No preview',
   'resourceMedia.placeholderAria': 'No preview available: {category}',
+  'resourceMedia.duration': 'Duration {duration}',
+  'resourceMedia.storyboardAria': 'Video preview: {title}. Use the left and right arrow keys to browse the frames.',
+  'resourceMedia.frame': 'Frame {index} of {total}',
+  'resourceMedia.frameAt': 'Frame {index} of {total}, at {time}',
+
+  // --- src/components/features/resource/ResourceTags.tsx (shared metadata
+  // contract: tag facets shown as chips) ---
+  'tags.listAria': 'Tags',
+  'tags.facet.numero': 'Number',
+  'tags.facet.trimestre': 'Quarter',
+  'tags.facet.durata': 'Duration',
+  'tags.value.numero': 'No. {n}',
+  'tags.value.trimestre': 'Q{q} {year}',
+  'tags.value.durata': '{duration}',
 
   // --- src/lib/i18n/index.ts (categoryLabel): display names of category
   // keys; a category without an entry is shown as its raw key ---
@@ -151,6 +165,7 @@ const en = {
   'resourceDetail.autoDownloadTooltipPrefix': 'Automatically download future resources in the ',
   'resourceDetail.autoDownloadTooltipSuffix': ' category.',
   'resourceDetail.date': 'Date',
+  'resourceDetail.tags': 'Tags',
   'resourceDetail.description': 'Description',
   'resourceDetail.noDescription': 'Description not available',
   'resourceDetail.close': 'Close',
@@ -378,6 +393,19 @@ const it: Record<TKey, string> = {
   // --- src/components/features/resource/ResourceMedia.tsx ---
   'resourceMedia.noPreview': 'Nessuna anteprima',
   'resourceMedia.placeholderAria': 'Anteprima non disponibile: {category}',
+  'resourceMedia.duration': 'Durata {duration}',
+  'resourceMedia.storyboardAria': 'Anteprima del video: {title}. Usa le frecce sinistra e destra per scorrere i fotogrammi.',
+  'resourceMedia.frame': 'Fotogramma {index} di {total}',
+  'resourceMedia.frameAt': 'Fotogramma {index} di {total}, a {time}',
+
+  // --- src/components/features/resource/ResourceTags.tsx ---
+  'tags.listAria': 'Etichette',
+  'tags.facet.numero': 'Numero',
+  'tags.facet.trimestre': 'Trimestre',
+  'tags.facet.durata': 'Durata',
+  'tags.value.numero': 'N. {n}',
+  'tags.value.trimestre': '{q}° trimestre {year}',
+  'tags.value.durata': '{duration}',
 
   // --- src/lib/i18n/index.ts (categoryLabel) ---
   'category.decime': 'Decime e offerte',
@@ -402,6 +430,7 @@ const it: Record<TKey, string> = {
   'resourceDetail.autoDownloadTooltipPrefix': 'Scarica automaticamente le future risorse della categoria ',
   'resourceDetail.autoDownloadTooltipSuffix': '.',
   'resourceDetail.date': 'Data',
+  'resourceDetail.tags': 'Etichette',
   'resourceDetail.description': 'Descrizione',
   'resourceDetail.noDescription': 'Descrizione non disponibile',
   'resourceDetail.close': 'Chiudi',

@@ -9,6 +9,8 @@ import { OptimizedVideoPicker } from './OptimizedVideoPicker';
 import { OptimizedPreferenceToggle } from './OptimizedPreferenceToggle';
 import { OptimizedActiveNotice } from './OptimizedActiveNotice';
 import { ResourceMedia } from './ResourceMedia';
+import { ResourceTags } from './ResourceTags';
+import { tagChips } from '../../../lib/mediaMeta';
 import { formatProjectionDate } from '../../../lib/projectionDate';
 import { LoaderCircle, Download, Check, Pause, Play, Trash2, TriangleAlert, RotateCcw, X, FolderOpen, Clock } from "lucide-react";
 
@@ -21,6 +23,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
     const { t, lang, categoryLabel } = useI18n();
     const category = categoryLabel(resource.category);
     const projectionDate = formatProjectionDate(resource, lang, 'long');
+    const hasTags = tagChips(resource.tags).length > 0;
     const {
         isDownloaded,
         isDownloading,
@@ -123,7 +126,10 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                     <div>
                         <ResourceMedia
                             imageUrl={resource.thumbnail_url}
-                            alt={resource.title}
+                            storyboard={resource.storyboard ?? null}
+                            durationSeconds={resource.duration_s}
+                            interactive
+                            title={resource.title}
                             category={resource.category}
                             categoryLabel={category}
                             size="detail"
@@ -328,6 +334,13 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                                 {projectionDate ?? '—'}
                             </p>
                         </div>
+
+                        {hasTags && (
+                            <div>
+                                <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('resourceDetail.tags')}</span>
+                                <ResourceTags tags={resource.tags} className="mt-1.5" />
+                            </div>
+                        )}
 
                         <div>
                             <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('resourceDetail.description')}</span>
