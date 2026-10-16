@@ -61,9 +61,10 @@ pub fn detect_errata_changes(
 ///    replacement appeared). This covers chains where the intermediate link
 ///    was never downloaded here: registry holds A, server now lists only C
 ///    (C supersedes B, B superseded A). Entries without a recorded category
-///    (written by older builds) are never matched by this rule, and since R
-///    must come from `remote`, a week whose fetch failed (empty list) can
-///    never trigger it.
+///    (written by older builds) are never matched by this rule unless
+///    [`backfill_categories`] could fill it first, and since R must come
+///    from `remote`, a week whose fetch failed (empty list) can never
+///    trigger it.
 ///
 /// Returned changes carry the OLD id in `resource_id` (so `mark_superseded`
 /// flips the old entry) and the replacement in `new_resource`.
@@ -133,6 +134,64 @@ pub fn detect_superseded_by_new_id(
     }
 
     changes
+}
+
+/// Fill the missing `category` of registry entries written by builds that
+/// did not record it (v0.3.0), so Rule 2 of [`detect_superseded_by_new_id`]
+/// can see them too (pure). `remote` is the current server list (latest ∪
+/// next).
+///
+/// - The entry's resource id is still listed: take that resource's category.
+/// - Otherwise match by (week, file basename) against the listed resources
+///   that are part of a superseded chain (`supersedes_resource_id` set): an
+///   errata that kept the file name (same URL basename) reveals the slot the
+///   old entry belonged to. The basename of the entry is taken from its local
+///   path and its source URL; the remote one from the raw and the optimized
+///   URL. Filled only when every match agrees on one category.
+/// - No match, or ambiguous: left as is.
+///
+/// Returns how many entries were filled.
+pub fn backfill_categories(registry: &mut [DownloadedFile], remote: &[Resource]) -> usize {
+    use crate::services::download::extract_filename_from_url;
+    use std::collections::HashSet;
+
+    let mut filled = 0;
+    for entry in registry.iter_mut().filter(|f| f.category.is_none()) {
+        if let Some(listed) = remote.iter().find(|r| r.id == entry.resource_id) {
+            entry.category = Some(listed.category.clone());
+            filled += 1;
+            continue;
+        }
+
+        let entry_names: HashSet<String> = entry
+            .local_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+            .into_iter()
+            .chain(extract_filename_from_url(&entry.source_url))
+            .collect();
+        if entry_names.is_empty() {
+            continue;
+        }
+
+        let categories: HashSet<&str> = remote
+            .iter()
+            .filter(|r| r.supersedes_resource_id.is_some() && r.week() == entry.week)
+            .filter(|r| {
+                std::iter::once(r.download_url.as_str())
+                    .chain(r.optimized_video_url.as_deref())
+                    .filter_map(extract_filename_from_url)
+                    .any(|name| entry_names.contains(&name))
+            })
+            .map(|r| r.category.as_str())
+            .collect();
+        if categories.len() == 1 {
+            entry.category = categories.into_iter().next().map(str::to_string);
+            filled += 1;
+        }
+    }
+    filled
 }
 
 /// Ids of resources in `resources` that another listed resource explicitly
@@ -322,11 +381,20 @@ pub async fn process_errata(app: &AppHandle, remote: &[Resource]) {
     let state = app.state::<crate::commands::AppState>();
 
     // Snapshot the registry and the config bits we need up front, so no lock
-    // is held across the archiving / re-queue work below.
-    let registry_snapshot = match state.downloaded_files.read() {
-        Ok(registry) => registry.clone(),
+    // is held across the archiving / re-queue work below. Entries written by
+    // older builds get their category backfilled first (persisted under the
+    // same write guard, like every other registry mutation).
+    let registry_snapshot = match state.downloaded_files.write() {
+        Ok(mut registry) => {
+            let filled = backfill_categories(&mut registry, remote);
+            if filled > 0 {
+                tracing::info!("Errata: backfilled the category of {} entries", filled);
+                persist_registry(app, &registry);
+            }
+            registry.clone()
+        }
         Err(e) => {
-            tracing::error!("Errata: failed to read downloaded_files: {}", e);
+            tracing::error!("Errata: failed to write downloaded_files: {}", e);
             return;
         }
     };
@@ -900,6 +968,102 @@ mod tests {
         // The would-be replacement is already downloaded (live): not "new".
         let registry = vec![live_entry(1, Some("missioni")), downloaded(&newcomer)];
         assert!(detect_superseded_by_new_id(&registry, &[newcomer]).is_empty());
+    }
+
+    // -- category backfill for v0.3.0 entries (D7) ---------------------------
+
+    /// v0.3.0 entry: no category, raw file saved under `basename`.
+    fn legacy_entry(id: i64, basename: &str) -> DownloadedFile {
+        let mut f = live_entry(id, None);
+        f.local_path = PathBuf::from(format!("/work/W42-2026-10-17/{basename}"));
+        f.source_url = format!("https://uicca.example/2026/10/{basename}");
+        f
+    }
+
+    fn with_url(mut r: Resource, url: &str) -> Resource {
+        r.download_url = url.to_string();
+        r
+    }
+
+    #[test]
+    fn test_backfill_from_listed_resource_id() {
+        let mut registry = vec![legacy_entry(1, "mis-04-X.zip")];
+        let a = uicca_resource(1, "missioni", None);
+
+        assert_eq!(backfill_categories(&mut registry, &[a]), 1);
+        assert_eq!(registry[0].category.as_deref(), Some("missioni"));
+        // Idempotent: already filled entries are left alone.
+        let a = uicca_resource(1, "missioni", None);
+        assert_eq!(backfill_categories(&mut registry, &[a]), 0);
+    }
+
+    /// The v0.3.0 scenario from the clustering report: registry holds A
+    /// (category None), the server now lists only C (supersedes B, never seen
+    /// here) with the same basename. The backfill finds the slot through C,
+    /// and Rule 2 then retires A in favour of C.
+    #[test]
+    fn test_backfill_by_week_and_basename_enables_rule_2_for_legacy_chain() {
+        let mut registry = vec![legacy_entry(1, "mis-04-X.zip")];
+        let c = with_url(
+            uicca_resource(3, "missioni", Some(2)),
+            "https://uicca.example/2026/11/mis-04-X.zip",
+        );
+
+        // Before the backfill Rule 2 cannot see the legacy entry.
+        assert!(detect_superseded_by_new_id(&registry, std::slice::from_ref(&c)).is_empty());
+
+        assert_eq!(
+            backfill_categories(&mut registry, std::slice::from_ref(&c)),
+            1
+        );
+        assert_eq!(registry[0].category.as_deref(), Some("missioni"));
+
+        let changes = detect_superseded_by_new_id(&registry, std::slice::from_ref(&c));
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].resource_id, 1);
+        assert_eq!(changes[0].new_resource.id, 3);
+    }
+
+    #[test]
+    fn test_backfill_leaves_unmatched_or_ambiguous_entries() {
+        // Different basename: no match.
+        let mut registry = vec![legacy_entry(1, "mis-04-X.zip")];
+        let other = with_url(
+            uicca_resource(3, "missioni", Some(2)),
+            "https://uicca.example/2026/11/mis-04-Y.zip",
+        );
+        assert_eq!(backfill_categories(&mut registry, &[other]), 0);
+        assert!(registry[0].category.is_none());
+
+        // Same basename but not part of a superseded chain: no match.
+        let plain = with_url(
+            uicca_resource(3, "missioni", None),
+            "https://uicca.example/2026/11/mis-04-X.zip",
+        );
+        assert_eq!(backfill_categories(&mut registry, &[plain]), 0);
+
+        // Same basename in another week: no match.
+        let mut next_week = with_url(
+            uicca_resource(3, "missioni", Some(2)),
+            "https://uicca.example/2026/11/mis-04-X.zip",
+        );
+        next_week.week_date = chrono::NaiveDate::from_ymd_opt(2026, 10, 24);
+        assert_eq!(backfill_categories(&mut registry, &[next_week]), 0);
+
+        // Two chains of different categories share the basename: ambiguous.
+        let m = with_url(
+            uicca_resource(3, "missioni", Some(2)),
+            "https://uicca.example/a/mis-04-X.zip",
+        );
+        let d = with_url(
+            uicca_resource(5, "decime", Some(4)),
+            "https://uicca.example/b/mis-04-X.zip",
+        );
+        assert_eq!(backfill_categories(&mut registry, &[m, d]), 0);
+        assert!(registry[0].category.is_none());
+
+        // Nothing listed at all (failed fetch): nothing filled.
+        assert_eq!(backfill_categories(&mut registry, &[]), 0);
     }
 
     #[test]

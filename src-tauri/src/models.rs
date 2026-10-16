@@ -461,8 +461,8 @@ pub struct DownloadedFile {
     /// Category of the downloaded resource. Used by the errata pass to spot a
     /// live file whose resource vanished from the server while a NEW resource
     /// of the same week + category appeared (errata with a new id). `None` for
-    /// entries written by builds that predate the field: those are simply
-    /// never matched by that heuristic.
+    /// entries written by builds that predate the field, until the errata pass
+    /// backfills it from the server list (`errata::backfill_categories`).
     #[serde(default)]
     pub category: Option<String>,
 }
