@@ -2,7 +2,7 @@ import { useEffect, useState, type KeyboardEvent, type PointerEvent, type ReactN
 import { BookOpen, Film, Globe, HandCoins, Users, type LucideIcon } from "lucide-react";
 import { useI18n } from "../../../lib/i18n";
 import { cn } from "../../../lib/utils";
-import { formatDuration, frameIndexAt, spriteFrameStyle } from "../../../lib/mediaMeta";
+import { formatDuration, frameIndexAt, nextKeyFrame, spriteFrameStyle } from "../../../lib/mediaMeta";
 import type { Storyboard } from "../../../types";
 
 interface ResourceMediaProps {
@@ -151,17 +151,13 @@ export function ResourceMedia({
         if (!storyboard || e.pointerType === "touch") return;
         const rect = e.currentTarget.getBoundingClientRect();
         if (rect.width <= 0) return;
+        // The last input wins: moving the mouse hands control back to hover.
+        setKeyFrame(null);
         setPointerFrame(frameIndexAt((e.clientX - rect.left) / rect.width, storyboard.frames));
     };
     const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
         if (!storyboard) return;
-        const last = storyboard.frames - 1;
-        const current = keyFrame ?? pointerFrame;
-        let next: number | null = null;
-        if (e.key === "ArrowRight") next = current === null ? 0 : Math.min(last, current + 1);
-        else if (e.key === "ArrowLeft") next = current === null ? last : Math.max(0, current - 1);
-        else if (e.key === "Home") next = 0;
-        else if (e.key === "End") next = last;
+        const next = nextKeyFrame(e.key, keyFrame ?? pointerFrame, storyboard.frames);
         if (next === null) return;
         e.preventDefault();
         setKeyFrame(next);

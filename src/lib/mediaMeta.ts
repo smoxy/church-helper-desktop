@@ -31,6 +31,22 @@ export function frameIndexAt(fraction: number, frames: number): number {
 }
 
 /**
+ * Frame selected by a key on the storyboard slider, or null when the key
+ * does not move it. `current` is the frame on screen, null when nothing is
+ * being scrubbed: the poster stands for frame 1 then, so ArrowRight goes to
+ * frame 2 (index 1) and the announced value actually changes.
+ */
+export function nextKeyFrame(key: string, current: number | null, frames: number): number | null {
+  if (frames <= 0) return null;
+  const last = frames - 1;
+  if (key === "ArrowRight") return current === null ? Math.min(1, last) : Math.min(last, current + 1);
+  if (key === "ArrowLeft") return current === null ? last : Math.max(0, current - 1);
+  if (key === "Home") return 0;
+  if (key === "End") return last;
+  return null;
+}
+
+/**
  * CSS that shows frame `index` of the sprite filling its element: the sprite
  * is scaled to cols x rows times the element and shifted so that one cell
  * covers it exactly (percent positions, so no pixel sizes are needed).
