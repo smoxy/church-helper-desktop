@@ -69,7 +69,9 @@ export default function Dashboard() {
 
             {/* Status Cards */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                <div className="lg:col-span-2">
+                {/* Full row from md up: in the two-column layout (800-1023px)
+                    a single column is too narrow for the three counters. */}
+                <div className="md:col-span-2">
                     <ResourcesFoundCard
                         summary={summary}
                         onClick={() => setShowDownloads(true)}

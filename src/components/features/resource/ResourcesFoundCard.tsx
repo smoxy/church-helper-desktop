@@ -72,7 +72,8 @@ export function ResourcesFoundCard({
                 <FileText className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
             </CardHeader>
             <CardContent>
-                <div className="flex items-center justify-between w-full">
+                {/* Wraps instead of clipping when the card is narrow. */}
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 w-full">
                     {/* Total Found */}
                     <div className="flex flex-col">
                         <div className="flex items-baseline gap-1">
