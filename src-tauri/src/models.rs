@@ -49,6 +49,15 @@ pub struct AppConfig {
     /// predating this field deserializes to `System` instead of failing.
     #[serde(default)]
     pub language: LanguageSetting,
+    /// Also auto-download the NEXT week's material (`GET
+    /// /api/resources/next-week`, i.e. Saturday S+7) for the enabled
+    /// categories. Opt-in (default `false`): the next week's resources are
+    /// still fetched and shown in the Dashboard's "next week" section, they
+    /// just aren't queued automatically unless this is on.
+    pub download_next_week: bool,
+    /// Hours between two periodic update checks (besides the one at
+    /// startup). Default 6; clamped to at least 1 by the scheduler.
+    pub update_check_interval_hours: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -85,6 +94,12 @@ pub struct SavingsStats {
     pub total_saved_bytes: u64,
 }
 
+/// Default for [`AppConfig::update_check_interval_hours`].
+pub const DEFAULT_UPDATE_CHECK_INTERVAL_HOURS: u32 = 6;
+/// Upper bound accepted by [`AppConfig::validate`] for the update check
+/// interval (one week).
+pub const MAX_UPDATE_CHECK_INTERVAL_HOURS: u32 = 168;
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -99,6 +114,8 @@ impl Default for AppConfig {
             tray_close_os_notice_shown: false, // Default: not shown yet
             theme: ThemeSetting::System, // Default: follow the OS
             language: LanguageSetting::System, // Default: follow the OS
+            download_next_week: false, // Default: opt-in only
+            update_check_interval_hours: DEFAULT_UPDATE_CHECK_INTERVAL_HOURS,
         }
     }
 }
@@ -111,6 +128,13 @@ impl AppConfig {
                 self.polling_interval_minutes,
             ));
         }
+        if self.update_check_interval_hours < 1
+            || self.update_check_interval_hours > MAX_UPDATE_CHECK_INTERVAL_HOURS
+        {
+            return Err(ConfigValidationError::InvalidUpdateCheckInterval(
+                self.update_check_interval_hours,
+            ));
+        }
         Ok(())
     }
 }
@@ -118,6 +142,7 @@ impl AppConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigValidationError {
     InvalidPollingInterval(u32),
+    InvalidUpdateCheckInterval(u32),
 }
 
 /// A single optimized video variant produced by the re-encoder from a
@@ -177,6 +202,12 @@ pub struct Resource {
     /// unaffected by this field and keeps using only `optimized_video_url`
     /// (the producer's compat-default, always the first/largest element).
     pub optimized_videos: Option<Vec<OptimizedVideo>>,
+    /// Id of the resource this one IMMEDIATELY supersedes (errata corrige
+    /// published under a new id, e.g. the source changed the file URL). Not
+    /// the chain root: for A -> B -> C, C carries B's id. Additive field
+    /// (adr-0003): absent on older servers, `None` then.
+    #[serde(default)]
+    pub supersedes_resource_id: Option<i64>,
 }
 
 fn deserialize_naive_to_utc<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
@@ -427,6 +458,13 @@ pub struct DownloadedFile {
     /// Whether this file has been superseded by an errata corrige
     #[serde(default)]
     pub is_superseded: bool,
+    /// Category of the downloaded resource. Used by the errata pass to spot a
+    /// live file whose resource vanished from the server while a NEW resource
+    /// of the same week + category appeared (errata with a new id). `None` for
+    /// entries written by builds that predate the field: those are simply
+    /// never matched by that heuristic.
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 /// Represents a detected errata corrige change
@@ -604,6 +642,7 @@ mod tests {
             week_date: None,
             optimized_video_url: None,
             optimized_videos: None,
+            supersedes_resource_id: None,
         };
         assert!(youtube_resource.is_youtube());
 
@@ -740,6 +779,7 @@ mod tests {
             week_date: None,
             optimized_video_url: None,
             optimized_videos: None,
+            supersedes_resource_id: None,
         };
         let week = resource.week();
         assert_eq!(week.year, 2026);
@@ -864,6 +904,7 @@ mod tests {
             week_date: NaiveDate::from_ymd_opt(2026, 5, 9),
             optimized_video_url: None,
             optimized_videos: None,
+            supersedes_resource_id: None,
         };
 
         let latest = latest_week(&[resource]);
@@ -888,10 +929,98 @@ mod tests {
             tray_close_os_notice_shown: true,
             theme: ThemeSetting::Dark,
             language: LanguageSetting::Italian,
+            download_next_week: true,
+            update_check_interval_hours: 12,
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config, deserialized);
+    }
+
+    /// `download_next_week` is opt-in, and a settings.json written before the
+    /// field (or `update_check_interval_hours`) existed must load with the
+    /// defaults instead of resetting the user's config.
+    #[test]
+    fn test_next_week_and_update_interval_defaults_and_missing_keys() {
+        let config = AppConfig::default();
+        assert!(!config.download_next_week, "next week download is opt-in");
+        assert_eq!(config.update_check_interval_hours, 6);
+
+        let json = r#"{
+            "work_directory": "/data",
+            "polling_enabled": true,
+            "polling_interval_minutes": 60,
+            "retention_days": 7,
+            "auto_download_categories": ["missioni"],
+            "download_mode": "Queue",
+            "prefer_optimized": true,
+            "autostart_enabled": false,
+            "tray_close_os_notice_shown": true,
+            "theme": "System",
+            "language": "Italian"
+        }"#;
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.download_next_week);
+        assert_eq!(config.update_check_interval_hours, 6);
+        assert_eq!(
+            config.auto_download_categories,
+            vec!["missioni".to_string()]
+        );
+        assert!(config.tray_close_os_notice_shown);
+    }
+
+    #[test]
+    fn test_config_validation_update_interval_bounds() {
+        for hours in [0, MAX_UPDATE_CHECK_INTERVAL_HOURS + 1] {
+            let config = AppConfig {
+                update_check_interval_hours: hours,
+                ..Default::default()
+            };
+            assert_eq!(
+                config.validate(),
+                Err(ConfigValidationError::InvalidUpdateCheckInterval(hours))
+            );
+        }
+        for hours in [1, 6, MAX_UPDATE_CHECK_INTERVAL_HOURS] {
+            let config = AppConfig {
+                update_check_interval_hours: hours,
+                ..Default::default()
+            };
+            assert!(config.validate().is_ok());
+        }
+    }
+
+    /// Contract C: `supersedes_resource_id` is additive and nullable — absent
+    /// (old server), `null` and a value must all deserialize.
+    #[test]
+    fn test_supersedes_resource_id_is_additive() {
+        let base = r#""id": 7, "category": "missioni", "title": "T",
+            "download_url": "https://example.com/7.zip", "thumbnail_url": null,
+            "file_type": null, "is_active": true,
+            "created_at": "2026-10-16T10:00:00""#;
+        let absent: Resource = serde_json::from_str(&format!("{{{base}}}")).unwrap();
+        assert_eq!(absent.supersedes_resource_id, None);
+        let null: Resource =
+            serde_json::from_str(&format!("{{{base}, \"supersedes_resource_id\": null}}")).unwrap();
+        assert_eq!(null.supersedes_resource_id, None);
+        let some: Resource =
+            serde_json::from_str(&format!("{{{base}, \"supersedes_resource_id\": 5}}")).unwrap();
+        assert_eq!(some.supersedes_resource_id, Some(5));
+    }
+
+    /// A registry entry written before `category` existed still loads.
+    #[test]
+    fn test_downloaded_file_missing_category_deserializes_to_none() {
+        let json = r#"{
+            "resource_id": 1,
+            "week": {"year": 2026, "week_number": 42},
+            "local_path": "/data/W42-2026-10-17/a.mp4",
+            "downloaded_at": "2026-10-16T10:00:00Z",
+            "source_url": "https://example.com/a.mp4",
+            "is_superseded": false
+        }"#;
+        let entry: DownloadedFile = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.category, None);
     }
 
     /// A settings.json written before the `theme` field existed must

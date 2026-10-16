@@ -162,6 +162,16 @@ export default function Settings() {
         }
     };
 
+    const toggleDownloadNextWeek = async (checked: boolean) => {
+        if (!config || checked === config.download_next_week) return;
+        try {
+            await updateConfig({ download_next_week: checked });
+            addToast(t(checked ? 'settings.toast.nextWeekOn' : 'settings.toast.nextWeekOff'), "success");
+        } catch (e) {
+            addToast(t('settings.toast.nextWeekError', { error: errorMessage(e) }), "error");
+        }
+    };
+
     const handleIntervalBlur = async () => {
         if (!config) return;
         if (localInterval === config.polling_interval_minutes) return;
@@ -387,6 +397,19 @@ export default function Settings() {
                         <p className="text-xs text-muted-foreground">
                             {t('settings.automation.downloadStrategyHint')}
                         </p>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-4 pt-4 border-t">
+                        <div className="space-y-0.5">
+                            <label className="text-base font-medium">{t('settings.automation.downloadNextWeek')}</label>
+                            <p className="text-sm text-muted-foreground">
+                                {t('settings.automation.downloadNextWeekHint')}
+                            </p>
+                        </div>
+                        <Switch
+                            checked={config.download_next_week}
+                            onCheckedChange={toggleDownloadNextWeek}
+                        />
                     </div>
 
                     <div className="flex items-center justify-between gap-4 pt-4 border-t">

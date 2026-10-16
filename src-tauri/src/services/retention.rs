@@ -76,7 +76,7 @@ impl FileRetentionService {
                 to: archive_path.clone(),
                 source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid filename"),
             })?;
-        let dest_path = archive_path.join(file_name);
+        let dest_path = unique_destination(&archive_path, file_name);
 
         // Move the file
         fs::rename(file_path, &dest_path).map_err(|e| FileError::MoveFileFailed {
@@ -111,7 +111,7 @@ impl FileRetentionService {
                 to: superseded_path.clone(),
                 source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid filename"),
             })?;
-        let dest_path = superseded_path.join(file_name);
+        let dest_path = unique_destination(&superseded_path, file_name);
 
         fs::rename(file_path, &dest_path).map_err(|e| FileError::MoveFileFailed {
             from: file_path.to_path_buf(),
@@ -274,7 +274,9 @@ impl FileRetentionService {
     /// production call site, so `.archive/` stayed empty forever and old
     /// week folders were never cleaned up).
     ///
-    /// - Never touches `current_week`'s folder.
+    /// - Only moves strictly PAST weeks (`week < current_week`): never the
+    ///   current week's folder, nor a future one (the next week's folder,
+    ///   created early by the "download next week" option).
     /// - Never touches a week in `busy_weeks` (per the download queue —
     ///   caller passes `DownloadQueue::weeks_with_pending_downloads`), and as
     ///   an extra filesystem-level safety net never moves a `.part` file
@@ -320,8 +322,11 @@ impl FileRetentionService {
             let Some(week) = parse_week_dir_name(&name) else {
                 continue; // not a week-named directory, leave it alone
             };
-            if &week == current_week {
-                continue; // never touch the current week
+            if &week >= current_week {
+                // Never touch the current week, nor a FUTURE one: with the
+                // "download next week" option the next week's folder
+                // (current + 1) already exists and must stay in place.
+                continue;
             }
             if busy_weeks.contains(&week) {
                 tracing::debug!(
@@ -396,6 +401,38 @@ impl FileRetentionService {
 
         Ok(archived_weeks)
     }
+}
+
+/// Destination for moving `file_name` into `dir` without ever clobbering a
+/// file already there (`fs::rename` silently overwrites on Unix and fails on
+/// Windows): returns `dir/file_name` if free, otherwise the first free
+/// `dir/<stem> (N).<ext>` (N = 2, 3, ...). Archiving twice the same basename
+/// happens for real, e.g. an errata chain A -> B -> C whose files share a name
+/// all land in the same `.superseded/`, or a week archived, re-downloaded and
+/// archived again.
+fn unique_destination(dir: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
+    let candidate = dir.join(file_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let as_path = Path::new(file_name);
+    let stem = as_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| file_name.to_string_lossy().into_owned());
+    let ext = as_path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()));
+    let ext = ext.as_deref().unwrap_or("");
+    for n in 2..10_000u32 {
+        let candidate = dir.join(format!("{stem} ({n}){ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // Pathological (10k copies of one name): fall back to a timestamped name.
+    let ts = Utc::now().timestamp_nanos_opt().unwrap_or_default();
+    dir.join(format!("{stem}-{ts}{ext}"))
 }
 
 /// Parse a week-named directory to a `WeekIdentifier`, recognizing both the
@@ -1156,5 +1193,80 @@ mod tests {
             .archive_previous_weeks(&WeekIdentifier::new(2026, 4), &HashSet::new())
             .unwrap();
         assert_eq!(archived, 0);
+    }
+
+    /// With the "download next week" option the NEXT week's folder exists
+    /// while the current week is still running: archiving must only ever
+    /// move strictly PAST weeks (`week < current_week`).
+    #[test]
+    fn test_archive_previous_weeks_never_moves_future_weeks() {
+        let (temp_dir, service) = setup_test_dir();
+        let current = WeekIdentifier::new(2026, 42);
+        let next = WeekIdentifier::new(2026, 43);
+        let past = WeekIdentifier::new(2026, 41);
+
+        for week in [&current, &next, &past] {
+            let dir = temp_dir.path().join(week.as_dir_name());
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("video.mp4"), b"content").unwrap();
+        }
+
+        let archived = service
+            .archive_previous_weeks(&current, &HashSet::new())
+            .unwrap();
+
+        assert_eq!(archived, 1, "only the past week is archived");
+        assert!(temp_dir
+            .path()
+            .join(next.as_dir_name())
+            .join("video.mp4")
+            .exists());
+        assert!(temp_dir
+            .path()
+            .join(current.as_dir_name())
+            .join("video.mp4")
+            .exists());
+        assert!(service.week_archive_path(&past).join("video.mp4").exists());
+    }
+
+    /// Archiving a file whose name already exists in the destination must
+    /// neither fail (Windows) nor overwrite the archived copy (Unix).
+    #[test]
+    fn test_archive_file_keeps_existing_destination() {
+        let (temp_dir, service) = setup_test_dir();
+        let week = WeekIdentifier::new(2026, 4);
+
+        let first = temp_dir.path().join("video.mp4");
+        fs::write(&first, b"first").unwrap();
+        let archived_first = service.archive_file(&first, &week).unwrap();
+
+        let second = temp_dir.path().join("video.mp4");
+        fs::write(&second, b"second").unwrap();
+        let archived_second = service.archive_file(&second, &week).unwrap();
+
+        assert_ne!(archived_first, archived_second);
+        assert_eq!(fs::read(&archived_first).unwrap(), b"first");
+        assert_eq!(fs::read(&archived_second).unwrap(), b"second");
+        assert_eq!(
+            archived_second.file_name().unwrap().to_string_lossy(),
+            "video (2).mp4"
+        );
+    }
+
+    /// Same for `.superseded/`: an errata chain whose files share a basename.
+    #[test]
+    fn test_archive_superseded_keeps_existing_destination() {
+        let (temp_dir, service) = setup_test_dir();
+        let week = WeekIdentifier::new(2026, 4);
+        let mut archived = Vec::new();
+        for content in [b"A".as_slice(), b"B".as_slice(), b"C".as_slice()] {
+            let file = temp_dir.path().join("mis-01.mp4");
+            fs::write(&file, content).unwrap();
+            archived.push(service.archive_superseded(&file, &week).unwrap());
+        }
+        assert_eq!(fs::read(&archived[0]).unwrap(), b"A");
+        assert_eq!(fs::read(&archived[1]).unwrap(), b"B");
+        assert_eq!(fs::read(&archived[2]).unwrap(), b"C");
+        assert_eq!(service.get_superseded_files(&week).len(), 3);
     }
 }

@@ -46,6 +46,10 @@ export interface Resource {
   // first element (compat default). >1 elements means the desktop must let
   // the user choose which one to download (see ResourceDetail).
   optimized_videos?: OptimizedVideo[]|null;
+  // Additive (contract C): id of the resource this one IMMEDIATELY supersedes
+  // (errata published under a new id). Absent/null on older servers. The
+  // errata handling is entirely backend-side; the UI never reads it.
+  supersedes_resource_id?: number|null;
 }
 
 // UI colour theme. Mirrors the Rust `ThemeSetting` enum (src-tauri/src/models.rs).
@@ -68,6 +72,11 @@ export interface AppConfig {
   tray_close_os_notice_shown: boolean;
   theme: ThemeSetting;
   language: LanguageSetting;
+  // Also auto-download next week's material (opt-in, default false). The
+  // next week's resources are fetched and shown regardless.
+  download_next_week: boolean;
+  // Hours between periodic app-update checks (default 6, 1-168).
+  update_check_interval_hours: number;
 }
 
 export interface AppStatus {

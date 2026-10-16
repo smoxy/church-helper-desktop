@@ -43,6 +43,109 @@ pub fn detect_errata_changes(
         .collect()
 }
 
+/// Detect errata corrige published under a NEW resource id (contract C:
+/// `supersedes_resource_id`), e.g. the source changed the file URL so the
+/// server created a new row instead of updating the old one.
+///
+/// Two complementary rules, both only ever targeting LIVE (not superseded)
+/// registry entries, deduplicated per entry:
+///
+/// 1. **Explicit**: a remote resource R with `supersedes_resource_id == X`
+///    supersedes the live entry for resource X (whatever week the entry was
+///    recorded in). The server said so explicitly, so this holds even if X is
+///    (transiently) still listed; the scan then skips X via
+///    [`superseded_ids`] so it is never re-downloaded.
+/// 2. **Belt-and-braces**: a live entry E (week W, category C, id X) whose id
+///    is no longer in `remote`, while `remote` contains a resource R of the
+///    same week W and category C that has NO live registry entry yet (i.e. a
+///    replacement appeared). This covers chains where the intermediate link
+///    was never downloaded here: registry holds A, server now lists only C
+///    (C supersedes B, B superseded A). Entries without a recorded category
+///    (written by older builds) are never matched by this rule, and since R
+///    must come from `remote`, a week whose fetch failed (empty list) can
+///    never trigger it.
+///
+/// Returned changes carry the OLD id in `resource_id` (so `mark_superseded`
+/// flips the old entry) and the replacement in `new_resource`.
+pub fn detect_superseded_by_new_id(
+    local_files: &[DownloadedFile],
+    remote_resources: &[Resource],
+) -> Vec<ErrataChange> {
+    use std::collections::HashSet;
+
+    let remote_ids: HashSet<i64> = remote_resources.iter().map(|r| r.id).collect();
+    let live_ids: HashSet<i64> = local_files
+        .iter()
+        .filter(|f| !f.is_superseded)
+        .map(|f| f.resource_id)
+        .collect();
+
+    let mut changes: Vec<ErrataChange> = Vec::new();
+    let mut targeted: HashSet<(i64, WeekIdentifier)> = HashSet::new();
+
+    // Rule 1: explicit supersedes_resource_id.
+    for remote in remote_resources {
+        let Some(old_id) = remote.supersedes_resource_id else {
+            continue;
+        };
+        if old_id == remote.id {
+            continue; // malformed self-reference, ignore
+        }
+        for local in local_files
+            .iter()
+            .filter(|f| f.resource_id == old_id && !f.is_superseded)
+        {
+            if targeted.insert((local.resource_id, local.week.clone())) {
+                changes.push(ErrataChange {
+                    resource_id: local.resource_id,
+                    old_file: local.clone(),
+                    new_resource: remote.clone(),
+                });
+            }
+        }
+    }
+
+    // Rule 2: same (week, category) slot taken over by a brand-new id.
+    for local in local_files.iter().filter(|f| !f.is_superseded) {
+        if remote_ids.contains(&local.resource_id) {
+            continue;
+        }
+        let Some(category) = local.category.as_deref() else {
+            continue;
+        };
+        if targeted.contains(&(local.resource_id, local.week.clone())) {
+            continue;
+        }
+        let replacement = remote_resources
+            .iter()
+            .filter(|r| {
+                r.category == category && r.week() == local.week && !live_ids.contains(&r.id)
+            })
+            .max_by_key(|r| r.id);
+        if let Some(replacement) = replacement {
+            targeted.insert((local.resource_id, local.week.clone()));
+            changes.push(ErrataChange {
+                resource_id: local.resource_id,
+                old_file: local.clone(),
+                new_resource: replacement.clone(),
+            });
+        }
+    }
+
+    changes
+}
+
+/// Ids of resources in `resources` that another listed resource explicitly
+/// supersedes (`supersedes_resource_id`). A server listing both the old and
+/// the new row is a transient inconsistency: the old one must never be
+/// (re-)downloaded, so the auto-download scan skips these ids.
+pub fn superseded_ids(resources: &[Resource]) -> std::collections::HashSet<i64> {
+    resources
+        .iter()
+        .filter_map(|r| r.supersedes_resource_id.filter(|&old| old != r.id))
+        .collect()
+}
+
 /// Find resources that are new (not yet downloaded)
 pub fn find_new_resources(
     local_files: &[DownloadedFile],
@@ -188,6 +291,7 @@ pub fn record_downloaded_file(
                 .get_effective_download_url(prefer_optimized)
                 .to_string(),
             is_superseded: false,
+            category: Some(resource.category.clone()),
         };
         upsert_downloaded_file(&mut registry, entry);
         persist_registry(app, &registry);
@@ -227,7 +331,16 @@ pub async fn process_errata(app: &AppHandle, remote: &[Resource]) {
         }
     };
 
-    let changes = detect_errata_changes(&registry_snapshot, remote);
+    let mut changes = detect_errata_changes(&registry_snapshot, remote);
+    for change in detect_superseded_by_new_id(&registry_snapshot, remote) {
+        let already = changes.iter().any(|c| {
+            c.old_file.resource_id == change.old_file.resource_id
+                && c.old_file.week == change.old_file.week
+        });
+        if !already {
+            changes.push(change);
+        }
+    }
     if changes.is_empty() {
         // No new supersessions, but still reconcile the flag: a re-download
         // since the last poll may have cleared the last superseded entry for
@@ -333,6 +446,7 @@ mod tests {
             week_date: None,
             optimized_video_url: None,
             optimized_videos: None,
+            supersedes_resource_id: None,
         }
     }
 
@@ -348,6 +462,7 @@ mod tests {
             downloaded_at,
             source_url: format!("https://example.com/file_{}.zip", resource_id),
             is_superseded: false,
+            category: None,
         }
     }
 
@@ -659,5 +774,142 @@ mod tests {
         let marked = mark_superseded(&mut registry, &[change]);
         assert!(marked.is_empty());
         assert!(!registry[0].is_superseded, "unrelated entry must stay live");
+    }
+
+    // -- errata with a new id (contract C: supersedes_resource_id) ----------
+
+    /// Week 42 of 2026: Saturday 2026-10-17.
+    fn w42() -> WeekIdentifier {
+        WeekIdentifier::new(2026, 42)
+    }
+
+    fn uicca_resource(id: i64, category: &str, supersedes: Option<i64>) -> Resource {
+        let mut r = create_resource(id, Utc.with_ymd_and_hms(2026, 10, 16, 9, 0, 0).unwrap());
+        r.category = category.to_string();
+        r.week_date = chrono::NaiveDate::from_ymd_opt(2026, 10, 17);
+        r.supersedes_resource_id = supersedes;
+        r
+    }
+
+    fn live_entry(id: i64, category: Option<&str>) -> DownloadedFile {
+        let mut f = create_downloaded_file(
+            id,
+            w42(),
+            Utc.with_ymd_and_hms(2026, 10, 16, 10, 0, 0).unwrap(),
+        );
+        f.category = category.map(str::to_string);
+        f
+    }
+
+    /// Simulates what the queue worker records once the replacement lands.
+    fn downloaded(r: &Resource) -> DownloadedFile {
+        let mut f = live_entry(r.id, Some(&r.category));
+        f.downloaded_at = Utc.with_ymd_and_hms(2026, 10, 16, 12, 0, 0).unwrap();
+        f
+    }
+
+    #[test]
+    fn test_explicit_supersedes_targets_the_old_entry() {
+        let registry = vec![live_entry(1, Some("missioni"))];
+        let b = uicca_resource(2, "missioni", Some(1));
+
+        let changes = detect_superseded_by_new_id(&registry, std::slice::from_ref(&b));
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].resource_id, 1, "the OLD id is flipped");
+        assert_eq!(changes[0].new_resource.id, 2, "the replacement is queued");
+    }
+
+    /// Full chain A -> B -> C observed poll by poll: each step supersedes
+    /// exactly the immediately preceding live entry, never twice.
+    #[test]
+    fn test_supersedes_chain_a_b_c_step_by_step() {
+        let mut registry = vec![live_entry(1, Some("missioni"))];
+
+        // Poll 1: server lists B (supersedes A).
+        let b = uicca_resource(2, "missioni", Some(1));
+        let changes = detect_superseded_by_new_id(&registry, std::slice::from_ref(&b));
+        assert_eq!(mark_superseded(&mut registry, &changes), vec![1]);
+        upsert_downloaded_file(&mut registry, downloaded(&b));
+
+        // Same snapshot again: idempotent, nothing new.
+        assert!(detect_superseded_by_new_id(&registry, std::slice::from_ref(&b)).is_empty());
+
+        // Poll 2: server lists C (supersedes B, the immediate predecessor).
+        let c = uicca_resource(3, "missioni", Some(2));
+        let changes = detect_superseded_by_new_id(&registry, std::slice::from_ref(&c));
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].resource_id, 2);
+        assert_eq!(changes[0].new_resource.id, 3);
+        assert_eq!(mark_superseded(&mut registry, &changes), vec![2]);
+        upsert_downloaded_file(&mut registry, downloaded(&c));
+
+        let live: Vec<i64> = registry
+            .iter()
+            .filter(|f| !f.is_superseded)
+            .map(|f| f.resource_id)
+            .collect();
+        assert_eq!(live, vec![3], "only C stays live");
+        assert!(detect_superseded_by_new_id(&registry, std::slice::from_ref(&c)).is_empty());
+    }
+
+    /// The intermediate link B was never seen here (offline during its
+    /// lifetime): registry holds A, the server now lists only C (supersedes
+    /// B). The explicit rule finds nothing (no B entry); the belt-and-braces
+    /// rule must still retire A because its (week, category) slot was taken
+    /// over by a new id.
+    #[test]
+    fn test_supersedes_chain_with_missed_intermediate_uses_belt_and_braces() {
+        let registry = vec![live_entry(1, Some("missioni"))];
+        let c = uicca_resource(3, "missioni", Some(2));
+
+        let changes = detect_superseded_by_new_id(&registry, std::slice::from_ref(&c));
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].resource_id, 1);
+        assert_eq!(changes[0].new_resource.id, 3);
+    }
+
+    #[test]
+    fn test_belt_and_braces_requires_a_replacement_in_the_same_slot() {
+        let registry = vec![live_entry(1, Some("missioni"))];
+
+        // Failed/empty fetch: nothing to compare against, never retire.
+        assert!(detect_superseded_by_new_id(&registry, &[]).is_empty());
+
+        // Only another category in that week: not a replacement.
+        let other_cat = uicca_resource(5, "offerte", None);
+        assert!(detect_superseded_by_new_id(&registry, &[other_cat]).is_empty());
+
+        // Same category but another week: not a replacement.
+        let mut next_week = uicca_resource(6, "missioni", None);
+        next_week.week_date = chrono::NaiveDate::from_ymd_opt(2026, 10, 24);
+        assert!(detect_superseded_by_new_id(&registry, &[next_week]).is_empty());
+
+        // The old id is still listed: nothing disappeared.
+        let still_there = uicca_resource(1, "missioni", None);
+        let newcomer = uicca_resource(7, "missioni", None);
+        assert!(detect_superseded_by_new_id(&registry, &[still_there, newcomer]).is_empty());
+    }
+
+    #[test]
+    fn test_belt_and_braces_ignores_legacy_entries_and_already_live_replacements() {
+        // Legacy entry without a recorded category: never matched.
+        let legacy = vec![live_entry(1, None)];
+        let newcomer = uicca_resource(7, "missioni", None);
+        assert!(detect_superseded_by_new_id(&legacy, std::slice::from_ref(&newcomer)).is_empty());
+
+        // The would-be replacement is already downloaded (live): not "new".
+        let registry = vec![live_entry(1, Some("missioni")), downloaded(&newcomer)];
+        assert!(detect_superseded_by_new_id(&registry, &[newcomer]).is_empty());
+    }
+
+    #[test]
+    fn test_superseded_ids_collects_explicit_predecessors() {
+        let a = uicca_resource(1, "missioni", None);
+        let b = uicca_resource(2, "missioni", Some(1));
+        let selfref = uicca_resource(9, "offerte", Some(9));
+        let ids = superseded_ids(&[a, b, selfref]);
+        assert!(ids.contains(&1));
+        assert!(!ids.contains(&2));
+        assert!(!ids.contains(&9), "self-reference is ignored");
     }
 }

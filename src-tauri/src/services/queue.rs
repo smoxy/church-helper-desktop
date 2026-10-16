@@ -51,6 +51,29 @@ fn drain_queued(queue: &mut VecDeque<Resource>, id: i64) -> bool {
     queue.len() != before
 }
 
+/// Resources the auto-download scan should consider (pure): the enabled
+/// categories of `latest`, plus those of `next` only when the user opted in to
+/// `download_next_week`. Resources another listed resource explicitly
+/// supersedes (`supersedes_resource_id`) are skipped so a transiently listed
+/// old row is never (re-)downloaded. The union is deduplicated by id.
+pub(crate) fn auto_download_candidates(
+    latest: &[Resource],
+    next: &[Resource],
+    download_next_week: bool,
+    categories: &[String],
+) -> Vec<Resource> {
+    let offered: Vec<Resource> = if download_next_week {
+        crate::services::polling::union_resources(latest, next)
+    } else {
+        latest.to_vec()
+    };
+    let superseded = crate::services::errata::superseded_ids(&offered);
+    offered
+        .into_iter()
+        .filter(|r| categories.contains(&r.category) && !superseded.contains(&r.id))
+        .collect()
+}
+
 /// Concurrency limit implied by the download mode. Free-standing so the
 /// worker's slot arithmetic can be unit-tested without spawning it.
 fn concurrency_limit(mode: &DownloadMode) -> usize {
@@ -306,7 +329,7 @@ impl DownloadQueue {
         // Read config and resources. A poisoned lock is a non-recoverable
         // internal invariant break; log and skip this scan rather than panic
         // (no-unwrap guard) — the next poll/scan will retry.
-        let (config, resources) = {
+        let (config, latest, next) = {
             let config = match state.config.read() {
                 Ok(config) => config.clone(),
                 Err(e) => {
@@ -324,8 +347,24 @@ impl DownloadQueue {
                     return;
                 }
             };
-            (config, resources)
+            let next = match state.next_week_resources.read() {
+                Ok(next) => next.clone(),
+                Err(e) => {
+                    tracing::error!(
+                        "scan_and_queue: next-week lock poisoned, skipping scan: {}",
+                        e
+                    );
+                    return;
+                }
+            };
+            (config, resources, next)
         };
+        let resources = auto_download_candidates(
+            &latest,
+            &next,
+            config.download_next_week,
+            &config.auto_download_categories,
+        );
 
         tracing::debug!(
             "Scanning {} resources for auto-download. Enabled categories: {:?}",
@@ -336,23 +375,20 @@ impl DownloadQueue {
         if let Some(work_dir) = &config.work_directory {
             let mut queued_count = 0;
             for resource in resources {
-                if config.auto_download_categories.contains(&resource.category) {
-                    // Check if already downloaded
-                    let is_downloaded =
-                        crate::services::download::DownloadService::check_file_exists(
-                            &resource,
-                            work_dir,
-                            config.prefer_optimized,
-                        );
-                    if !is_downloaded {
-                        tracing::trace!(
-                            "Queuing for auto-download: {} ({})",
-                            resource.title,
-                            resource.category
-                        );
-                        self.add_task(app.clone(), resource).await;
-                        queued_count += 1;
-                    }
+                // Check if already downloaded
+                let is_downloaded = crate::services::download::DownloadService::check_file_exists(
+                    &resource,
+                    work_dir,
+                    config.prefer_optimized,
+                );
+                if !is_downloaded {
+                    tracing::trace!(
+                        "Queuing for auto-download: {} ({})",
+                        resource.title,
+                        resource.category
+                    );
+                    self.add_task(app.clone(), resource).await;
+                    queued_count += 1;
                 }
             }
             tracing::info!(
@@ -797,6 +833,7 @@ mod tests {
             week_date: None,
             optimized_video_url: None,
             optimized_videos: None,
+            supersedes_resource_id: None,
         }
     }
 
@@ -934,5 +971,53 @@ mod tests {
         assert_eq!(weeks.len(), 2);
         assert!(weeks.contains(&WeekIdentifier::new(2026, 4)));
         assert!(weeks.contains(&WeekIdentifier::new(2025, 52)));
+    }
+
+    fn categorized(id: i64, category: &str, supersedes: Option<i64>) -> Resource {
+        let mut r = make_resource(id, 2026, 10, 16);
+        r.category = category.to_string();
+        r.supersedes_resource_id = supersedes;
+        r
+    }
+
+    /// `latest ∪ next` wiring of the scan: next-week resources are queued
+    /// only with `download_next_week`, always filtered by category.
+    #[test]
+    fn test_auto_download_candidates_union_gated_by_next_week_flag() {
+        let latest = vec![
+            categorized(1, "missioni", None),
+            categorized(2, "altro", None),
+        ];
+        let next = vec![
+            categorized(10, "missioni", None),
+            categorized(11, "altro", None),
+        ];
+        let cats = vec!["missioni".to_string()];
+
+        let off: Vec<i64> = auto_download_candidates(&latest, &next, false, &cats)
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(off, vec![1]);
+
+        let on: Vec<i64> = auto_download_candidates(&latest, &next, true, &cats)
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(on, vec![1, 10]);
+    }
+
+    #[test]
+    fn test_auto_download_candidates_skip_explicitly_superseded() {
+        let latest = vec![
+            categorized(1, "missioni", None),
+            categorized(2, "missioni", Some(1)),
+        ];
+        let cats = vec!["missioni".to_string()];
+        let ids: Vec<i64> = auto_download_candidates(&latest, &[], false, &cats)
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, vec![2], "the superseded row is never queued");
     }
 }

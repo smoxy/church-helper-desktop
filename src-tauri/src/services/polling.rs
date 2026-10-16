@@ -4,7 +4,7 @@
 
 use crate::commands::AppState;
 use crate::constants::api_base_url;
-use crate::models::{CategoriesCountResponse, ResourceListResponse, WeekIdentifier};
+use crate::models::{CategoriesCountResponse, Resource, ResourceListResponse, WeekIdentifier};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
@@ -287,6 +287,109 @@ async fn fetch_latest_week(
     parse_latest_week_body(&body)
 }
 
+/// Path of the next-week endpoint (contract A): same schema as latest-week,
+/// resources whose `week_date` is the Saturday after the current one.
+const NEXT_WEEK_PATH: &str = "/api/resources/next-week";
+
+/// `cache.json` key holding the last next-week list (separate from
+/// `resources`, the latest-week list). Read back at startup in `lib.rs`.
+pub const NEXT_WEEK_CACHE_KEY: &str = "next_week_resources";
+
+/// Upper bound for the best-effort next-week request.
+const NEXT_WEEK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Decode a next-week answer, best-effort: ANY non-2xx status (an older
+/// server answers 422 because `/resources/{resource_id}` captures the path, or
+/// 404), or a body that doesn't decode, yields an empty list plus a debug log —
+/// never an error. Pure (status + body) so the policy is unit-testable.
+fn parse_next_week_response(status: reqwest::StatusCode, body: &str) -> Vec<Resource> {
+    if !status.is_success() {
+        tracing::debug!(
+            "Next-week endpoint unavailable (HTTP {}), treating as empty",
+            status
+        );
+        return Vec::new();
+    }
+    match serde_json::from_str::<ResourceListResponse>(body) {
+        Ok(parsed) => parsed.resources,
+        Err(e) => {
+            let preview: String = body.chars().take(200).collect();
+            tracing::debug!(
+                "Next-week decode failed, treating as empty: {}; body starts: {}",
+                e,
+                preview
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// Fetch the next week's resources, best-effort like `refresh_categories`:
+/// network errors, non-2xx answers and decode failures all degrade to an empty
+/// list (debug log), so a missing/old endpoint can never fail the poll.
+pub(crate) async fn fetch_next_week(client: &reqwest::Client, url: &str) -> Vec<Resource> {
+    // Bounded: a hanging optional endpoint must never stall the poll cycle.
+    let response = match client.get(url).timeout(NEXT_WEEK_TIMEOUT).send().await {
+        Ok(response) => response,
+        Err(e) => {
+            tracing::debug!("Next-week fetch failed, treating as empty: {}", e);
+            return Vec::new();
+        }
+    };
+    let status = response.status();
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::debug!("Next-week body read failed, treating as empty: {}", e);
+            return Vec::new();
+        }
+    };
+    parse_next_week_response(status, &body)
+}
+
+/// `latest ∪ next`, deduplicated by id (latest wins on a clash). This is the
+/// set every "what does the server currently offer" consumer works on: the
+/// errata pass, the file-size cache invalidation and the auto-download scan.
+/// `latest_week()`, `current_week` and archiving keep using `latest` only.
+pub(crate) fn union_resources(latest: &[Resource], next: &[Resource]) -> Vec<Resource> {
+    let mut all: Vec<Resource> = latest.to_vec();
+    let known: std::collections::HashSet<i64> = latest.iter().map(|r| r.id).collect();
+    all.extend(next.iter().filter(|r| !known.contains(&r.id)).cloned());
+    all
+}
+
+/// Drop file-size cache entries whose URL changed for the same resource id
+/// (errata) or no longer belongs to any offered resource. `old_all`/`new_all`
+/// are the `latest ∪ next` snapshots before/after this poll, so next-week
+/// sizes survive. Returns how many entries were removed.
+pub(crate) fn invalidate_size_cache(
+    cache: &mut std::collections::HashMap<String, u64>,
+    old_all: &[Resource],
+    new_all: &[Resource],
+) -> usize {
+    let old_url_map: std::collections::HashMap<i64, &str> = old_all
+        .iter()
+        .map(|r| (r.id, r.download_url.as_str()))
+        .collect();
+    let current_urls: std::collections::HashSet<&str> =
+        new_all.iter().map(|r| r.download_url.as_str()).collect();
+
+    let mut removed = 0;
+    for new_resource in new_all {
+        if let Some(old_url) = old_url_map.get(&new_resource.id) {
+            if *old_url != new_resource.download_url && cache.remove(*old_url).is_some() {
+                // Same resource ID but URL changed (errata corrige)
+                tracing::debug!("Invalidated cache for changed URL: {}", old_url);
+                removed += 1;
+            }
+        }
+    }
+
+    let before = cache.len();
+    cache.retain(|url, _| current_urls.contains(url.as_str()));
+    removed + (before - cache.len())
+}
+
 /// Perform one full poll cycle: fetch the latest week (a single fail-fast
 /// attempt), invalidate the file-size cache for changed/removed URLs, update
 /// state and status, persist `cache.json`, emit UI events, refresh the category
@@ -301,59 +404,43 @@ pub async fn poll_once(app: &AppHandle) -> Result<ResourceListResponse, String> 
 
     let api_response = fetch_latest_week(&state.shared_http_client, &url).await?;
 
-    // Get old resources for cache invalidation
-    let old_resources = {
+    // Next week (contract A), best-effort: never fails the poll. Fetched even
+    // when `download_next_week` is off, so the Dashboard can show what's
+    // coming; that flag only gates the auto-download scan (queue.rs).
+    let next_url = format!("{}{}", api_base_url(), NEXT_WEEK_PATH);
+    let next_resources = fetch_next_week(&state.shared_http_client, &next_url).await;
+
+    // Old `latest ∪ next` snapshot, for cache invalidation.
+    let old_all = {
         let resources = state.resources.read().map_err(|e| e.to_string())?;
-        resources.clone()
+        let next = state
+            .next_week_resources
+            .read()
+            .map_err(|e| e.to_string())?;
+        union_resources(&resources, &next)
     };
 
-    // Update resources
+    // Update resources (latest and next are kept in separate state).
     {
         let mut resources = state.resources.write().map_err(|e| e.to_string())?;
         *resources = api_response.resources.clone();
     }
+    {
+        let mut next = state
+            .next_week_resources
+            .write()
+            .map_err(|e| e.to_string())?;
+        *next = next_resources.clone();
+    }
 
-    // Invalidate cache for changed/removed URLs
+    let all_resources = union_resources(&api_response.resources, &next_resources);
+
+    // Invalidate cache for changed/removed URLs (over latest ∪ next).
     {
         let mut cache = state.file_size_cache.write().map_err(|e| e.to_string())?;
-
-        // Build a map of old URLs by resource ID
-        let old_url_map: std::collections::HashMap<i64, String> = old_resources
-            .iter()
-            .map(|r| (r.id, r.download_url.clone()))
-            .collect();
-
-        // Build a set of current URLs
-        let current_urls: std::collections::HashSet<String> = api_response
-            .resources
-            .iter()
-            .map(|r| r.download_url.clone())
-            .collect();
-
-        // Remove cache entries for URLs that changed or no longer exist
-        for new_resource in &api_response.resources {
-            if let Some(old_url) = old_url_map.get(&new_resource.id) {
-                if old_url != &new_resource.download_url {
-                    // Same resource ID but URL changed (errata corrige)
-                    cache.remove(old_url);
-                    tracing::debug!("Invalidated cache for changed URL: {}", old_url);
-                }
-            }
-        }
-
-        // Remove cache entries for URLs that no longer exist
-        let keys_to_remove: Vec<String> = cache
-            .keys()
-            .filter(|url| !current_urls.contains(*url))
-            .cloned()
-            .collect();
-
-        for key in &keys_to_remove {
-            cache.remove(key);
-        }
-
-        if !keys_to_remove.is_empty() {
-            tracing::debug!("Removed {} stale cache entries", keys_to_remove.len());
+        let removed = invalidate_size_cache(&mut cache, &old_all, &all_resources);
+        if removed > 0 {
+            tracing::debug!("Removed {} stale cache entries", removed);
         }
     }
 
@@ -379,6 +466,11 @@ pub async fn poll_once(app: &AppHandle) -> Result<ResourceListResponse, String> 
 
     // Emit event to frontend
     let _ = app.emit("resources-updated", &api_response);
+    let next_payload = ResourceListResponse {
+        count: u32::try_from(next_resources.len()).unwrap_or(u32::MAX),
+        resources: next_resources.clone(),
+    };
+    let _ = app.emit("next-week-resources-updated", &next_payload);
     let _ = app.emit("poll-tick", ());
 
     // Second, independent GET for the full category catalog (best-effort:
@@ -390,6 +482,9 @@ pub async fn poll_once(app: &AppHandle) -> Result<ResourceListResponse, String> 
     let store = app.store("cache.json").map_err(|e| e.to_string())?;
     let json = serde_json::to_value(&api_response.resources).map_err(|e| e.to_string())?;
     store.set("resources", json);
+    // Separate cache key: the latest-week list keeps its own semantics.
+    let next_json = serde_json::to_value(&next_resources).map_err(|e| e.to_string())?;
+    store.set(NEXT_WEEK_CACHE_KEY, next_json);
 
     // Save file size cache (exclude negative cache entries from persistence)
     let cache_snapshot = {
@@ -406,15 +501,16 @@ pub async fn poll_once(app: &AppHandle) -> Result<ResourceListResponse, String> 
     store.save().map_err(|e| e.to_string())?;
 
     tracing::info!(
-        "Poll completed: {} resources fetched",
-        api_response.resources.len()
+        "Poll completed: {} resources fetched (+{} next week)",
+        api_response.resources.len(),
+        next_resources.len()
     );
 
     // Reconcile the errata registry against this fresh snapshot BEFORE the
     // auto-download scan: any re-queued errata corrige lands in the queue
     // first, so the scan's own check_file_exists pass is deduped instead of
     // racing a second download of the same file (adr-0007).
-    crate::services::process_errata(app, &api_response.resources).await;
+    crate::services::process_errata(app, &all_resources).await;
 
     // Initial check for auto-downloads
     state.download_queue.scan_and_queue(app.clone()).await;
@@ -627,5 +723,128 @@ mod tests {
             .await;
         assert!(matches!(outcome, RetryOutcome::Cancelled));
         assert_eq!(calls, 1, "only the initial attempt runs before the cancel");
+    }
+
+    fn res(id: i64, url: &str) -> Resource {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "category": "missioni",
+            "title": format!("R{id}"),
+            "download_url": url,
+            "thumbnail_url": null,
+            "file_type": null,
+            "is_active": true,
+            "created_at": "2026-10-16T10:00:00"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn next_week_non_2xx_is_empty_never_an_error() {
+        // 422: old servers route /resources/next-week to /resources/{id}.
+        for code in [404u16, 422, 500, 503] {
+            let status = reqwest::StatusCode::from_u16(code).unwrap();
+            assert!(parse_next_week_response(status, r#"{"detail":"x"}"#).is_empty());
+        }
+        // 2xx but not the expected schema / not JSON.
+        assert!(parse_next_week_response(reqwest::StatusCode::OK, "<html/>").is_empty());
+        assert!(parse_next_week_response(reqwest::StatusCode::OK, r#"{"detail":1}"#).is_empty());
+        // Contract A empty answer.
+        assert!(
+            parse_next_week_response(reqwest::StatusCode::OK, r#"{"count":0,"resources":[]}"#)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn next_week_valid_body_decodes() {
+        let body = serde_json::json!({"count": 1, "resources": [res(9, "https://x/9.zip")]});
+        let parsed = parse_next_week_response(reqwest::StatusCode::OK, &body.to_string());
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].id, 9);
+    }
+
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder().no_proxy().build().unwrap()
+    }
+
+    /// End to end over real HTTP: an old server's 422 and a 404 both degrade
+    /// to an empty list.
+    #[tokio::test]
+    async fn next_week_fetch_422_and_404_are_empty() {
+        for status in ["422 Unprocessable Entity", "404 Not Found"] {
+            let base = crate::services::test_http::serve_once(
+                status,
+                "application/json",
+                r#"{"detail":[{"msg":"value is not a valid integer"}]}"#,
+            )
+            .await;
+            let url = format!("{base}{NEXT_WEEK_PATH}");
+            assert!(
+                fetch_next_week(&test_client(), &url).await.is_empty(),
+                "{status}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn next_week_fetch_unreachable_is_empty() {
+        // Bind then drop: the port is (almost certainly) closed now.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let url = format!("http://{addr}{NEXT_WEEK_PATH}");
+        assert!(fetch_next_week(&test_client(), &url).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn next_week_fetch_200_returns_resources() {
+        let body = serde_json::json!({"count": 1, "resources": [res(9, "https://x/9.zip")]});
+        let base =
+            crate::services::test_http::serve_once("200 OK", "application/json", &body.to_string())
+                .await;
+        let url = format!("{base}{NEXT_WEEK_PATH}");
+        let fetched = fetch_next_week(&test_client(), &url).await;
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].id, 9);
+    }
+
+    #[test]
+    fn union_keeps_latest_and_appends_new_next_ids() {
+        let latest = vec![res(1, "https://x/1"), res(2, "https://x/2")];
+        let next = vec![res(2, "https://x/2-dup"), res(3, "https://x/3")];
+        let all = union_resources(&latest, &next);
+        let ids: Vec<i64> = all.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert_eq!(all[1].download_url, "https://x/2", "latest wins on a clash");
+        assert_eq!(union_resources(&latest, &[]).len(), 2);
+    }
+
+    /// Cache invalidation runs over latest ∪ next: next-week sizes survive,
+    /// URLs gone from both lists are dropped, a changed URL for the same id
+    /// is dropped.
+    #[test]
+    fn size_cache_invalidation_uses_the_union() {
+        let mut cache = std::collections::HashMap::new();
+        cache.insert("https://x/1".to_string(), 10);
+        cache.insert("https://x/next".to_string(), 20);
+        cache.insert("https://x/gone".to_string(), 30);
+        cache.insert("https://x/old-2".to_string(), 40);
+
+        let old_all = vec![
+            res(1, "https://x/1"),
+            res(2, "https://x/old-2"),
+            res(4, "https://x/gone"),
+        ];
+        let new_latest = vec![res(1, "https://x/1"), res(2, "https://x/new-2")];
+        let new_next = vec![res(3, "https://x/next")];
+        let new_all = union_resources(&new_latest, &new_next);
+
+        let removed = invalidate_size_cache(&mut cache, &old_all, &new_all);
+        assert_eq!(removed, 2);
+        assert!(cache.contains_key("https://x/1"));
+        assert!(cache.contains_key("https://x/next"), "next-week size kept");
+        assert!(!cache.contains_key("https://x/gone"));
+        assert!(!cache.contains_key("https://x/old-2"));
     }
 }

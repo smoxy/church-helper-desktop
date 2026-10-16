@@ -13,11 +13,14 @@ import { ResourceCard } from "../components/features/resource/ResourceCard";
 import { ResourcesFoundCard } from "../components/features/resource/ResourcesFoundCard";
 import { DownloadsModal } from "../components/features/resource/DownloadsModal";
 import { StaleWeekBanner } from "../components/features/dashboard/StaleWeekBanner";
+import { NextWeekSection } from "../components/features/dashboard/NextWeekSection";
 
 export default function Dashboard() {
     const { t } = useI18n();
     const status = useAppStore(s => s.status);
     const resources = useAppStore(s => s.resources);
+    const nextWeekResources = useAppStore(s => s.nextWeekResources);
+    const downloadNextWeek = useAppStore(s => s.config?.download_next_week ?? false);
     const isLoading = useAppStore(s => s.isLoading);
     const error = useAppStore(s => s.error);
     const summary = useAppStore(s => s.summary);
@@ -136,6 +139,12 @@ export default function Dashboard() {
                     )}
                 </div>
             </div>
+
+            <NextWeekSection
+                resources={nextWeekResources}
+                autoDownloadEnabled={downloadNextWeek}
+                onSelect={setSelectedResource}
+            />
 
             {selectedResource && (
                 <ResourceDetail

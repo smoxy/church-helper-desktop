@@ -39,6 +39,10 @@ interface AppState {
   config: AppConfig|null;
   status: AppStatus|null;
   resources: Resource[];
+  // Next week's resources (backend `get_next_week_resources` +
+  // `next-week-resources-updated`), shown in the Dashboard's dedicated
+  // section. Kept apart from `resources` (current week).
+  nextWeekResources: Resource[];
   activeDownloads: Record<number, ActiveDownload>;
   summary: ResourceSummary|null;
   // Batched per-resource status (downloaded flag + cached sizes), keyed by
@@ -82,6 +86,14 @@ interface AppState {
 const STATUS_AFFECTING_CONFIG_FIELDS =
     new Set<keyof AppConfig>(
         ['prefer_optimized', 'work_directory', 'auto_download_categories']);
+
+// A resource id the UI can actually display: current week or next week.
+function findKnownResource(
+    state: Pick<AppState, 'resources'|'nextWeekResources'>,
+    id: number): Resource|undefined {
+  return state.resources.find(r => r.id === id) ??
+      state.nextWeekResources.find(r => r.id === id);
+}
 
 // Simple debounce helper
 function debounce<T extends (...args: never[]) => unknown>(
@@ -129,6 +141,7 @@ export const useAppStore = create<AppState>(
       config: null,
       status: null,
       resources: [],
+      nextWeekResources: [],
       archivedWeeks: [],
       isLoading: true,
       error: null,
@@ -142,12 +155,13 @@ export const useAppStore = create<AppState>(
           set({isLoading: true, error: null});
 
           const
-              [config, status, resources, summary, resourceStatuses,
-               allCategories, savingsStats] =
+              [config, status, resources, nextWeekResources, summary,
+               resourceStatuses, allCategories, savingsStats] =
                   await Promise.all([
                     invoke<AppConfig>('get_config'),
                     invoke<AppStatus>('get_status'),
                     invoke<Resource[]>('get_resources'),
+                    invoke<Resource[]>('get_next_week_resources'),
                     invoke<ResourceSummary>('get_resource_summary'),
                     invoke<Record<number, ResourceStatus>>(
                         'get_resources_status'),
@@ -176,6 +190,7 @@ export const useAppStore = create<AppState>(
             config,
             status,
             resources,
+            nextWeekResources,
             summary,
             resourceStatuses,
             allCategories,
@@ -211,6 +226,13 @@ export const useAppStore = create<AppState>(
             // Also refresh status to update last poll time
             invoke<AppStatus>('get_status').then(status => set({status}));
             debouncedFetchSummary();
+            debouncedFetchStatuses();
+          }),
+
+          // Next week's resources, refreshed by every poll (best-effort on
+          // the backend: an empty list when not published or unsupported).
+          listen<ResourceListResponse>('next-week-resources-updated', (event) => {
+            set({nextWeekResources: event.payload.resources});
             debouncedFetchStatuses();
           }),
 
@@ -272,8 +294,9 @@ export const useAppStore = create<AppState>(
                     queuePosition: item.position,
                     status: 'pending'  // Ensure it's marked pending if in queue
                   };
-                } else {
-                  // New item from queue we didn't know about? Add it.
+                } else if (findKnownResource(state, item.id)) {
+                  // Queued item not tracked yet (e.g. auto-download): add it.
+                  // Ids the store doesn't know are ignored.
                   newActiveDownloads[item.id] = {
                     progress: 0,
                     status: 'pending',
@@ -313,6 +336,8 @@ export const useAppStore = create<AppState>(
                 };
               }
 
+              // Ignore ids the store doesn't know.
+              if (!findKnownResource(state, resourceId)) return state;
               console.log(`[DownloadEvent] Adding new resource ${
                   resourceId} to activeDownloads`);
               return {
@@ -363,8 +388,7 @@ export const useAppStore = create<AppState>(
             // never goes out with missing data just because the frontend
             // hadn't cached the sizes yet (collaudo bug).
             if (optimized) {
-              const title = get().resources.find(r => r.id === resourceId)
-                                ?.title ??
+              const title = findKnownResource(get(), resourceId)?.title ??
                   tGlobal('celebration.fallbackTitle');
               useCelebrationStore.getState().addCelebration({
                 resourceId,
@@ -395,7 +419,11 @@ export const useAppStore = create<AppState>(
             set(state => {
               const current = state.activeDownloads[resourceId];
               if (!current) {
-                // Failed download for unknown resource - add it to show the error
+                // Ignore ids the store doesn't know (neither tracked nor in
+                // the current/next week lists): nothing can display them.
+                if (!findKnownResource(state, resourceId)) return state;
+                // Failed auto-download for a known resource: add it to show
+                // the error
                 return {
                   activeDownloads: {
                     ...state.activeDownloads,
@@ -461,6 +489,8 @@ export const useAppStore = create<AppState>(
           listen<ErrataDetectedPayload>('errata-detected', (event) => {
             invoke<AppStatus>('get_status').then(status => set({status}));
             invoke<Resource[]>('get_resources').then(resources => set({resources}));
+            invoke<Resource[]>('get_next_week_resources')
+                .then(nextWeekResources => set({nextWeekResources}));
             debouncedFetchSummary();
             debouncedFetchStatuses();
 

@@ -8,7 +8,7 @@ use crate::models::{
     SavingsStats, WeekIdentifier,
 };
 use crate::services::download::{STATUS_CANCELLED, STATUS_PAUSED};
-use crate::services::{DownloadQueue, PollingService, RetentionScheduler};
+use crate::services::{DownloadQueue, PollingService, RetentionScheduler, UpdateScheduler};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,6 +21,12 @@ pub struct AppState {
     pub config: RwLock<AppConfig>,
     pub current_week: RwLock<Option<WeekIdentifier>>,
     pub resources: RwLock<Vec<Resource>>,
+    /// Next week's resources (`GET /api/resources/next-week`, contract A),
+    /// kept apart from `resources` (latest week): `latest_week()`,
+    /// `current_week` and archiving only ever look at `resources`. Refreshed
+    /// best-effort by every poll (empty when the endpoint is missing/failing),
+    /// persisted under its own `cache.json` key.
+    pub next_week_resources: RwLock<Vec<Resource>>,
     pub status: RwLock<AppStatus>,
     /// Full category catalog from `categories/counts`, independent of the
     /// current week's resources so Settings can list (and re-enable)
@@ -56,6 +62,12 @@ pub struct AppState {
     /// Handle to the background retention scheduler, so it can be stopped
     /// cleanly on app exit alongside `polling_service`.
     pub retention_scheduler: RwLock<Option<RetentionScheduler>>,
+    /// Handle to the periodic app-update checker, stopped on exit alongside
+    /// the other schedulers.
+    pub update_scheduler: RwLock<Option<UpdateScheduler>>,
+    /// In-flight guard for the update check (startup + periodic): a second
+    /// check never starts while one is running (incl. its consent dialog).
+    pub update_check_in_flight: AtomicBool,
     /// Whether the system tray icon was created successfully at setup.
     /// `false` on Linux systems missing libappindicator3/
     /// libayatana-appindicator3 (see `lib.rs::setup_tray`): the window's
@@ -88,6 +100,7 @@ impl Default for AppState {
             config: RwLock::new(AppConfig::default()),
             current_week: RwLock::new(None),
             resources: RwLock::new(Vec::new()),
+            next_week_resources: RwLock::new(Vec::new()),
             status: RwLock::new(AppStatus::default()),
             all_categories: RwLock::new(Vec::new()),
             download_signals: RwLock::new(HashMap::new()),
@@ -98,6 +111,8 @@ impl Default for AppState {
             shared_http_client: reqwest::Client::new(),
             polling_service: RwLock::new(None),
             retention_scheduler: RwLock::new(None),
+            update_scheduler: RwLock::new(None),
+            update_check_in_flight: AtomicBool::new(false),
             tray_available: AtomicBool::new(false),
         }
     }
@@ -259,6 +274,15 @@ pub fn get_savings_stats(state: State<'_, AppState>) -> Result<SavingsStats, Com
 #[tauri::command]
 pub fn get_resources(state: State<'_, AppState>) -> Result<Vec<Resource>, CommandError> {
     let resources = state.resources.read()?;
+    Ok(resources.clone())
+}
+
+/// Get the next week's resources (last best-effort `next-week` fetch, or the
+/// cached list at startup). Live updates arrive via the
+/// `next-week-resources-updated` event.
+#[tauri::command]
+pub fn get_next_week_resources(state: State<'_, AppState>) -> Result<Vec<Resource>, CommandError> {
+    let resources = state.next_week_resources.read()?;
     Ok(resources.clone())
 }
 
@@ -872,8 +896,13 @@ pub async fn get_resources_status(
 ) -> Result<HashMap<i64, ResourceStatus>, CommandError> {
     // Snapshot everything under short read locks, then compute off the async
     // runtime. No lock guard is ever held across the await (spawn_blocking).
+    // Latest ∪ next: the Dashboard's next-week section shows the same
+    // per-resource download state as the current week.
     let (resources, registry, work_dir, prefer_optimized, size_cache) = {
-        let resources = state.resources.read()?.clone();
+        let resources = crate::services::polling::union_resources(
+            &state.resources.read()?,
+            &state.next_week_resources.read()?,
+        );
         let registry = state.downloaded_files.read()?.clone();
         let (work_dir, prefer_optimized) = {
             let config = state.config.read()?;
@@ -964,6 +993,7 @@ mod tests {
             week_date: None,
             optimized_video_url: None,
             optimized_videos: None,
+            supersedes_resource_id: None,
         }
     }
 
@@ -979,6 +1009,7 @@ mod tests {
             downloaded_at: resource.created_at,
             source_url: resource.download_url.clone(),
             is_superseded: superseded,
+            category: None,
         }
     }
 
@@ -1126,6 +1157,7 @@ mod tests {
             downloaded_at: r.created_at,
             source_url: r.download_url.clone(),
             is_superseded: false,
+            category: None,
         }];
 
         // No derived dest yet → not downloaded despite the other-week file.

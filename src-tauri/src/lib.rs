@@ -165,6 +165,18 @@ pub fn run() {
                 }
             }
 
+            // Cached next-week list (own key, see polling::NEXT_WEEK_CACHE_KEY).
+            // Absent or malformed -> empty, never a startup error.
+            if let Some(json) = cache_store.get(services::polling::NEXT_WEEK_CACHE_KEY) {
+                if let Ok(next) = serde_json::from_value::<Vec<Resource>>(json.clone()) {
+                    tracing::info!("Loaded {} cached next-week resources", next.len());
+                    *app_state
+                        .next_week_resources
+                        .write()
+                        .map_err(|e| format!("Failed to write cached next week: {}", e))? = next;
+                }
+            }
+
             // Load the persisted savings counter (A2). Lives in the `stats`
             // key of `settings.json` (not `cache.json`, which the rest of
             // this file treats as disposable/derived): the total must survive
@@ -359,24 +371,25 @@ pub fn run() {
                     .map_err(|e| format!("Failed to show main window: {}", e))?;
             }
 
-            // Check for app updates in the background: download automatically
-            // if one is found, then ask for explicit confirmation before
-            // installing and restarting. Never installs silently (policy
-            // from bl-desktop-autoupdate: notify + explicit consent only).
+            // App updates: a check shortly after startup, then periodically
+            // (services::updater). Our endpoint first, GitHub only as a
+            // fallback; download in background, install ONLY after explicit
+            // confirmation (bl-desktop-autoupdate: never silent). With the
+            // debug API override the primary endpoint is the stub's.
             if constants::is_api_base_overridden() {
-                // Local test session against a stub backend: do not contact
-                // the GitHub update endpoint (avoids noisy expected failures
-                // and keeps test runs fully local).
-                tracing::info!("API base override active: skipping update check");
-            } else {
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    // Let the rest of startup (initial poll, retention, tray,
-                    // window) settle first.
-                    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                    check_for_updates(app_handle).await;
-                });
+                tracing::info!(
+                    "API base override active: update checks go to {}",
+                    constants::api_base_url()
+                );
             }
+            let update_scheduler = services::UpdateScheduler::new();
+            update_scheduler.start(app.handle().clone());
+            *app
+                .state::<AppState>()
+                .update_scheduler
+                .write()
+                .map_err(|e| format!("Failed to store update scheduler handle: {}", e))? =
+                Some(update_scheduler);
 
             Ok(())
         })
@@ -416,6 +429,7 @@ pub fn run() {
             commands::set_config,
             commands::get_status,
             commands::get_resources,
+            commands::get_next_week_resources,
             commands::get_all_categories,
             commands::force_poll,
             commands::select_work_directory,
@@ -644,8 +658,8 @@ fn maybe_notify_first_tray_close(app: &tauri::AppHandle) {
     }
 }
 
-/// Clean shutdown triggered from the tray menu's "Esci": stop the polling
-/// and retention background schedulers, pause (not cancel) any active
+/// Clean shutdown triggered from the tray menu's "Esci": stop the polling,
+/// retention and update background schedulers, pause (not cancel) any active
 /// downloads so their `.part` file is kept for resume instead of being
 /// deleted or torn mid-write (see `services/download.rs`: `STATUS_PAUSED`
 /// keeps the `.part` file, `STATUS_CANCELLED` deletes it), give in-flight
@@ -664,6 +678,11 @@ async fn shutdown_and_exit(app: tauri::AppHandle) {
         }
     }
     if let Ok(mut guard) = state.retention_scheduler.write() {
+        if let Some(scheduler) = guard.take() {
+            scheduler.stop();
+        }
+    }
+    if let Ok(mut guard) = state.update_scheduler.write() {
         if let Some(scheduler) = guard.take() {
             scheduler.stop();
         }
@@ -691,208 +710,6 @@ async fn shutdown_and_exit(app: tauri::AppHandle) {
 
     tracing::info!("Clean shutdown complete, exiting");
     app.exit(0);
-}
-
-/// Check for a new app version against the configured updater endpoint
-/// (`plugins.updater.endpoints` in `tauri.conf.json`, currently the GitHub
-/// Release `latest.json` manifest). If one is available, download it in the
-/// background, then show a confirmation dialog before installing and
-/// restarting — the user always has the final say, there is no silent
-/// install (bl-desktop-autoupdate).
-///
-/// No-ops quietly (debug/warn log only) if the check or download fails, e.g.
-/// no network connectivity: this must never crash or block startup.
-async fn check_for_updates(app: tauri::AppHandle) {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-    use tauri_plugin_updater::UpdaterExt;
-
-    if updater_pubkey_is_placeholder(&app) {
-        tracing::info!(
-            "Auto-update non configurato (pubkey placeholder): salto il check. Vedi UPDATER_SETUP.md"
-        );
-        return;
-    }
-
-    let updater = match app.updater() {
-        Ok(updater) => updater,
-        Err(e) => {
-            tracing::warn!("Updater not available: {}", e);
-            return;
-        }
-    };
-
-    let update = match updater.check().await {
-        Ok(Some(update)) => update,
-        Ok(None) => {
-            tracing::debug!("No update available");
-            return;
-        }
-        Err(e) => {
-            // Expected in the common case: no network, or the endpoint isn't
-            // reachable/configured yet (placeholder pubkey, see
-            // UPDATER_SETUP.md). Never fatal.
-            tracing::warn!("Update check failed: {}", e);
-            return;
-        }
-    };
-
-    // The user already dismissed this exact version with "Più tardi": don't
-    // re-download it or nag again on every launch. A newer version won't
-    // match the persisted string and will prompt as usual.
-    if update_version_declined(&app, &update.version) {
-        tracing::info!(
-            "Update {} was previously declined by the user, skipping",
-            update.version
-        );
-        return;
-    }
-
-    tracing::info!(
-        "Update available: {} -> {}, downloading in background",
-        update.current_version,
-        update.version
-    );
-
-    let download_result = update
-        .download(
-            |_chunk_size, _content_length| {},
-            || tracing::debug!("Update download finished"),
-        )
-        .await;
-
-    let bytes = match download_result {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            tracing::error!("Update download failed: {}", e);
-            return;
-        }
-    };
-
-    tracing::info!(
-        "Update {} downloaded, asking for confirmation before installing",
-        update.version
-    );
-
-    // Explicit consent required before touching anything on disk: ask via a
-    // native dialog (tauri-plugin-dialog, already used elsewhere for the
-    // folder picker). `.show()`'s callback runs off the calling task, so
-    // bridge it back into this async function with a oneshot channel.
-    let (confirmed_tx, confirmed_rx) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .message(format!(
-            "È disponibile la versione {} (attuale: {}). Vuoi installarla ora? L'app verrà riavviata.",
-            update.version, update.current_version
-        ))
-        .title("Aggiornamento disponibile")
-        .kind(MessageDialogKind::Info)
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            "Installa e riavvia".to_string(),
-            "Più tardi".to_string(),
-        ))
-        .show(move |confirmed| {
-            let _ = confirmed_tx.send(confirmed);
-        });
-
-    let confirmed = confirmed_rx.await.unwrap_or(false);
-    if !confirmed {
-        tracing::info!(
-            "Update {} downloaded but installation postponed by the user",
-            update.version
-        );
-        persist_declined_update_version(&app, &update.version);
-        return;
-    }
-
-    tracing::info!("Installing update {} and restarting", update.version);
-    if let Err(e) = update.install(bytes) {
-        tracing::error!("Failed to install update {}: {}", update.version, e);
-        show_update_error_dialog(&app, &update.version, &e);
-        return;
-    }
-
-    app.restart();
-}
-
-/// Sentinel value shipped in `tauri.conf.json` until the real signing public
-/// key is generated (see UPDATER_SETUP.md).
-const UPDATER_PUBKEY_PLACEHOLDER: &str = "PLACEHOLDER_REPLACE_WITH_TAURI_SIGNER_PUBLIC_KEY";
-
-/// Whether `plugins.updater.pubkey` is still the placeholder (or missing):
-/// in that state the endpoint has no signed `latest.json` yet, so checking
-/// would only produce noisy plugin-level errors.
-fn updater_pubkey_is_placeholder(app: &tauri::AppHandle) -> bool {
-    app.config()
-        .plugins
-        .0
-        .get("updater")
-        .and_then(|updater| updater.get("pubkey"))
-        .and_then(|pubkey| pubkey.as_str())
-        .is_none_or(|pubkey| pubkey == UPDATER_PUBKEY_PLACEHOLDER)
-}
-
-/// tauri-plugin-store key (in settings.json) holding the last update version
-/// the user dismissed with "Più tardi", so it isn't re-offered every launch.
-const UPDATER_DECLINED_VERSION_KEY: &str = "updater_declined_version";
-
-/// Persist the version the user declined via the update dialog. Best-effort:
-/// a store failure only means we may prompt again next launch.
-fn persist_declined_update_version(app: &tauri::AppHandle, version: &str) {
-    use tauri_plugin_store::StoreExt;
-    let store = match app.store("settings.json") {
-        Ok(store) => store,
-        Err(e) => {
-            tracing::warn!(
-                "Updater: failed to access store to record declined version: {}",
-                e
-            );
-            return;
-        }
-    };
-    store.set(UPDATER_DECLINED_VERSION_KEY, serde_json::json!(version));
-    if let Err(e) = store.save() {
-        tracing::warn!("Updater: failed to persist declined version: {}", e);
-    }
-}
-
-/// Whether the user already declined this exact version.
-fn update_version_declined(app: &tauri::AppHandle, version: &str) -> bool {
-    use tauri_plugin_store::StoreExt;
-    let Ok(store) = app.store("settings.json") else {
-        return false;
-    };
-    store
-        .get(UPDATER_DECLINED_VERSION_KEY)
-        .and_then(|value| value.as_str().map(str::to_string))
-        .is_some_and(|declined| declined == version)
-}
-
-/// Surface an install failure that happened *after* the user consented, so it
-/// doesn't fail silently. Distinguishes the platform-not-supported case
-/// (nothing the user can retry) from a transient failure.
-fn show_update_error_dialog(
-    app: &tauri::AppHandle,
-    version: &str,
-    error: &tauri_plugin_updater::Error,
-) {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-    use tauri_plugin_updater::Error;
-
-    let message = match error {
-        Error::UnsupportedOs | Error::UnsupportedArch | Error::TargetNotFound(_) => format!(
-            "L'aggiornamento automatico non è supportato su questa piattaforma. Scarica e installa manualmente la versione {}.",
-            version
-        ),
-        _ => format!(
-            "Installazione dell'aggiornamento {} non riuscita. Riprova più tardi.",
-            version
-        ),
-    };
-
-    app.dialog()
-        .message(message)
-        .title("Aggiornamento non riuscito")
-        .kind(MessageDialogKind::Error)
-        .blocking_show();
 }
 
 #[cfg(test)]

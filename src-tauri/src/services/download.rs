@@ -128,6 +128,26 @@ impl DownloadService {
             resource.title
         );
 
+        // A non-2xx answer (404 after an errata, 403 on an expired link, 5xx
+        // on a cold gateway, ...) carries an error page, not the file: never
+        // write it into the .part file nor rename it to the final name, or a
+        // corrupted file would be recorded as downloaded.
+        if let Err(e) = check_download_status(status) {
+            tracing::warn!(
+                "Download of {} rejected: HTTP {} from {}",
+                resource.title,
+                status,
+                download_url
+            );
+            if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+                // The resume offset no longer matches the remote file (it
+                // changed or the .part is already complete/corrupt): drop the
+                // .part so the next attempt starts from scratch.
+                let _ = tokio::fs::remove_file(&part_path).await;
+            }
+            return Err(e);
+        }
+
         // If server doesn't support range (returns 200 instead of 206), we start over
         let is_partial = status == reqwest::StatusCode::PARTIAL_CONTENT;
         if !is_partial && resume_offset > 0 {
@@ -297,6 +317,17 @@ impl DownloadService {
             .map_err(DownloadError::ShortcutCreationFailed)?;
 
         Ok(dest_path)
+    }
+}
+
+/// Accept only 2xx download responses (200, or 206 for a resumed range).
+/// Anything else is a [`DownloadError::HttpStatus`]. Pure so the policy is
+/// unit-testable without a server.
+pub(crate) fn check_download_status(status: reqwest::StatusCode) -> Result<(), DownloadError> {
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(DownloadError::HttpStatus(status.as_u16()))
     }
 }
 
@@ -530,6 +561,7 @@ mod tests {
             week_date: None,
             optimized_video_url: None,
             optimized_videos: None,
+            supersedes_resource_id: None,
         }
     }
 
@@ -817,5 +849,72 @@ mod tests {
         // Verify signal is cancelled
         assert_eq!(signal.load(Ordering::Relaxed), STATUS_CANCELLED);
         assert_ne!(signal.load(Ordering::Relaxed), STATUS_PAUSED);
+    }
+
+    #[test]
+    fn test_check_download_status_accepts_only_2xx() {
+        assert!(check_download_status(reqwest::StatusCode::OK).is_ok());
+        assert!(check_download_status(reqwest::StatusCode::PARTIAL_CONTENT).is_ok());
+        for code in [403u16, 404, 416, 500, 503] {
+            let status = reqwest::StatusCode::from_u16(code).unwrap();
+            match check_download_status(status) {
+                Err(DownloadError::HttpStatus(c)) => assert_eq!(c, code),
+                other => panic!("{code} must be rejected, got {other:?}"),
+            }
+        }
+    }
+
+    /// End to end against a real local HTTP server: a 404 with an HTML body
+    /// must surface as an error and leave NO final file behind (previously
+    /// the error page was renamed to the final name and recorded as a
+    /// successful download).
+    #[tokio::test]
+    async fn test_download_non_2xx_never_creates_the_final_file() {
+        let url = crate::services::test_http::serve_once(
+            "404 Not Found",
+            "text/html",
+            "<html>not found</html>",
+        )
+        .await;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resource = make_resource(
+            1,
+            &format!("{url}/files/video.mp4"),
+            Utc.with_ymd_and_hms(2026, 10, 16, 12, 0, 0).unwrap(),
+        );
+        let service =
+            DownloadService::with_client(reqwest::Client::builder().no_proxy().build().unwrap());
+
+        let result = service
+            .download_resource(&resource, tmp.path(), None, None, false)
+            .await;
+
+        assert!(
+            matches!(result, Err(DownloadError::HttpStatus(404))),
+            "got {result:?}"
+        );
+        assert!(!tmp.path().join("video.mp4").exists(), "no final file");
+    }
+
+    /// The happy path still works end to end (200 -> renamed final file).
+    #[tokio::test]
+    async fn test_download_200_creates_the_final_file() {
+        let url = crate::services::test_http::serve_once("200 OK", "video/mp4", "MP4DATA").await;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let resource = make_resource(
+            2,
+            &format!("{url}/files/ok.mp4"),
+            Utc.with_ymd_and_hms(2026, 10, 16, 12, 0, 0).unwrap(),
+        );
+        let service =
+            DownloadService::with_client(reqwest::Client::builder().no_proxy().build().unwrap());
+
+        let (path, _hash) = service
+            .download_resource(&resource, tmp.path(), None, None, false)
+            .await
+            .expect("200 must download");
+        assert_eq!(path, tmp.path().join("ok.mp4"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"MP4DATA");
+        assert!(!tmp.path().join("ok.mp4.part").exists());
     }
 }
