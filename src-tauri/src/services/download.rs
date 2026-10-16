@@ -138,42 +138,72 @@ impl DownloadService {
             0
         };
 
-        // Build request
-        let mut request = self.client.get(download_url);
-        if let (true, Some(validator)) = (resume_offset > 0, resume_validator.as_deref()) {
-            request = request
-                .header(reqwest::header::RANGE, format!("bytes={}-", resume_offset))
-                .header(reqwest::header::IF_RANGE, validator);
-        }
+        // Send the request. A 206 is trusted only when its Content-Range
+        // starts exactly at the resume offset and runs to the end of the
+        // file (`partial_response_matches`): anything else would splice
+        // bytes from the wrong position onto the .part. In that case the
+        // .part is discarded and the download restarts once from zero with
+        // a plain GET; a 206 that is still unusable then is an error.
+        let mut resume_validator = resume_validator;
+        let response = loop {
+            let mut request = self.client.get(download_url);
+            if let (true, Some(validator)) = (resume_offset > 0, resume_validator.as_deref()) {
+                request = request
+                    .header(reqwest::header::RANGE, format!("bytes={}-", resume_offset))
+                    .header(reqwest::header::IF_RANGE, validator);
+            }
 
-        let response = request.send().await?;
-        let status = response.status();
-        tracing::debug!(
-            "Download response status: {} for {}",
-            status,
-            resource.title
-        );
-
-        // A non-2xx answer (404 after an errata, 403 on an expired link, 5xx
-        // on a cold gateway, ...) carries an error page, not the file: never
-        // write it into the .part file nor rename it to the final name, or a
-        // corrupted file would be recorded as downloaded.
-        if let Err(e) = check_download_status(status) {
-            tracing::warn!(
-                "Download of {} rejected: HTTP {} from {}",
-                resource.title,
+            let response = request.send().await?;
+            let status = response.status();
+            tracing::debug!(
+                "Download response status: {} for {}",
                 status,
-                download_url
+                resource.title
             );
-            if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-                // The resume offset no longer matches the remote file (it
-                // changed or the .part is already complete/corrupt): drop the
-                // .part so the next attempt starts from scratch.
+
+            // A non-2xx answer (404 after an errata, 403 on an expired link,
+            // 5xx on a cold gateway, ...) carries an error page, not the
+            // file: never write it into the .part file nor rename it to the
+            // final name, or a corrupted file would be recorded as downloaded.
+            if let Err(e) = check_download_status(status) {
+                tracing::warn!(
+                    "Download of {} rejected: HTTP {} from {}",
+                    resource.title,
+                    status,
+                    download_url
+                );
+                if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+                    // The resume offset no longer matches the remote file (it
+                    // changed or the .part is already complete/corrupt): drop
+                    // the .part so the next attempt starts from scratch.
+                    let _ = tokio::fs::remove_file(&part_path).await;
+                    let _ = tokio::fs::remove_file(&meta_path).await;
+                }
+                return Err(e);
+            }
+
+            if status == reqwest::StatusCode::PARTIAL_CONTENT
+                && !partial_response_matches(response.headers(), resume_offset)
+            {
+                tracing::warn!(
+                    "Download of {}: 206 with Content-Range {:?} does not match offset {}, discarding the partial file",
+                    resource.title,
+                    response.headers().get(reqwest::header::CONTENT_RANGE),
+                    resume_offset
+                );
+                drop(response);
                 let _ = tokio::fs::remove_file(&part_path).await;
                 let _ = tokio::fs::remove_file(&meta_path).await;
+                if resume_offset > 0 {
+                    resume_offset = 0;
+                    resume_validator = None;
+                    continue;
+                }
+                return Err(DownloadError::HttpStatus(status.as_u16()));
             }
-            return Err(e);
-        }
+            break response;
+        };
+        let status = response.status();
 
         // 200 instead of 206: the server ignored the Range, or the If-Range
         // validator no longer matches (the content behind the URL changed).
@@ -386,6 +416,48 @@ pub(crate) fn check_download_status(status: reqwest::StatusCode) -> Result<(), D
     } else {
         Err(DownloadError::HttpStatus(status.as_u16()))
     }
+}
+
+/// Whether a 206 answer can be appended at `offset`: its Content-Range must
+/// be `bytes <offset>-<end>/<total>` with a known total and `end + 1 ==
+/// total` (the open-ended `Range: bytes=<offset>-` asks for the whole tail,
+/// so a shorter slice would leave a truncated file), and a Content-Length,
+/// when present, must equal the range length. With `offset == 0` (no Range
+/// sent) only a 206 covering the whole file qualifies. Pure so the policy
+/// is unit-testable.
+pub(crate) fn partial_response_matches(headers: &reqwest::header::HeaderMap, offset: u64) -> bool {
+    let Some(range) = headers
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let Some((start, end, total)) = parse_content_range(range) else {
+        return false;
+    };
+    if start != offset || end < start || end.checked_add(1) != Some(total) {
+        return false;
+    }
+    match headers
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+    {
+        None => true,
+        Some(len) => len.trim().parse::<u64>().ok() == Some(end - start + 1),
+    }
+}
+
+/// Parses `bytes <start>-<end>/<total>`; `None` for any other form
+/// (including an unknown `*` total or a multipart range).
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let rest = value.trim().strip_prefix("bytes")?.trim_start();
+    let (range, total) = rest.split_once('/')?;
+    let (start, end) = range.trim().split_once('-')?;
+    Some((
+        start.trim().parse().ok()?,
+        end.trim().parse().ok()?,
+        total.trim().parse().ok()?,
+    ))
 }
 
 /// Resume metadata kept next to a `.part` file: which resource and URL the
@@ -674,6 +746,10 @@ mod tests {
             optimized_video_url: None,
             optimized_videos: None,
             supersedes_resource_id: None,
+            title_original: None,
+            duration_s: None,
+            storyboard: None,
+            tags: Vec::new(),
         }
     }
 
@@ -1224,6 +1300,160 @@ mod tests {
                 None => assert!(meta.is_none(), "no validator -> no metadata"),
             }
         }
+    }
+
+    /// Server answering successive connections with the given responses in
+    /// order, handing back every request head it received (lowercased).
+    async fn serve_sequence(
+        responses: Vec<(&'static str, &'static [u8])>,
+    ) -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            for (head, body) in responses {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = vec![0u8; 8192];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let _ = tx.send(String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase());
+                let response = format!(
+                    "HTTP/1.1 {head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.write_all(body).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    /// A 206 whose Content-Range does not start at the resume offset (or
+    /// does not reach the end of the file) must never be appended: the .part
+    /// is discarded and the file is downloaded again from zero.
+    #[tokio::test]
+    async fn test_resume_206_with_mismatched_content_range_restarts() {
+        for range in [
+            "bytes 0-7/8",   // starts at 0, not at the offset 4
+            "bytes 2-5/8",   // wrong start
+            "bytes 4-5/8",   // right start, truncated tail
+            "bytes 4-7/*",   // unknown total
+            "bytes 4-7/100", // total inconsistent with the range end
+        ] {
+            let head: &'static str = Box::leak(
+                format!("206 Partial Content\r\nContent-Range: {range}").into_boxed_str(),
+            );
+            let (url, mut reqs) = serve_sequence(vec![
+                (head, b"BBBB"),
+                ("200 OK\r\nETag: \"e1\"", b"FULLBODY"),
+            ])
+            .await;
+            let url = format!("{url}/files/v.mp4");
+            let tmp = tempfile::TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("v.mp4.part"), b"AAAA").unwrap();
+            write_meta(
+                tmp.path(),
+                "v.mp4",
+                &PartMeta {
+                    resource_id: 7,
+                    url: url.clone(),
+                    validator: "\"e1\"".into(),
+                },
+            );
+
+            let (path, _) = test_service()
+                .download_resource(&resource_at(7, &url), tmp.path(), None, None, false)
+                .await
+                .unwrap_or_else(|e| panic!("{range}: {e:?}"));
+
+            let first = reqs.recv().await.unwrap();
+            assert!(first.contains("range: bytes=4-"), "{range}: {first}");
+            let second = reqs.recv().await.unwrap();
+            assert!(
+                !second.contains("range:"),
+                "{range}: restart is a plain GET: {second}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), b"FULLBODY", "{range}");
+            assert!(!tmp.path().join("v.mp4.part").exists(), "{range}");
+            assert!(!part_meta_path(tmp.path(), "v.mp4").exists(), "{range}");
+        }
+    }
+
+    /// Restarted from zero, a server that still answers with an unusable 206
+    /// fails the download instead of looping or writing a partial file.
+    #[tokio::test]
+    async fn test_unusable_206_on_fresh_request_is_an_error() {
+        let (url, _reqs) = serve_sequence(vec![(
+            "206 Partial Content\r\nContent-Range: bytes 0-3/8",
+            b"AAAA",
+        )])
+        .await;
+        let url = format!("{url}/files/v.mp4");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = test_service()
+            .download_resource(&resource_at(7, &url), tmp.path(), None, None, false)
+            .await;
+        assert!(
+            matches!(result, Err(DownloadError::HttpStatus(206))),
+            "{result:?}"
+        );
+        assert!(!tmp.path().join("v.mp4").exists());
+        assert!(!tmp.path().join("v.mp4.part").exists());
+    }
+
+    #[test]
+    fn test_partial_response_matches_policy() {
+        use reqwest::header::{HeaderMap, HeaderValue, CONTENT_LENGTH, CONTENT_RANGE};
+        let headers = |range: Option<&str>, len: Option<&str>| {
+            let mut h = HeaderMap::new();
+            if let Some(r) = range {
+                h.insert(CONTENT_RANGE, HeaderValue::from_str(r).unwrap());
+            }
+            if let Some(l) = len {
+                h.insert(CONTENT_LENGTH, HeaderValue::from_str(l).unwrap());
+            }
+            h
+        };
+        assert!(partial_response_matches(
+            &headers(Some("bytes 4-7/8"), Some("4")),
+            4
+        ));
+        assert!(partial_response_matches(
+            &headers(Some("bytes 4-7/8"), None),
+            4
+        ));
+        assert!(partial_response_matches(
+            &headers(Some("bytes 0-7/8"), None),
+            0
+        ));
+        assert!(!partial_response_matches(
+            &headers(Some("bytes 4-7/8"), Some("5")),
+            4
+        ));
+        assert!(!partial_response_matches(
+            &headers(Some("bytes 0-7/8"), None),
+            4
+        ));
+        assert!(!partial_response_matches(
+            &headers(Some("bytes 4-6/8"), None),
+            4
+        ));
+        assert!(!partial_response_matches(
+            &headers(Some("bytes 4-7/*"), None),
+            4
+        ));
+        assert!(!partial_response_matches(
+            &headers(Some("bytes */8"), None),
+            4
+        ));
+        assert!(!partial_response_matches(
+            &headers(Some("items 4-7/8"), None),
+            4
+        ));
+        assert!(!partial_response_matches(&headers(None, None), 4));
     }
 
     #[test]

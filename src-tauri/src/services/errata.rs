@@ -515,6 +515,10 @@ mod tests {
             optimized_video_url: None,
             optimized_videos: None,
             supersedes_resource_id: None,
+            title_original: None,
+            duration_s: None,
+            storyboard: None,
+            tags: Vec::new(),
         }
     }
 
