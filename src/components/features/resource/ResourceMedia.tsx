@@ -81,7 +81,7 @@ export function ResourceMedia({
     const { tone, Icon } = placeholderStyle(category);
 
     return (
-        <div className={cn("relative aspect-video w-full overflow-hidden bg-muted", className)}>
+        <div className={cn("relative aspect-video w-full shrink-0 overflow-hidden bg-muted", className)}>
             {showImage ? (
                 <img
                     src={imageUrl}

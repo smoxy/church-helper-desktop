@@ -31,6 +31,15 @@ export function projectionSaturday(resource: Resource): Date|null {
 }
 
 /**
+ * The projection Saturday as an ISO calendar date ("2026-10-17"), for the
+ * `dateTime` attribute of `<time>`; also covers the created_at fallback.
+ */
+export function projectionIsoDate(resource: Resource): string|null {
+  const date = projectionSaturday(resource);
+  return date ? date.toISOString().slice(0, 10) : null;
+}
+
+/**
  * Formats the projection Saturday: `long` → "Sabato 17 ottobre 2026" /
  * "Saturday, October 17, 2026", `short` → "17/10/2026" / "10/17/2026".
  * Formatted in UTC because the Date is a calendar day, not an instant.

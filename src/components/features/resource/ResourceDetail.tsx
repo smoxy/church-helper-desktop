@@ -111,7 +111,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 backdrop-blur-xs" onClick={onClose}>
-            <div role="dialog" aria-modal="true" aria-label={resource.title} className="bg-card text-card-foreground rounded-xl shadow-2xl max-w-2xl w-full p-6 animate-in fade-in zoom-in duration-200" onClick={e => e.stopPropagation()}>
+            <div role="dialog" aria-modal="true" aria-label={resource.title} className="bg-card text-card-foreground rounded-xl shadow-2xl max-w-2xl w-full max-h-[calc(100vh-2rem)] overflow-y-auto p-6 animate-in fade-in zoom-in duration-200" onClick={e => e.stopPropagation()}>
                 <div className="flex justify-between items-start mb-6">
                     <h2 className="text-2xl font-bold text-primary">{resource.title}</h2>
                     <button ref={closeButtonRef} onClick={onClose} aria-label={t('resourceDetail.close')} className="text-muted-foreground hover:text-foreground">

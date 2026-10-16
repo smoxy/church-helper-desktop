@@ -1,7 +1,7 @@
 import { Resource } from '../../../types';
 import { useResource } from '../../../hooks/useResource';
 import { useI18n } from '../../../lib/i18n';
-import { formatProjectionDate } from '../../../lib/projectionDate';
+import { formatProjectionDate, projectionIsoDate } from '../../../lib/projectionDate';
 import { Card } from '../../ui/card';
 import { ResourceMedia } from './ResourceMedia';
 import { FileHeadphone, FilePlay, FileText, MonitorPlay, Check, Download, LoaderCircle, Zap, Clock } from "lucide-react";
@@ -26,10 +26,10 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
     const isYoutube = resource.download_url.includes("youtube.com") || resource.download_url.includes("youtu.be");
     const category = categoryLabel(resource.category);
     const shortDate = formatProjectionDate(resource, lang, 'short');
-    const longDate = formatProjectionDate(resource, lang, 'long');
+    const isoDate = projectionIsoDate(resource);
 
     return (
-        <Card className="flex h-full flex-col overflow-hidden cursor-pointer hover:border-primary/50 transition-colors group relative">
+        <Card className="flex h-full min-w-0 flex-col overflow-hidden cursor-pointer hover:border-primary/50 transition-colors group relative">
             {/* Stretched button: makes the whole card clickable/keyboard-focusable
                 as a real <button>, kept as a SIBLING (not ancestor) of the
                 download-status button below so no interactive element is
@@ -90,8 +90,10 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
                 </div>
             </ResourceMedia>
 
-            {/* Fixed minimum body height (2-line title + footer); grid rows
-                stretch cards, so a description only grows the whole row. */}
+            {/* Card minimum: 14rem track (ResourceGrid) x 7.875rem media (16:9)
+                + a fixed minimum body height (2-line title + footer), so an
+                empty or short card never collapses; grid rows stretch cards,
+                so a description only grows the whole row. */}
             <div className="flex min-h-[6.5rem] flex-1 flex-col gap-2 p-4">
                 <h3 className="min-h-[2.75rem] text-base font-semibold leading-snug line-clamp-2 break-words group-hover:text-primary transition-colors">
                     {resource.title}
@@ -104,7 +106,7 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
                 <div className="mt-auto flex items-center gap-2 text-xs text-muted-foreground">
                     {getFileIcon(resource.file_type, isYoutube)}
                     {shortDate && (
-                        <time dateTime={resource.week_date ?? undefined} title={longDate ?? undefined}>
+                        <time dateTime={isoDate ?? undefined}>
                             {shortDate}
                         </time>
                     )}
