@@ -9,7 +9,7 @@ import { errorMessage } from "../lib/utils";
 import { useI18n } from "../lib/i18n";
 import { Resource } from "../types";
 import { ResourceDetail } from "../components/features/resource/ResourceDetail";
-import { ResourceCard } from "../components/features/resource/ResourceCard";
+import { ResourceGrid } from "../components/features/resource/ResourceGrid";
 import { ResourcesFoundCard } from "../components/features/resource/ResourcesFoundCard";
 import { DownloadsModal } from "../components/features/resource/DownloadsModal";
 import { StaleWeekBanner } from "../components/features/dashboard/StaleWeekBanner";
@@ -123,21 +123,11 @@ export default function Dashboard() {
             {/* Resources List */}
             <div className="space-y-4">
                 <h3 className="text-xl font-semibold">{t('dashboard.weeklyMaterial')}</h3>
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                    {resources.length === 0 ? (
-                        <div className="col-span-full text-center py-10 border rounded-lg bg-card text-muted-foreground">
-                            {t('dashboard.noResourcesFound')}
-                        </div>
-                    ) : (
-                        resources.map((resource) => (
-                            <ResourceCard
-                                key={resource.id}
-                                resource={resource}
-                                onClick={() => setSelectedResource(resource)}
-                            />
-                        ))
-                    )}
-                </div>
+                <ResourceGrid
+                    resources={resources}
+                    emptyMessage={t('dashboard.noResourcesFound')}
+                    onSelect={setSelectedResource}
+                />
             </div>
 
             <NextWeekSection

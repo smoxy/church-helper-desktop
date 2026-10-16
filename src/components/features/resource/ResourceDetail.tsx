@@ -8,6 +8,8 @@ import { useI18n } from '../../../lib/i18n';
 import { OptimizedVideoPicker } from './OptimizedVideoPicker';
 import { OptimizedPreferenceToggle } from './OptimizedPreferenceToggle';
 import { OptimizedActiveNotice } from './OptimizedActiveNotice';
+import { ResourceMedia } from './ResourceMedia';
+import { formatProjectionDate } from '../../../lib/projectionDate';
 import { LoaderCircle, Download, Check, Pause, Play, Trash2, TriangleAlert, RotateCcw, X, FolderOpen, Clock } from "lucide-react";
 
 interface ResourceDetailProps {
@@ -16,7 +18,9 @@ interface ResourceDetailProps {
 }
 
 export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
-    const { t, lang } = useI18n();
+    const { t, lang, categoryLabel } = useI18n();
+    const category = categoryLabel(resource.category);
+    const projectionDate = formatProjectionDate(resource, lang, 'long');
     const {
         isDownloaded,
         isDownloading,
@@ -117,13 +121,14 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
-                        {resource.thumbnail_url ? (
-                            <img src={resource.thumbnail_url} alt={resource.title} loading="lazy" decoding="async" className="w-full h-auto rounded-lg shadow-md mb-4 object-cover aspect-video" />
-                        ) : (
-                            <div className="w-full h-48 bg-muted rounded-lg mb-4 flex items-center justify-center text-muted-foreground">
-                                {t('resourceDetail.noThumbnail')}
-                            </div>
-                        )}
+                        <ResourceMedia
+                            imageUrl={resource.thumbnail_url}
+                            alt={resource.title}
+                            category={resource.category}
+                            categoryLabel={category}
+                            size="detail"
+                            className="rounded-lg shadow-md"
+                        />
 
                         <div className="flex flex-col gap-4 mt-6">
                             <div className="w-full">
@@ -279,13 +284,13 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                         <div className="flex justify-between items-start">
                             <div>
                                 <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('resourceDetail.category')}</span>
-                                <p className="text-lg font-medium text-foreground capitalize">{resource.category}</p>
+                                <p className="text-lg font-medium text-foreground first-letter:uppercase">{category}</p>
                             </div>
 
                             {/* Auto-download Toggle with Tooltip */}
                             <div className="flex flex-col items-end gap-1.5 pt-1">
                                 <div className="flex items-center gap-2">
-                                    <span className={`text-[10px] font-black uppercase tracking-widest transition-colors ${isAutoDownloadEnabled ? 'text-success' : 'text-muted-foreground/60'}`}>
+                                    <span className={`text-[10px] font-black uppercase tracking-widest transition-colors ${isAutoDownloadEnabled ? 'text-success' : 'text-muted-foreground'}`}>
                                         {t('resourceDetail.autoDownload')}
                                     </span>
                                     {isAutoDownloadEnabled && (
@@ -310,7 +315,7 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
 
                                     {/* Tooltip */}
                                     <div className="absolute right-0 top-full mt-2 w-48 p-2 bg-popover text-popover-foreground text-xs rounded-md shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 border border-border">
-                                        {t('resourceDetail.autoDownloadTooltipPrefix')}<strong>{resource.category}</strong>{t('resourceDetail.autoDownloadTooltipSuffix')}
+                                        {t('resourceDetail.autoDownloadTooltipPrefix')}<strong>{category}</strong>{t('resourceDetail.autoDownloadTooltipSuffix')}
                                         <div className="absolute -top-1 right-3 w-2 h-2 bg-popover transform rotate-45 border-t border-l border-border"></div>
                                     </div>
                                 </div>
@@ -320,20 +325,21 @@ export function ResourceDetail({ resource, onClose }: ResourceDetailProps) {
                         <div>
                             <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('resourceDetail.date')}</span>
                             <p className="text-base text-foreground">
-                                {new Date(resource.created_at).toLocaleDateString(lang === 'it' ? 'it-IT' : 'en-US', {
-                                    weekday: 'long',
-                                    year: 'numeric',
-                                    month: 'long',
-                                    day: 'numeric'
-                                })}
+                                {projectionDate ?? '—'}
                             </p>
                         </div>
 
                         <div>
                             <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('resourceDetail.description')}</span>
-                            <p className="text-base text-foreground whitespace-pre-wrap mt-1 leading-relaxed">
-                                {resource.description || t('resourceDetail.noDescription')}
-                            </p>
+                            {resource.description ? (
+                                <p className="text-base text-foreground whitespace-pre-wrap mt-1 leading-relaxed">
+                                    {resource.description}
+                                </p>
+                            ) : (
+                                <p className="text-sm italic text-muted-foreground mt-1">
+                                    {t('resourceDetail.noDescription')}
+                                </p>
+                            )}
                         </div>
                     </div>
                 </div>

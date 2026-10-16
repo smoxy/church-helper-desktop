@@ -123,9 +123,16 @@ const en = {
   'resourceCard.openInFolder': 'Open in folder',
   'resourceCard.clickToView': 'Click to view',
 
+  // --- src/components/features/resource/ResourceMedia.tsx ---
+  'resourceMedia.noPreview': 'No preview',
+  'resourceMedia.placeholderAria': 'No preview available: {category}',
+
+  // --- src/lib/i18n/index.ts (categoryLabel): display names of category
+  // keys; a category without an entry is shown as its raw key ---
+  'category.decime': 'Tithes & offerings',
+
   // --- src/components/features/resource/ResourceDetail.tsx ---
   'resourceDetail.download': 'Download',
-  'resourceDetail.noThumbnail': 'No Thumbnail',
   'resourceDetail.retryHint': 'File corrupted. Click to retry.',
   'resourceDetail.queuedAtPosition': 'Queued (position {position})',
   'resourceDetail.queued': 'Queued',
@@ -145,7 +152,7 @@ const en = {
   'resourceDetail.autoDownloadTooltipSuffix': ' category.',
   'resourceDetail.date': 'Date',
   'resourceDetail.description': 'Description',
-  'resourceDetail.noDescription': 'No description available.',
+  'resourceDetail.noDescription': 'Description not available',
   'resourceDetail.close': 'Close',
 
   // --- src/components/features/resource/OptimizedVideoPicker.tsx ---
@@ -368,9 +375,15 @@ const it: Record<TKey, string> = {
   'resourceCard.openInFolder': 'Apri nella cartella',
   'resourceCard.clickToView': 'Clicca per visualizzare',
 
+  // --- src/components/features/resource/ResourceMedia.tsx ---
+  'resourceMedia.noPreview': 'Nessuna anteprima',
+  'resourceMedia.placeholderAria': 'Anteprima non disponibile: {category}',
+
+  // --- src/lib/i18n/index.ts (categoryLabel) ---
+  'category.decime': 'Decime e offerte',
+
   // --- src/components/features/resource/ResourceDetail.tsx ---
   'resourceDetail.download': 'Download',
-  'resourceDetail.noThumbnail': 'Nessuna Anteprima',
   'resourceDetail.retryHint': 'File corrotto. Clicca per riprovare.',
   'resourceDetail.queuedAtPosition': 'In coda (posizione {position})',
   'resourceDetail.queued': 'In coda',
@@ -390,7 +403,7 @@ const it: Record<TKey, string> = {
   'resourceDetail.autoDownloadTooltipSuffix': '.',
   'resourceDetail.date': 'Data',
   'resourceDetail.description': 'Descrizione',
-  'resourceDetail.noDescription': 'Nessuna descrizione disponibile.',
+  'resourceDetail.noDescription': 'Descrizione non disponibile',
   'resourceDetail.close': 'Chiudi',
 
   // --- src/components/features/resource/OptimizedVideoPicker.tsx ---

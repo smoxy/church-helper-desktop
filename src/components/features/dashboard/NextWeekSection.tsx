@@ -1,6 +1,6 @@
 import { Resource } from "../../../types";
 import { useI18n } from "../../../lib/i18n";
-import { ResourceCard } from "../resource/ResourceCard";
+import { ResourceGrid } from "../resource/ResourceGrid";
 
 interface NextWeekSectionProps {
     resources: Resource[];
@@ -22,21 +22,11 @@ export function NextWeekSection({ resources, autoDownloadEnabled, onSelect }: Ne
                     {autoDownloadEnabled ? t('dashboard.nextWeek.autoOn') : t('dashboard.nextWeek.autoOff')}
                 </p>
             </div>
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {resources.length === 0 ? (
-                    <div className="col-span-full text-center py-10 border rounded-lg bg-card text-muted-foreground">
-                        {t('dashboard.nextWeek.empty')}
-                    </div>
-                ) : (
-                    resources.map((resource) => (
-                        <ResourceCard
-                            key={resource.id}
-                            resource={resource}
-                            onClick={() => onSelect(resource)}
-                        />
-                    ))
-                )}
-            </div>
+            <ResourceGrid
+                resources={resources}
+                emptyMessage={t('dashboard.nextWeek.empty')}
+                onSelect={onSelect}
+            />
         </section>
     );
 }
