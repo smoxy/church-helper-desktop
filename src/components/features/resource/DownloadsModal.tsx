@@ -39,7 +39,7 @@ function formatDuration(seconds: number): string {
 }
 
 export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
-    const { t } = useI18n();
+    const { t, categoryLabel } = useI18n();
     const {
         activeDownloads,
         resources,
@@ -209,7 +209,7 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
                                                 {resource.title}
                                             </h4>
                                             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs text-muted-foreground">
-                                                <span className="font-semibold text-primary/80 uppercase tracking-tight">{resource.category}</span>
+                                                <span className="font-semibold text-primary/80 uppercase tracking-tight">{categoryLabel(resource.category)}</span>
                                                 {download.status === 'downloading' && (
                                                     <>
                                                         <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />

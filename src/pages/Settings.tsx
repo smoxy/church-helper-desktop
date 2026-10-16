@@ -28,7 +28,7 @@ const LANGUAGE_OPTIONS: { value: LanguageSetting; labelKey: TKey }[] = [
 
 
 export default function Settings() {
-    const { t } = useI18n();
+    const { t, categoryLabel } = useI18n();
     const {
         config,
         resources,
@@ -108,7 +108,7 @@ export default function Settings() {
 
         try {
             await updateConfig({ auto_download_categories: newCats });
-            addToast(t(checked ? 'settings.toast.autoDownloadEnabled' : 'settings.toast.autoDownloadDisabled', { category }), "success");
+            addToast(t(checked ? 'settings.toast.autoDownloadEnabled' : 'settings.toast.autoDownloadDisabled', { category: categoryLabel(category) }), "success");
         } catch (e) {
             addToast(t('settings.toast.autoDownloadUpdateError', { error: errorMessage(e) }), "error");
             // Revert to config state on error
@@ -319,8 +319,8 @@ export default function Settings() {
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                             {availableCategories.map(cat => (
                                 <div key={cat} className="flex items-center justify-between space-x-4 border p-3 rounded-lg bg-card/50">
-                                    <label htmlFor={`switch-${cat}`} className="text-sm font-medium capitalize cursor-pointer flex-1">
-                                        {cat}
+                                    <label htmlFor={`switch-${cat}`} className="text-sm font-medium first-letter:uppercase cursor-pointer flex-1">
+                                        {categoryLabel(cat)}
                                     </label>
                                     <Switch
                                         id={`switch-${cat}`}
