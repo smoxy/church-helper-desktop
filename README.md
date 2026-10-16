@@ -199,6 +199,18 @@ npm run tauri build
 # Output in: src-tauri/target/release/bundle/
 ```
 
+#### Build locali e versione
+
+Gli script `scripts/build/linux.sh` (Docker) e `scripts/build/windows.ps1` non usano la versione di
+`tauri.conf.json` — la CI la scrive dal tag solo sulle release, quindi in locale è vecchia e
+l'updater proporrebbe di installare una release più vecchia sopra la build locale. La versione
+viene invece derivata da git e passata al compilatore senza modificare file tracciati:
+`X.Y.Z` se `HEAD` è esattamente su un tag stabile `vX.Y.Z`, altrimenti `X.(Y+1).0-dev.N`
+(`N` = commit dall'ultimo tag stabile; gli `-rcN` sono ignorati), ad es. `v0.3.0` + 3 commit →
+`0.4.0-dev.3`. Così l'updater offre solo release stabili **più nuove** (la vera `0.4.0` quando
+verrà pubblicata). `VERSION=X.Y.Z[-pre] scripts/build/linux.sh debug` forza un valore; lo script
+stampa la versione usata. Self-test della derivazione: `scripts/build/version.test.sh`.
+
 ### Puntare l'app a uno stub API locale (solo dev)
 
 Solo nelle build di debug (`tauri dev` / `build` / `test`, **mai** in release) il backend legge la
