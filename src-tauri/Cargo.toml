@@ -1,6 +1,6 @@
 [package]
 name = "church-helper-desktop"
-version = "0.2.0"
+version = "0.4.0"
 description = "Scarica e organizza automaticamente i materiali settimanali della chiesa"
 authors = ["Simone Flavio Paris"]
 edition = "2021"
