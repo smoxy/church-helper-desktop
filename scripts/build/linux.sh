@@ -36,6 +36,16 @@ echo "== versione stampata nel binario: $APP_VERSION"
 IMAGE="chd-tauri-build:$ARCH"
 CACHE="$HOME/.cache/church-helper-builds/target-$ARCH"   # mai /tmp: è tmpfs (RAM)
 mkdir -p "$CACHE"
+# CARGO_HOME persistente (registry e git): senza, ogni build riscarica tutti i
+# crate (rete a consumo). Si monta l'INTERA CARGO_HOME e non solo registry/ e git/:
+# cargo tiene i lock della package cache (.package-cache, .package-cache-mutate,
+# .global-cache) nella radice di CARGO_HOME, quindi solo così due build concorrenti
+# della stessa ARCH (es. debug e release insieme) si serializzano sul download ed
+# estrazione dei crate invece di scrivere a metà la stessa registry/src.
+# cargo/rustc restano quelli dell'immagine: PATH=/usr/local/cargo/bin e RUSTUP_HOME
+# non cambiano, cambia solo dove cargo tiene cache e lock.
+CARGO_HOME_CACHE="$HOME/.cache/church-helper-builds/cargo-home-$ARCH"
+mkdir -p "$CARGO_HOME_CACHE"
 
 echo "== frontend (host): npm ci se serve + vite build"
 [ -d node_modules ] || npm ci
@@ -49,6 +59,7 @@ echo "== cargo build $MODE ($ARCH)"
 docker run --rm --platform "$PLATFORM" \
   -e TAURI_CONFIG="{\"version\":\"$APP_VERSION\"}" \
   -v "$PWD":/app -w /app/src-tauri -v "$CACHE":/app/src-tauri/target \
+  -e CARGO_HOME=/cargo-home -v "$CARGO_HOME_CACHE":/cargo-home \
   "$IMAGE" cargo build $FLAGS
 
 SUFFIX=""; [ "$MODE" = debug ] && SUFFIX="-debug"
