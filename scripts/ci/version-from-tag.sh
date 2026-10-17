@@ -75,7 +75,10 @@ if [ "$IS_RC" = true ]; then
   echo "::notice::Tag rc: nei file di versione viene scritta solo la parte $BASE_VERSION (WiX/MSI non accetta prerelease nel ProductVersion). La release GitHub sara' marcata prerelease: non verra' servita dall'auto-update (latest.json ignora le prerelease)."
 fi
 
-CURRENT=$(jq -r '.version' src-tauri/tauri.conf.json)
+# tr -d '\r': su windows-latest jq.exe nativo scrive lo stdout in modalita' testo
+# (CRLF) e $(...) toglie solo il \n finale; senza, CURRENT finirebbe con \r e il
+# warning "versione diversa" comparirebbe sempre.
+CURRENT=$(jq -r '.version' src-tauri/tauri.conf.json | tr -d '\r')
 if [ "$CURRENT" != "$BASE_VERSION" ]; then
   echo "::warning::Versione committata in tauri.conf.json ($CURRENT) diversa da quella del tag ($BASE_VERSION): vince il tag, i file vengono allineati solo per questa build CI."
 fi

@@ -15,7 +15,12 @@ PASS=0; FAIL=0
 ok()   { PASS=$((PASS + 1)); echo "ok   - $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "FAIL - $1"; [ -n "${2:-}" ] && echo "       $2"; }
 
-g() { git -C "$REPO" -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c tag.gpgsign=false "$@"; }
+# core.autocrlf=false: su windows-latest la config di sistema ha autocrlf=true e
+# reset_files (git checkout) riscriverebbe le fixture in CRLF, falsando i
+# confronti riga per riga su Cargo.toml.
+g() { git -C "$REPO" -c core.autocrlf=false -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c tag.gpgsign=false "$@"; }
+# jq -r senza \r: jq.exe nativo (windows-latest) stampa CRLF.
+jqr() { jq -r "$@" | tr -d '\r'; }
 
 # --- fixture: origin bare + clone di lavoro --------------------------------------
 ORIGIN="$WORK/origin.git"
@@ -85,8 +90,8 @@ expect_fail() { # <descrizione> <tag> <regex sul messaggio>
 # expect_versions <descrizione> <versione attesa>
 expect_versions() {
   local conf pkg cargo_first cargo_rest leftovers
-  conf="$(jq -r .version "$REPO/src-tauri/tauri.conf.json")"
-  pkg="$(jq -r .version "$REPO/package.json")"
+  conf="$(jqr .version "$REPO/src-tauri/tauri.conf.json")"
+  pkg="$(jqr .version "$REPO/package.json")"
   cargo_first="$(grep -m1 '^version = ' "$REPO/src-tauri/Cargo.toml")"
   [ "$conf" = "$2" ] && ok "$1: tauri.conf.json -> $conf" || fail "$1: tauri.conf.json" "atteso $2, ottenuto $conf"
   [ "$pkg" = "$2" ] && ok "$1: package.json -> $pkg" || fail "$1: package.json" "atteso $2, ottenuto $pkg"
@@ -98,7 +103,7 @@ expect_versions() {
     || fail "$1: Cargo.toml" "$(diff <(printf '%s\n' "$cargo_rest") "$REPO/src-tauri/Cargo.toml")"
   grep -q '^version = "9.9.9"$' "$REPO/src-tauri/Cargo.toml" && ok "$1: seconda riga version intatta" \
     || fail "$1: seconda riga version modificata"
-  [ "$(jq -r '.dependencies.x' "$REPO/package.json")" = "^1.0.0" ] && [ "$(jq -r '.bundle.createUpdaterArtifacts' "$REPO/src-tauri/tauri.conf.json")" = "true" ] \
+  [ "$(jqr '.dependencies.x' "$REPO/package.json")" = "^1.0.0" ] && [ "$(jqr '.bundle.createUpdaterArtifacts' "$REPO/src-tauri/tauri.conf.json")" = "true" ] \
     && ok "$1: resto dei JSON intatto" || fail "$1: resto dei JSON modificato"
   leftovers="$(g status --porcelain --untracked-files=all | grep -v '^ M ' || true)"
   [ -z "$leftovers" ] && ok "$1: nessun file temporaneo lasciato (tmp.json, .bak)" || fail "$1: file temporanei" "$leftovers"
@@ -146,7 +151,7 @@ done
 # Simula il checkout di una run di tag: il commit taggato arriva col tag, mentre
 # origin/main locale e' indietro (non lo contiene ancora).
 OTHER="$WORK/other"
-git clone -q "$ORIGIN" "$OTHER"
+git clone -q -c core.autocrlf=false "$ORIGIN" "$OTHER"
 git -C "$OTHER" -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c tag.gpgsign=false commit -q --allow-empty -m release
 git -C "$OTHER" -c user.name=t -c user.email=t@t -c tag.gpgsign=false tag v3.0.0
 git -C "$OTHER" push -q origin main v3.0.0
