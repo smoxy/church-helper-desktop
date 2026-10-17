@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Chiavi aggiuntive per il bundle macOS: Tauri unisce questo file (stessa
+  cartella di tauri.conf.json) all'Info.plist generato. Su Windows e Linux non
+  ha effetto.
+
+  L'app vive quasi sempre nascosta (chiusura = nascondi, avvio al login
+  nascosto) e in quello stato App Nap rallenterebbe timer, polling e download
+  in background. Le due chiavi chiedono di escludere l'app da App Nap
+  (LSAppNapIsDisabled come chiave di Info.plist, NSAppSleepDisabled e' il nome
+  della preferenza utente equivalente: tenute entrambe perche' qui non si puo'
+  verificare quale venga onorata). Effetto da verificare al primo avvio su
+  un Mac reale (colonna "App Nap" di Monitoraggio Attivita' con la finestra
+  nascosta), vedi UPDATER_SETUP.md.
+-->
+<plist version="1.0">
+<dict>
+	<key>LSAppNapIsDisabled</key>
+	<true/>
+	<key>NSAppSleepDisabled</key>
+	<true/>
+</dict>
+</plist>

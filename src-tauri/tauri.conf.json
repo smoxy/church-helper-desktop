@@ -27,7 +27,9 @@
     "targets": [
       "deb",
       "msi",
-      "nsis"
+      "nsis",
+      "app",
+      "dmg"
     ],
     "icon": [
       "icons/32x32.png",
@@ -36,7 +38,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "signingIdentity": "-"
+    }
   },
   "plugins": {
     "updater": {
