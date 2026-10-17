@@ -42,75 +42,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Logica condivisa da tutti i job di release (formato del tag, rc solo
+      # fuori da main, stabili solo su main, riscrittura dei file di versione):
+      # vedi scripts/ci/version-from-tag.sh e il suo self-test
+      # scripts/ci/version-from-tag.test.sh.
       - name: Update version from tag
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
-        run: |
-          set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          # Il tag e' l'unica fonte di verita' per la versione rilasciata:
-          # formati ammessi: vX.Y.Z (stabile) o vX.Y.Z-rcN (release
-          # candidate, N intero >= 1, es. v1.2.3-rc1). Tutto il resto
-          # fa fallire subito la release con un errore chiaro invece di
-          # produrre artefatti con versione ambigua.
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[1-9][0-9]*)?$ ]]; then
-            echo "::error::Tag '$TAG' non e' valido. Formati ammessi: vX.Y.Z (release stabile) oppure vX.Y.Z-rcN (release candidate, N>=1), es. v1.2.3 o v1.2.3-rc1. Interrompo la release."
-            exit 1
-          fi
-
-          if [[ "$TAG" == *-rc* ]]; then
-            IS_RC=true
-          else
-            IS_RC=false
-          fi
-
-          # Vincolo di branch: le rc sono ammesse solo su commit non ancora
-          # su main, le stabili solo su commit gia' contenuti in main.
-          # Richiede fetch-depth: 0 nel checkout per avere storia
-          # sufficiente al merge-base.
-          git fetch origin main --quiet
-          if git merge-base --is-ancestor HEAD origin/main; then
-            ON_MAIN=true
-          else
-            ON_MAIN=false
-          fi
-
-          if [ "$IS_RC" = true ] && [ "$ON_MAIN" = true ]; then
-            echo "::error::Tag '$TAG' e' una release candidate ma il commit taggato e' gia' contenuto in main. Le rc sono ammesse solo su commit non ancora mergiati in main. Interrompo la release."
-            exit 1
-          fi
-
-          if [ "$IS_RC" = false ] && [ "$ON_MAIN" = false ]; then
-            echo "::error::Tag '$TAG' e' una release stabile ma il commit taggato non e' contenuto in main. Le release stabili sono ammesse solo su commit gia' presenti in main. Interrompo la release."
-            exit 1
-          fi
-
-          VERSION=${TAG#v}
-          # WiX/MSI (Windows) non accetta un ProductVersion con
-          # pre-release: per le rc nei file di versione scriviamo solo la
-          # parte X.Y.Z, il tag/release name completo resta quello vero.
-          BASE_VERSION=${VERSION%-rc*}
-
-          # Anti-injection: la versione estratta dal tag deve ripassare
-          # una regex stretta prima di finire in sed/jq, anche se il
-          # pattern del tag sopra la vincola gia'.
-          if [[ ! "$BASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Versione '$BASE_VERSION' estratta dal tag '$TAG' non e' un semver X.Y.Z valido. Interrompo la release."
-            exit 1
-          fi
-
-          if [ "$IS_RC" = true ]; then
-            echo "::notice::Tag rc: nei file di versione viene scritta solo la parte $BASE_VERSION (WiX/MSI non accetta prerelease nel ProductVersion). La release GitHub sara' marcata prerelease: non verra' servita dall'auto-update (latest.json ignora le prerelease)."
-          fi
-
-          CURRENT=$(jq -r '.version' ./src-tauri/tauri.conf.json)
-          if [ "$CURRENT" != "$BASE_VERSION" ]; then
-            echo "::warning::Versione committata in tauri.conf.json ($CURRENT) diversa da quella del tag ($BASE_VERSION): vince il tag, i file vengono allineati solo per questa build CI."
-          fi
-          echo "Updating version to $BASE_VERSION"
-          jq --arg v "$BASE_VERSION" '.version = $v' ./src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./src-tauri/tauri.conf.json
-          jq --arg v "$BASE_VERSION" '.version = $v' ./package.json > tmp.json && mv tmp.json ./package.json
-          sed -i.bak "0,/^version = \".*\"/s//version = \"$BASE_VERSION\"/" ./src-tauri/Cargo.toml && rm -f ./src-tauri/Cargo.toml.bak
+        run: bash scripts/ci/version-from-tag.sh
 
       - name: Check updater signing key
         if: startsWith(github.ref, 'refs/tags/v')
@@ -126,6 +65,14 @@ jobs:
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY non configurato nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
             jq '.bundle.createUpdaterArtifacts = false' ./src-tauri/tauri.conf.json > tmp.json && mv tmp.json ./src-tauri/tauri.conf.json
           fi
+
+      # Le build di prova non ricevono la chiave di firma degli update: con
+      # createUpdaterArtifacts attivo tauri fallirebbe a fine bundle ("A public
+      # key has been found, but no private key"). Si spengono solo qui.
+      - name: Disable updater artifacts (test build)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        run: jq '.bundle.createUpdaterArtifacts = false' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
 
       # Plain test build when NOT releasing (e.g. manual workflow_dispatch on
       # a branch, no tag): verifies the build works without touching any
@@ -191,76 +138,15 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Logica condivisa da tutti i job di release (formato del tag, rc solo
+      # fuori da main, stabili solo su main, riscrittura dei file di versione):
+      # vedi scripts/ci/version-from-tag.sh e il suo self-test
+      # scripts/ci/version-from-tag.test.sh.
       - name: Update version from tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          # Il tag e' l'unica fonte di verita' per la versione rilasciata:
-          # formati ammessi: vX.Y.Z (stabile) o vX.Y.Z-rcN (release
-          # candidate, N intero >= 1, es. v1.2.3-rc1). Tutto il resto
-          # fa fallire subito la release con un errore chiaro invece di
-          # produrre artefatti con versione ambigua.
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[1-9][0-9]*)?$ ]]; then
-            echo "::error::Tag '$TAG' non e' valido. Formati ammessi: vX.Y.Z (release stabile) oppure vX.Y.Z-rcN (release candidate, N>=1), es. v1.2.3 o v1.2.3-rc1. Interrompo la release."
-            exit 1
-          fi
-
-          if [[ "$TAG" == *-rc* ]]; then
-            IS_RC=true
-          else
-            IS_RC=false
-          fi
-
-          # Vincolo di branch: le rc sono ammesse solo su commit non ancora
-          # su main, le stabili solo su commit gia' contenuti in main.
-          # Richiede fetch-depth: 0 nel checkout per avere storia
-          # sufficiente al merge-base.
-          git fetch origin main --quiet
-          if git merge-base --is-ancestor HEAD origin/main; then
-            ON_MAIN=true
-          else
-            ON_MAIN=false
-          fi
-
-          if [ "$IS_RC" = true ] && [ "$ON_MAIN" = true ]; then
-            echo "::error::Tag '$TAG' e' una release candidate ma il commit taggato e' gia' contenuto in main. Le rc sono ammesse solo su commit non ancora mergiati in main. Interrompo la release."
-            exit 1
-          fi
-
-          if [ "$IS_RC" = false ] && [ "$ON_MAIN" = false ]; then
-            echo "::error::Tag '$TAG' e' una release stabile ma il commit taggato non e' contenuto in main. Le release stabili sono ammesse solo su commit gia' presenti in main. Interrompo la release."
-            exit 1
-          fi
-
-          VERSION=${TAG#v}
-          # WiX/MSI (Windows) non accetta un ProductVersion con
-          # pre-release: per le rc nei file di versione scriviamo solo la
-          # parte X.Y.Z, il tag/release name completo resta quello vero.
-          BASE_VERSION=${VERSION%-rc*}
-
           sudo apt-get install -y jq
-
-          # Anti-injection: la versione estratta dal tag deve ripassare
-          # una regex stretta prima di finire in sed/jq, anche se il
-          # pattern del tag sopra la vincola gia'.
-          if [[ ! "$BASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Versione '$BASE_VERSION' estratta dal tag '$TAG' non e' un semver X.Y.Z valido. Interrompo la release."
-            exit 1
-          fi
-
-          if [ "$IS_RC" = true ]; then
-            echo "::notice::Tag rc: nei file di versione viene scritta solo la parte $BASE_VERSION (WiX/MSI non accetta prerelease nel ProductVersion). La release GitHub sara' marcata prerelease: non verra' servita dall'auto-update (latest.json ignora le prerelease)."
-          fi
-
-          CURRENT=$(jq -r '.version' src-tauri/tauri.conf.json)
-          if [ "$CURRENT" != "$BASE_VERSION" ]; then
-            echo "::warning::Versione committata in tauri.conf.json ($CURRENT) diversa da quella del tag ($BASE_VERSION): vince il tag, i file vengono allineati solo per questa build CI."
-          fi
-          echo "Updating version to $BASE_VERSION"
-          jq --arg v "$BASE_VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
-          jq --arg v "$BASE_VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
-          sed -i.bak "0,/^version = \".*\"/s//version = \"$BASE_VERSION\"/" src-tauri/Cargo.toml && rm -f src-tauri/Cargo.toml.bak
+          bash scripts/ci/version-from-tag.sh
 
       - name: Check updater signing key
         if: startsWith(github.ref, 'refs/tags/v')
@@ -275,6 +161,14 @@ jobs:
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY non configurato nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
             jq '.bundle.createUpdaterArtifacts = false' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
           fi
+
+      # Le build di prova non ricevono la chiave di firma degli update: con
+      # createUpdaterArtifacts attivo tauri fallirebbe a fine bundle ("A public
+      # key has been found, but no private key"). Si spengono solo qui.
+      - name: Disable updater artifacts (test build)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        run: jq '.bundle.createUpdaterArtifacts = false' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
 
       # Plain test build when NOT releasing (e.g. manual workflow_dispatch on
       # a branch, no tag): verifies the build works without touching any
@@ -305,3 +199,170 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-rc') }}
           includeUpdaterJson: true
           args: --bundles deb
+
+  release-macos:
+    # Dopo release-linux (che a sua volta segue release-windows): tauri-action
+    # scarica il latest.json gia' presente sulla release, ci aggiunge le voci
+    # della propria piattaforma e lo ricarica. Job in parallelo si
+    # sovrascriverebbero le voci a vicenda; la catena seriale garantisce che
+    # questo job parta dal latest.json con le voci windows e linux. Costo: se un
+    # job precedente fallisce, la build macOS viene saltata.
+    needs: release-linux
+    runs-on: macos-latest
+    env:
+      # Solo flag "configurato si'/no" calcolati a livello di job (mai il valore
+      # dei secrets): scelgono quale variante dello step di build/publish gira.
+      # Firma Developer ID + notarizzazione solo con TUTTI i secrets Apple
+      # configurati; altrimenti firma ad-hoc (bundle.macOS.signingIdentity "-"
+      # in tauri.conf.json). Le variabili APPLE_* non vanno mai passate vuote a
+      # tauri: un APPLE_CERTIFICATE vuoto lo fa provare a importare il
+      # certificato e la build fallisce.
+      APPLE_SIGNING_ENABLED: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: 'npm'
+          cache-dependency-path: './package-lock.json'
+
+      # Build universal (Apple Silicon + Intel in un unico .app): servono
+      # entrambi i target Rust.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      # Stessa logica di release-windows: shared-key scaldata da
+      # warm-release-cache di ci.yml su main, nessun salvataggio su tag.
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri'
+          shared-key: release-macos
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Logica condivisa da tutti i job di release (formato del tag, rc solo
+      # fuori da main, stabili solo su main, riscrittura dei file di versione):
+      # vedi scripts/ci/version-from-tag.sh e il suo self-test
+      # scripts/ci/version-from-tag.test.sh.
+      - name: Update version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: bash scripts/ci/version-from-tag.sh
+
+      - name: Check updater signing key
+        if: startsWith(github.ref, 'refs/tags/v')
+        # Compare via env vars (not interpolating the secret values
+        # directly into the script) so their contents are never spliced
+        # into shell code.
+        env:
+          HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          HAS_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
+        run: |
+          if [ "$HAS_SIGNING_KEY" != "true" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY non configurato nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
+            jq '.bundle.createUpdaterArtifacts = false' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          fi
+
+      # Rende visibile nel riepilogo della run quale firma macOS viene usata.
+      # Come sopra: solo flag booleani via env, mai i valori dei secrets.
+      - name: Check Apple signing secrets
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          HAS_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+          HAS_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
+          HAS_APPLE_ID: ${{ secrets.APPLE_ID != '' }}
+          HAS_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD != '' }}
+          HAS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID != '' }}
+        run: |
+          if [ "$APPLE_SIGNING_ENABLED" = "true" ]; then
+            echo "::notice::Secrets Apple configurati: build macOS firmata con Developer ID e notarizzata."
+            exit 0
+          fi
+          MISSING=""
+          CONFIGURED=""
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            flag="HAS_$name"
+            if [ "${!flag}" = "true" ]; then
+              CONFIGURED="$CONFIGURED $name"
+            else
+              MISSING="$MISSING $name"
+            fi
+          done
+          if [ -n "$CONFIGURED" ]; then
+            echo "::warning::Secrets Apple configurati solo in parte (mancano:$MISSING): la firma Developer ID richiede tutti e sei, questa build macOS ripiega sulla firma ad-hoc."
+          fi
+          echo "::notice::Build macOS firmata ad-hoc e NON notarizzata (secrets Apple Developer ID assenti o incompleti). Gatekeeper blocca il primo avvio dell'app scaricata: l'utente deve aprirla da Impostazioni di Sistema > Privacy e sicurezza > Apri comunque (fino a macOS 14 basta anche tasto destro > Apri). Per la firma completa configurare APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD e APPLE_TEAM_ID."
+
+      # Le build di prova non ricevono la chiave di firma degli update: con
+      # createUpdaterArtifacts attivo tauri fallirebbe a fine bundle ("A public
+      # key has been found, but no private key"). Si spengono solo qui.
+      - name: Disable updater artifacts (test build)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        run: jq '.bundle.createUpdaterArtifacts = false' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+
+      # Plain test build when NOT releasing (e.g. manual workflow_dispatch on
+      # a branch, no tag): verifies the build works without touching any
+      # GitHub Release. Firma ad-hoc, nessuna notarizzazione.
+      - name: Build macOS app (test build, no release)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          CHURCH_HELPER_API_BASE: ${{ vars.CHURCH_HELPER_API_BASE }}
+        run: npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+
+      # Real release build, variante senza secrets Apple: .app firmato ad-hoc
+      # (signingIdentity "-" da tauri.conf.json), nessuna variabile APPLE_*.
+      # Pubblica .dmg e .app.tar.gz (+ .sig se TAURI_SIGNING_PRIVATE_KEY e'
+      # configurato) e aggiunge a latest.json le voci darwin-aarch64 e
+      # darwin-x86_64, entrambe sull'unico bundle universal.
+      - name: Build and publish release (ad-hoc signing)
+        if: startsWith(github.ref, 'refs/tags/v') && env.APPLE_SIGNING_ENABLED != 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CHURCH_HELPER_API_BASE: ${{ vars.CHURCH_HELPER_API_BASE }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'church-helper-desktop ${{ github.ref_name }}'
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
+          includeUpdaterJson: true
+          args: --target universal-apple-darwin --bundles app,dmg
+
+      # Real release build, variante con tutti i secrets Apple: il bundler
+      # importa il certificato in un keychain temporaneo, firma con
+      # APPLE_SIGNING_IDENTITY (che sovrascrive il "-" di tauri.conf.json) e
+      # notarizza con APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID. Stessi artefatti
+      # e stesse voci di latest.json della variante ad-hoc.
+      - name: Build and publish release (Developer ID signing + notarization)
+        if: startsWith(github.ref, 'refs/tags/v') && env.APPLE_SIGNING_ENABLED == 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CHURCH_HELPER_API_BASE: ${{ vars.CHURCH_HELPER_API_BASE }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'church-helper-desktop ${{ github.ref_name }}'
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
+          includeUpdaterJson: true
+          args: --target universal-apple-darwin --bundles app,dmg

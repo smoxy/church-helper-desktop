@@ -1,0 +1,4 @@
+# Gli script di scripts/ci girano anche con la bash di Git per Windows: senza
+# eol=lf il checkout su windows-latest (core.autocrlf=true) li convertirebbe in
+# CRLF e bash fallirebbe su ogni riga ($'\r': command not found).
+*.sh text eol=lf
