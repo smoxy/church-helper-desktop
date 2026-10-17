@@ -228,6 +228,17 @@ CHURCH_HELPER_API_BASE=http://localhost:8787 npm run tauri dev
 
 Senza questa variabile non cambia nulla: il desktop usa `API_BASE_URL` (produzione) come sempre.
 
+**Immagini (poster/storyboard) con lo stub.** La CSP del desktop (`src-tauri/tauri.conf.json`,
+`img-src 'self' https: data:`) vale anche in `tauri dev` e ammette solo immagini `https:`. Lo stub
+invece costruisce ogni URL di file/immagine come `http://<host>/files/...`, quindi la webview li
+blocca: contro lo stub poster e storyboard mostrano **sempre il segnaposto** (si vede solo la
+miniatura YouTube, che è `https`). È il comportamento atteso, non un bug, e la CSP non va allargata:
+
+- con lo stub si verifica il ripiego sul segnaposto e tutto il resto della UI dei metadati;
+- il rendering delle immagini vere si verifica con una build di debug contro un'API servita in
+  `https` (ad es. senza `CHURCH_HELPER_API_BASE`, cioè la produzione). Un proxy TLS davanti allo
+  stub da solo non basta, perché gli URL che lo stub restituisce restano `http://`.
+
 ### Log e troubleshooting
 
 L'app usa `tracing`; il livello si controlla con `RUST_LOG` (default `info`).
