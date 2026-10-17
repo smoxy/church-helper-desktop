@@ -4,7 +4,8 @@ L'auto-update (`tauri-plugin-updater`) è **operativo dalla v0.3.0**: la coppia 
 esiste, i secrets `TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` sono configurati
 in CI e `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` è la **chiave pubblica reale**
 (non più il placeholder). Ogni release stabile pubblica installer firmati (`.msi`, `.exe` nsis,
-`.deb`), i relativi `.sig` e un `latest.json`.
+`.deb`), i relativi `.sig` e un `latest.json`. Dalla v0.4.1 la release include anche macOS (un
+`.dmg` universal e l'archivio `.app.tar.gz` dell'updater): vedi la sezione "macOS" più sotto.
 
 Le sezioni 1-3 più sotto restano come riferimento storico/di rotazione della chiave: non vanno
 rieseguite per una release normale.
@@ -64,6 +65,94 @@ root: dopo il consenso nel dialog dell'app compare la **richiesta di password di
 (`pkexec`). Annullarla fa fallire l'installazione (dialog "Aggiornamento non riuscito"); non
 essendo un "Più tardi", l'aggiornamento viene riproposto al check successivo. Per un update
 senza password servirebbe un bundle AppImage (vedi "Limite noto" più sotto).
+
+## macOS (dalla v0.4.1)
+
+Il job `release-macos` di `.github/workflows/build.yml` gira su `macos-latest` e parte **dopo**
+`release-linux`, che a sua volta segue `release-windows`. L'ordine serve perché `tauri-action`
+scarica il `latest.json` già presente sulla release, ci aggiunge le voci della propria piattaforma
+e lo ricarica: tre job in parallelo si sovrascriverebbero le voci a vicenda. Conseguenza: se uno
+dei job precedenti fallisce, la build macOS viene saltata (si rilanciano i job falliti da GitHub
+Actions).
+
+### Cosa viene pubblicato
+
+- Una **build universal** (`--target universal-apple-darwin`) in un unico `.app` per Apple Silicon e
+  Intel, con `--bundles app,dmg` (target `app` e `dmg` in `bundle.targets`; gli altri sistemi li
+  ignorano).
+- Il **`.dmg`** per l'installazione manuale.
+- L'archivio **`.app.tar.gz`** con il relativo **`.sig`** (minisign, stessa chiave
+  `TAURI_SIGNING_PRIVATE_KEY` delle altre piattaforme): è ciò che scarica l'updater.
+- Nel `latest.json`, le chiavi `darwin-aarch64` e `darwin-x86_64` (più le varianti `-app` che
+  `tauri-action` aggiunge da sé), tutte puntate all'**unico** archivio universal. Il target che
+  Tauri usa per macOS è `darwin`.
+
+### Firma: ad-hoc di default, Developer ID se ci sono i secrets
+
+Il workflow sceglie la variante dello step di build in base a un flag calcolato sui secrets (mai
+sui loro valori):
+
+| Situazione | Firma | Notarizzazione |
+|---|---|---|
+| Nessun secret Apple (stato attuale) | **ad-hoc** (`bundle.macOS.signingIdentity` = `"-"` in `tauri.conf.json`) | no |
+| Tutti e sei i secrets `APPLE_*` presenti | **Developer ID Application** | sì |
+| Solo alcuni secrets presenti | ad-hoc, con un `::warning::` che elenca quelli mancanti | no |
+
+Le build non-tag (`workflow_dispatch` su un branch) sono sempre ad-hoc e non pubblicano nulla.
+Attenzione: quegli step di prova non ricevono `TAURI_SIGNING_PRIVATE_KEY` mentre
+`createUpdaterArtifacts` è `true`, quindi (come già per Windows e Linux) è probabile che la run
+finisca in errore dopo aver prodotto `.app` e `.dmg`: non è un difetto specifico di macOS.
+
+**Senza i secrets Apple** l'app è firmata ad-hoc e non notarizzata: la build riesce e l'auto-update
+funziona (la firma dell'updater è minisign, indipendente da quella Apple), ma **Gatekeeper blocca il
+primo avvio** dell'app scaricata. L'utente deve autorizzarla a mano (procedura nel `README.md`,
+sezione Installazione); il job stampa un `::notice::` che lo ricorda.
+
+**Per attivare Developer ID + notarizzazione** serve l'iscrizione all'Apple Developer Program
+(a pagamento, annuale: la decisione e il costo sono dell'owner). Poi si creano sei secrets nel
+repo GitHub (`Settings` → `Secrets and variables` → `Actions`), con questi nomi esatti:
+
+| Nome secret | Da dove viene |
+|---|---|
+| `APPLE_CERTIFICATE` | Il certificato **Developer ID Application** esportato da Accesso Portachiavi come `.p12`, codificato in base64 su una riga (`base64 -i certificato.p12`) |
+| `APPLE_CERTIFICATE_PASSWORD` | La password scelta al momento dell'esportazione del `.p12` |
+| `APPLE_SIGNING_IDENTITY` | Il nome del certificato così come lo elenca `security find-identity -v -p codesigning`, nella forma `Developer ID Application: Nome Cognome (TEAMID)` |
+| `APPLE_ID` | L'indirizzo email dell'Apple ID che possiede l'account sviluppatore |
+| `APPLE_PASSWORD` | Una **password specifica per app** generata dall'Apple ID (account.apple.com, sezione di accesso e sicurezza), **non** la password dell'account |
+| `APPLE_TEAM_ID` | L'identificativo del team di 10 caratteri, visibile nei dettagli di iscrizione dell'account sviluppatore |
+
+Vanno impostati **tutti e sei**: con un insieme parziale il job non fallisce ma ripiega sulla
+firma ad-hoc. Come per la chiave dell'updater, sono credenziali che inserisce l'owner a mano nei
+Secrets: non vanno nel repo, in script o in chat. `APPLE_SIGNING_IDENTITY` sovrascrive il `"-"`
+di `tauri.conf.json` solo per la variante firmata; quella ad-hoc non riceve mai variabili `APPLE_*`
+(una `APPLE_CERTIFICATE` vuota farebbe tentare l'import di un certificato inesistente).
+
+### Limiti noti della firma ad-hoc
+
+- Il primo avvio richiede l'autorizzazione manuale in Gatekeeper (vedi sopra).
+- La firma ad-hoc non identifica uno sviluppatore e cambia a ogni release: dopo un aggiornamento
+  macOS **potrebbe** richiedere di nuovo alcuni permessi (ad esempio l'accesso a cartelle o le
+  notifiche). Non è verificato su un Mac reale.
+- L'aggiornamento tramite l'app passa dall'updater (download HTTP, non dal browser), quindi in
+  linea di principio non dovrebbe ripetere la procedura di Gatekeeper; anche questo non è stato
+  verificato su un Mac reale.
+
+### Note operative
+
+- La prima release su tag, se la cache Rust `release-macos` non è ancora stata scaldata da un push
+  su `main` (job `warm-release-cache` di `ci.yml`), sarà lenta: la build universal compila entrambi
+  i target.
+- Il DMG viene creato su un runner senza interfaccia grafica: ci si aspetta un `.dmg` valido ma
+  senza la finestra di installazione personalizzata. Se `hdiutil` fallisce con "Resource busy" è un
+  problema noto dei runner macOS: basta rilanciare il job.
+- Build locale su un Mac: `npm run tauri build -- --target universal-apple-darwin --bundles app,dmg`
+  (servono i target Rust `aarch64-apple-darwin` e `x86_64-apple-darwin`), oppure
+  `npm run tauri build -- --bundles app,dmg` per la sola architettura del Mac. In locale la firma è
+  quella ad-hoc di `tauri.conf.json`.
+- Il canale A (mail-parser) accetta `darwin` solo dopo il rilascio della relativa modifica del
+  servizio; finché non c'è risponde `422` e il client ricade su GitHub, che ha già le voci
+  `darwin-*` (nei log compare un warning a ogni check, innocuo). Vedi `adr-0011` e
+  `contract-desktop-update` nell'hub di architettura.
 
 ## 1. Generare la coppia di chiavi
 
@@ -137,7 +226,8 @@ l'auto-update funziona per le successive).
    - la Release pubblicata deve contenere, oltre agli installer, i file `.sig` e un asset
      `latest.json`.
 3. Verifica il contenuto di `latest.json`: deve avere una entry per `windows-x86_64` e una per
-   `linux-x86_64`, ciascuna con `url` e `signature` valorizzati (non vuoti).
+   `linux-x86_64` e, dalla v0.4.1, le entry `darwin-aarch64` e `darwin-x86_64`, ciascuna con `url`
+   e `signature` valorizzati (non vuoti).
 4. Se possibile, installa una build precedente e verifica che l'app rilevi l'aggiornamento al
    riavvio (dialog "Aggiornamento disponibile", vedi `check_for_updates` in `src-tauri/src/lib.rs`).
 5. Elimina il tag/release di test quando hai finito (`git push origin :refs/tags/v0.3.0-test` +

@@ -11,7 +11,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-supportato-2b7de9" alt="Windows"/>
   <img src="https://img.shields.io/badge/Linux-supportato-e67e22" alt="Linux"/>
-  <img src="https://img.shields.io/badge/macOS-in%20futuro-lightgrey" alt="macOS"/>
+  <img src="https://img.shields.io/badge/macOS-dalla%20v0.4.1-555555" alt="macOS"/>
   <img src="https://img.shields.io/badge/licenza-MIT-2ecc71" alt="Licenza MIT"/>
   <img src="https://img.shields.io/badge/contributi-benvenuti-ff69b4" alt="Contributi benvenuti"/>
 </p>
@@ -112,13 +112,41 @@ _In arrivo._ Se vuoi contribuire con degli screenshot dell'app in uso, sei il be
 2. Scarica il file adatto al tuo sistema:
    - **Windows** — l'installer `.msi` oppure `.exe`
    - **Linux** — il pacchetto `.deb`
+   - **macOS** (dalla v0.4.1) — il file `.dmg`, valido sia per i Mac con Apple Silicon sia per
+     quelli Intel
 3. Aprilo e segui l'installazione. Al primo avvio scegli la **cartella** dove vuoi i materiali e le
    **categorie** da scaricare in automatico.
 
-> **macOS** non è ancora supportato: è un obiettivo futuro.
+### Su macOS
+
+1. Apri il `.dmg` scaricato e **trascina l'app nella cartella Applicazioni**.
+2. **Primo avvio.** L'app non è ancora notarizzata da Apple (è firmata in modo "ad-hoc", perché
+   per la notarizzazione serve un account sviluppatore a pagamento), quindi macOS la blocca con un
+   avviso la prima volta. È previsto, e si sblocca una volta sola:
+   - prova ad aprire l'app e chiudi l'avviso;
+   - apri **Impostazioni di Sistema → Privacy e sicurezza**, scorri fino alla sezione *Sicurezza*,
+     dove compare il messaggio che l'app è stata bloccata, e premi **Apri comunque**
+     (conferma con la password o con Touch ID);
+   - su macOS 14 e precedenti basta anche fare **clic destro sull'app → Apri → Apri**.
+3. In alternativa, da **Terminale**, puoi togliere all'app il contrassegno di quarantena:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/church-helper-desktop.app
+   ```
+
+   Usalo solo per l'app scaricata dalla pagina Releases ufficiale del progetto.
+4. Gli **aggiornamenti successivi arrivano dall'app stessa**, che chiede sempre conferma prima di
+   installare. Non dovrebbe servire ripetere la procedura di sblocco.
+
+> **Limiti onesti della firma ad-hoc.** La firma ad-hoc non identifica uno sviluppatore e cambia a
+> ogni versione: dopo un aggiornamento macOS **potrebbe** chiedere di nuovo alcuni permessi (ad
+> esempio l'accesso alle cartelle o alle notifiche). Non è detto che succeda e non è stato ancora
+> verificato su un Mac reale. Lo stesso vale per il fatto che l'aggiornamento dall'app non richieda
+> di nuovo lo sblocco. Se in futuro il progetto avrà un account sviluppatore Apple, la procedura di
+> primo avvio non servirà più.
 
 **Disinstallazione:** usa gli strumenti standard del sistema (Impostazioni → App su Windows;
-rimozione del pacchetto su Linux).
+rimozione del pacchetto su Linux; su macOS trascina l'app dalla cartella Applicazioni al Cestino).
 
 ## Come contribuire
 
@@ -198,6 +226,26 @@ npm run tauri dev
 npm run tauri build
 # Output in: src-tauri/target/release/bundle/
 ```
+
+#### Build su macOS
+
+Su un Mac servono gli Xcode Command Line Tools (`xcode-select --install`), oltre ai prerequisiti
+sopra. Il bundle `.app` e il `.dmg` si ottengono con:
+
+```bash
+# universal (Apple Silicon + Intel): servono i target Rust aarch64-apple-darwin e x86_64-apple-darwin
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+
+# oppure nativo, per la sola architettura del Mac che stai usando
+npm run tauri build -- --bundles app,dmg
+```
+
+Output in `src-tauri/target/universal-apple-darwin/release/bundle/` (build universal) oppure in
+`src-tauri/target/release/bundle/` (nativa). La firma è quella ad-hoc di `tauri.conf.json`
+(`bundle.macOS.signingIdentity` = `"-"`): niente certificato Apple né notarizzazione in locale. La
+release su CI (job `release-macos` di `build.yml`) e l'eventuale firma Developer ID sono descritte
+in [`UPDATER_SETUP.md`](UPDATER_SETUP.md).
 
 #### Build locali e versione
 
