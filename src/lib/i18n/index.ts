@@ -76,19 +76,38 @@ function translate(lang: Lang, key: TKey, vars?: TVars): string {
   return interpolate(dict[key], vars);
 }
 
+// Display names for category keys (owner decision: 'decime' reads "Decime e
+// offerte"). Keys stay exactly as the server sends them (config,
+// auto-download, folder names); this map only affects what is shown. A
+// category without an entry is displayed as its raw key, as before.
+const CATEGORY_LABEL_KEYS: Readonly<Record<string, TKey>> = {
+  decime: 'category.decime',
+};
+
+function translateCategory(lang: Lang, category: string): string {
+  const key = Object.prototype.hasOwnProperty.call(
+                  CATEGORY_LABEL_KEYS, category.toLowerCase()) ?
+      CATEGORY_LABEL_KEYS[category.toLowerCase()] :
+      undefined;
+  return key ? translate(lang, key) : category;
+}
+
 /**
  * React hook: resolves the active language from the store (selector-only
  * subscription, so components only re-render when `config.language` itself
  * changes) and returns a `t()` translator bound to it plus the resolved
- * `lang` code. Changing the language in Settings calls `updateConfig`, which
- * updates the store and re-renders every subscribed component immediately.
+ * `lang` code, plus `categoryLabel()` for displaying a category key.
+ * Changing the language in Settings calls `updateConfig`, which updates the
+ * store and re-renders every subscribed component immediately.
  */
 export function useI18n() {
   const language = useAppStore(state => state.config?.language);
   const lang = resolveLanguage(language);
   const t = useCallback(
       (key: TKey, vars?: TVars) => translate(lang, key, vars), [lang]);
-  return {t, lang};
+  const categoryLabel = useCallback(
+      (category: string) => translateCategory(lang, category), [lang]);
+  return {t, lang, categoryLabel};
 }
 
 /**

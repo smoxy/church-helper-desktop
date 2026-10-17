@@ -49,6 +49,15 @@ pub struct AppConfig {
     /// predating this field deserializes to `System` instead of failing.
     #[serde(default)]
     pub language: LanguageSetting,
+    /// Also auto-download the NEXT week's material (`GET
+    /// /api/resources/next-week`, i.e. Saturday S+7) for the enabled
+    /// categories. Opt-in (default `false`): the next week's resources are
+    /// still fetched and shown in the Dashboard's "next week" section, they
+    /// just aren't queued automatically unless this is on.
+    pub download_next_week: bool,
+    /// Hours between two periodic update checks (besides the one at
+    /// startup). Default 6; clamped to at least 1 by the scheduler.
+    pub update_check_interval_hours: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -85,6 +94,12 @@ pub struct SavingsStats {
     pub total_saved_bytes: u64,
 }
 
+/// Default for [`AppConfig::update_check_interval_hours`].
+pub const DEFAULT_UPDATE_CHECK_INTERVAL_HOURS: u32 = 6;
+/// Upper bound accepted by [`AppConfig::validate`] for the update check
+/// interval (one week).
+pub const MAX_UPDATE_CHECK_INTERVAL_HOURS: u32 = 168;
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -99,6 +114,8 @@ impl Default for AppConfig {
             tray_close_os_notice_shown: false, // Default: not shown yet
             theme: ThemeSetting::System, // Default: follow the OS
             language: LanguageSetting::System, // Default: follow the OS
+            download_next_week: false, // Default: opt-in only
+            update_check_interval_hours: DEFAULT_UPDATE_CHECK_INTERVAL_HOURS,
         }
     }
 }
@@ -111,6 +128,13 @@ impl AppConfig {
                 self.polling_interval_minutes,
             ));
         }
+        if self.update_check_interval_hours < 1
+            || self.update_check_interval_hours > MAX_UPDATE_CHECK_INTERVAL_HOURS
+        {
+            return Err(ConfigValidationError::InvalidUpdateCheckInterval(
+                self.update_check_interval_hours,
+            ));
+        }
         Ok(())
     }
 }
@@ -118,6 +142,7 @@ impl AppConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigValidationError {
     InvalidPollingInterval(u32),
+    InvalidUpdateCheckInterval(u32),
 }
 
 /// A single optimized video variant produced by the re-encoder from a
@@ -132,8 +157,38 @@ pub struct OptimizedVideo {
     pub size_bytes: u64,
 }
 
-/// Resource from the API response
+/// Hover-scrub storyboard of a video resource: one JPEG sprite with `frames`
+/// frames laid out on a `cols` x `rows` grid, each `frame_width` x
+/// `frame_height` pixels, row-major. `timestamps` (seconds) has exactly one
+/// entry per frame, or is empty when the server's list was unusable.
+/// Additive metadata (shared contract, 2026-10-16): see
+/// `deserialize_lenient_storyboard` for how malformed payloads degrade.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Storyboard {
+    pub url: String,
+    pub frames: u32,
+    pub cols: u32,
+    pub rows: u32,
+    pub frame_width: u32,
+    pub frame_height: u32,
+    #[serde(default)]
+    pub timestamps: Vec<f64>,
+}
+
+/// One certain-data tag of a resource (`facet` is "categoria", "trimestre",
+/// "numero", "data" or "durata" today). Kept as free strings so a facet
+/// added later by the server still parses; the UI shows only those it knows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResourceTag {
+    pub facet: String,
+    pub value: String,
+}
+
+/// Resource from the API response.
+///
+/// `Serialize` is implemented by hand (below) because the IPC/cache JSON
+/// also carries the computed `projection_date`; `Deserialize` ignores it.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Resource {
     pub id: i64,
     pub category: String,
@@ -145,6 +200,10 @@ pub struct Resource {
     #[serde(default)]
     pub description: Option<String>,
     pub download_url: String,
+    /// Poster image URL (official title card, else the re-encoder's first
+    /// non-black frame). Lenient like the other metadata fields: a
+    /// non-string value degrades to `None` instead of failing the poll.
+    #[serde(default, deserialize_with = "deserialize_lenient_string")]
     pub thumbnail_url: Option<String>,
     pub file_type: Option<String>,
     pub checksum: Option<String>,
@@ -177,6 +236,138 @@ pub struct Resource {
     /// unaffected by this field and keeps using only `optimized_video_url`
     /// (the producer's compat-default, always the first/largest element).
     pub optimized_videos: Option<Vec<OptimizedVideo>>,
+    /// Id of the resource this one IMMEDIATELY supersedes (errata corrige
+    /// published under a new id, e.g. the source changed the file URL). Not
+    /// the chain root: for A -> B -> C, C carries B's id. Additive field
+    /// (adr-0003): absent on older servers, `None` then.
+    #[serde(default)]
+    pub supersedes_resource_id: Option<i64>,
+    /// Raw source title (uppercase, as found), next to the human `title`.
+    /// Additive metadata: absent, `null` or a non-string value -> `None`.
+    #[serde(default, deserialize_with = "deserialize_lenient_string")]
+    pub title_original: Option<String>,
+    /// Video duration in seconds. Additive metadata: absent, `null`, a
+    /// non-number or a non-positive / non-finite value -> `None`.
+    #[serde(default, deserialize_with = "deserialize_lenient_duration")]
+    pub duration_s: Option<f64>,
+    /// Hover-scrub sprite. Additive metadata: absent or malformed -> `None`.
+    #[serde(default, deserialize_with = "deserialize_lenient_storyboard")]
+    pub storyboard: Option<Storyboard>,
+    /// Certain-data tags. Additive metadata: absent / not a list -> empty;
+    /// malformed entries are skipped one by one.
+    #[serde(default, deserialize_with = "deserialize_lenient_tags")]
+    pub tags: Vec<ResourceTag>,
+}
+
+/// Field-by-field mirror of the derived representation plus the computed
+/// `projection_date` ("YYYY-MM-DD", see [`Resource::projection_date`]), so
+/// the UI never re-derives the projection Saturday itself. Every stored
+/// field must be listed here: `test_resource_serialize_roundtrip` fails if
+/// one is forgotten.
+impl Serialize for Resource {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut st = serializer.serialize_struct("Resource", 20)?;
+        st.serialize_field("id", &self.id)?;
+        st.serialize_field("category", &self.category)?;
+        st.serialize_field("title", &self.title)?;
+        st.serialize_field("description", &self.description)?;
+        st.serialize_field("download_url", &self.download_url)?;
+        st.serialize_field("thumbnail_url", &self.thumbnail_url)?;
+        st.serialize_field("file_type", &self.file_type)?;
+        st.serialize_field("checksum", &self.checksum)?;
+        st.serialize_field("is_active", &self.is_active)?;
+        st.serialize_field("created_at", &self.created_at)?;
+        st.serialize_field("week_date", &self.week_date)?;
+        st.serialize_field("optimized_video_url", &self.optimized_video_url)?;
+        st.serialize_field("optimized_videos", &self.optimized_videos)?;
+        st.serialize_field("supersedes_resource_id", &self.supersedes_resource_id)?;
+        st.serialize_field("title_original", &self.title_original)?;
+        st.serialize_field("duration_s", &self.duration_s)?;
+        st.serialize_field("storyboard", &self.storyboard)?;
+        st.serialize_field("tags", &self.tags)?;
+        st.serialize_field(
+            "projection_date",
+            &self
+                .projection_date()
+                .map(|d| d.format("%Y-%m-%d").to_string()),
+        )?;
+        st.end()
+    }
+}
+
+/// Lenient `Option<String>`: any non-string value degrades to `None`.
+fn deserialize_lenient_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|v| v.as_str().map(str::to_owned)))
+}
+
+/// Lenient duration: a finite, strictly positive JSON number, else `None`.
+fn deserialize_lenient_duration<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|v| v.as_f64())
+        .filter(|d| d.is_finite() && *d > 0.0))
+}
+
+/// Lenient storyboard: `None` unless the object parses and is coherent
+/// (non-empty URL, positive sizes, `frames` within the `cols` x `rows`
+/// grid). A `timestamps` list of the wrong length or with non-finite
+/// values is dropped (emptied) rather than discarding the whole sprite.
+fn deserialize_lenient_storyboard<'de, D>(deserializer: D) -> Result<Option<Storyboard>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|v| serde_json::from_value::<Storyboard>(v).ok())
+        .and_then(sanitize_storyboard))
+}
+
+fn sanitize_storyboard(mut sb: Storyboard) -> Option<Storyboard> {
+    let grid = u64::from(sb.cols) * u64::from(sb.rows);
+    let coherent = !sb.url.trim().is_empty()
+        && sb.frames > 0
+        && sb.cols > 0
+        && sb.rows > 0
+        && u64::from(sb.frames) <= grid
+        && sb.frame_width > 0
+        && sb.frame_height > 0;
+    if !coherent {
+        return None;
+    }
+    let timestamps_ok = sb.timestamps.len() == sb.frames as usize
+        && sb.timestamps.iter().all(|t| t.is_finite() && *t >= 0.0);
+    if !timestamps_ok {
+        sb.timestamps.clear();
+    }
+    Some(sb)
+}
+
+/// Lenient tags: a non-list degrades to an empty list; each entry that is
+/// not a `{facet, value}` pair of non-empty strings is skipped.
+fn deserialize_lenient_tags<'de, D>(deserializer: D) -> Result<Vec<ResourceTag>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(serde_json::Value::Array(items)) = value else {
+        return Ok(Vec::new());
+    };
+    Ok(items
+        .into_iter()
+        .filter_map(|item| serde_json::from_value::<ResourceTag>(item).ok())
+        .filter(|tag| !tag.facet.trim().is_empty() && !tag.value.trim().is_empty())
+        .collect())
 }
 
 fn deserialize_naive_to_utc<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
@@ -241,6 +432,16 @@ impl Resource {
             Some(date) => WeekIdentifier::from_naive_date(date),
             None => WeekIdentifier::from_datetime(self.created_at),
         }
+    }
+
+    /// The Saturday this resource is projected on: the Saturday of the ISO
+    /// week returned by [`Resource::week`] (so `week_date` when it is that
+    /// Saturday, else the Saturday of `created_at`'s UTC ISO week). It is
+    /// always inside the week the file is filed under. `None` only for a
+    /// week with no valid ISO Saturday, which `week()` never produces.
+    pub fn projection_date(&self) -> Option<NaiveDate> {
+        let week = self.week();
+        NaiveDate::from_isoywd_opt(week.year, week.week_number, Weekday::Sat)
     }
 
     /// Get the effective download URL based on preference
@@ -427,6 +628,13 @@ pub struct DownloadedFile {
     /// Whether this file has been superseded by an errata corrige
     #[serde(default)]
     pub is_superseded: bool,
+    /// Category of the downloaded resource. Used by the errata pass to spot a
+    /// live file whose resource vanished from the server while a NEW resource
+    /// of the same week + category appeared (errata with a new id). `None` for
+    /// entries written by builds that predate the field, until the errata pass
+    /// backfills it from the server list (`errata::backfill_categories`).
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 /// Represents a detected errata corrige change
@@ -604,6 +812,11 @@ mod tests {
             week_date: None,
             optimized_video_url: None,
             optimized_videos: None,
+            supersedes_resource_id: None,
+            title_original: None,
+            duration_s: None,
+            storyboard: None,
+            tags: Vec::new(),
         };
         assert!(youtube_resource.is_youtube());
 
@@ -740,6 +953,11 @@ mod tests {
             week_date: None,
             optimized_video_url: None,
             optimized_videos: None,
+            supersedes_resource_id: None,
+            title_original: None,
+            duration_s: None,
+            storyboard: None,
+            tags: Vec::new(),
         };
         let week = resource.week();
         assert_eq!(week.year, 2026);
@@ -864,6 +1082,11 @@ mod tests {
             week_date: NaiveDate::from_ymd_opt(2026, 5, 9),
             optimized_video_url: None,
             optimized_videos: None,
+            supersedes_resource_id: None,
+            title_original: None,
+            duration_s: None,
+            storyboard: None,
+            tags: Vec::new(),
         };
 
         let latest = latest_week(&[resource]);
@@ -888,10 +1111,253 @@ mod tests {
             tray_close_os_notice_shown: true,
             theme: ThemeSetting::Dark,
             language: LanguageSetting::Italian,
+            download_next_week: true,
+            update_check_interval_hours: 12,
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config, deserialized);
+    }
+
+    /// `download_next_week` is opt-in, and a settings.json written before the
+    /// field (or `update_check_interval_hours`) existed must load with the
+    /// defaults instead of resetting the user's config.
+    #[test]
+    fn test_next_week_and_update_interval_defaults_and_missing_keys() {
+        let config = AppConfig::default();
+        assert!(!config.download_next_week, "next week download is opt-in");
+        assert_eq!(config.update_check_interval_hours, 6);
+
+        let json = r#"{
+            "work_directory": "/data",
+            "polling_enabled": true,
+            "polling_interval_minutes": 60,
+            "retention_days": 7,
+            "auto_download_categories": ["missioni"],
+            "download_mode": "Queue",
+            "prefer_optimized": true,
+            "autostart_enabled": false,
+            "tray_close_os_notice_shown": true,
+            "theme": "System",
+            "language": "Italian"
+        }"#;
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.download_next_week);
+        assert_eq!(config.update_check_interval_hours, 6);
+        assert_eq!(
+            config.auto_download_categories,
+            vec!["missioni".to_string()]
+        );
+        assert!(config.tray_close_os_notice_shown);
+    }
+
+    #[test]
+    fn test_config_validation_update_interval_bounds() {
+        for hours in [0, MAX_UPDATE_CHECK_INTERVAL_HOURS + 1] {
+            let config = AppConfig {
+                update_check_interval_hours: hours,
+                ..Default::default()
+            };
+            assert_eq!(
+                config.validate(),
+                Err(ConfigValidationError::InvalidUpdateCheckInterval(hours))
+            );
+        }
+        for hours in [1, 6, MAX_UPDATE_CHECK_INTERVAL_HOURS] {
+            let config = AppConfig {
+                update_check_interval_hours: hours,
+                ..Default::default()
+            };
+            assert!(config.validate().is_ok());
+        }
+    }
+
+    /// Contract C: `supersedes_resource_id` is additive and nullable — absent
+    /// (old server), `null` and a value must all deserialize.
+    #[test]
+    fn test_supersedes_resource_id_is_additive() {
+        let base = r#""id": 7, "category": "missioni", "title": "T",
+            "download_url": "https://example.com/7.zip", "thumbnail_url": null,
+            "file_type": null, "is_active": true,
+            "created_at": "2026-10-16T10:00:00""#;
+        let absent: Resource = serde_json::from_str(&format!("{{{base}}}")).unwrap();
+        assert_eq!(absent.supersedes_resource_id, None);
+        let null: Resource =
+            serde_json::from_str(&format!("{{{base}, \"supersedes_resource_id\": null}}")).unwrap();
+        assert_eq!(null.supersedes_resource_id, None);
+        let some: Resource =
+            serde_json::from_str(&format!("{{{base}, \"supersedes_resource_id\": 5}}")).unwrap();
+        assert_eq!(some.supersedes_resource_id, Some(5));
+    }
+
+    const META_BASE: &str = r#""id": 7, "category": "missioni", "title": "T",
+            "download_url": "https://example.com/7.zip",
+            "file_type": null, "is_active": true,
+            "created_at": "2026-10-16T10:00:00""#;
+
+    /// Shared metadata contract: a payload from a server that predates it
+    /// (no thumbnail_url/storyboard/duration_s/tags/title_original at all)
+    /// still parses, with every new field empty.
+    #[test]
+    fn test_metadata_fields_absent_are_tolerated() {
+        let r: Resource = serde_json::from_str(&format!("{{{META_BASE}}}")).unwrap();
+        assert_eq!(r.thumbnail_url, None);
+        assert_eq!(r.storyboard, None);
+        assert_eq!(r.duration_s, None);
+        assert!(r.tags.is_empty());
+        assert_eq!(r.title_original, None);
+    }
+
+    /// A well-formed payload fills every field as given.
+    #[test]
+    fn test_metadata_fields_well_formed() {
+        let ts: Vec<String> = (0..15).map(|i| format!("{}.5", i * 20)).collect();
+        let json = format!(
+            r#"{{{META_BASE}, "thumbnail_url": "https://v.example/2026-W42/a.poster.jpg",
+            "duration_s": 298.4, "title_original": "L'EFFETTO GREGGE",
+            "storyboard": {{"url": "https://v.example/2026-W42/a.storyboard.jpg",
+                "frames": 15, "cols": 5, "rows": 3, "frame_width": 320,
+                "frame_height": 180, "timestamps": [{}]}},
+            "tags": [{{"facet": "trimestre", "value": "2026-Q4"}},
+                     {{"facet": "numero", "value": "03"}}]}}"#,
+            ts.join(",")
+        );
+        let r: Resource = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            r.thumbnail_url.as_deref(),
+            Some("https://v.example/2026-W42/a.poster.jpg")
+        );
+        assert_eq!(r.duration_s, Some(298.4));
+        assert_eq!(r.title_original.as_deref(), Some("L'EFFETTO GREGGE"));
+        let sb = r.storyboard.expect("storyboard");
+        assert_eq!((sb.frames, sb.cols, sb.rows), (15, 5, 3));
+        assert_eq!((sb.frame_width, sb.frame_height), (320, 180));
+        assert_eq!(sb.timestamps.len(), 15);
+        assert_eq!(
+            r.tags,
+            vec![
+                ResourceTag {
+                    facet: "trimestre".into(),
+                    value: "2026-Q4".into()
+                },
+                ResourceTag {
+                    facet: "numero".into(),
+                    value: "03".into()
+                },
+            ]
+        );
+    }
+
+    /// Malformed metadata never fails the resource (one bad field must not
+    /// take down the whole poll): each degrades to its empty value.
+    #[test]
+    fn test_metadata_fields_malformed_are_tolerated() {
+        let cases = [
+            // wrong JSON types everywhere
+            r#""thumbnail_url": 5, "duration_s": "4:58", "title_original": [],
+               "storyboard": "x", "tags": {"facet": "numero"}"#,
+            // incoherent storyboard (frames beyond the grid), bad numbers
+            r#""duration_s": -3, "storyboard": {"url": "u", "frames": 16,
+               "cols": 5, "rows": 3, "frame_width": 320, "frame_height": 180,
+               "timestamps": []}, "tags": null"#,
+            // storyboard missing required keys, zero duration
+            r#""duration_s": 0, "storyboard": {"url": "u", "frames": 15}"#,
+            // empty url, zero size
+            r#""storyboard": {"url": " ", "frames": 15, "cols": 5, "rows": 3,
+               "frame_width": 0, "frame_height": 180}"#,
+        ];
+        for extra in cases {
+            let r: Resource = serde_json::from_str(&format!("{{{META_BASE}, {extra}}}"))
+                .unwrap_or_else(|e| panic!("{extra}: {e}"));
+            assert_eq!(r.thumbnail_url, None, "{extra}");
+            assert_eq!(r.duration_s, None, "{extra}");
+            assert_eq!(r.storyboard, None, "{extra}");
+            assert!(r.tags.is_empty(), "{extra}");
+            assert_eq!(r.title_original, None, "{extra}");
+        }
+
+        // Partially bad: malformed tag entries are skipped one by one, and a
+        // timestamps list of the wrong length is dropped, keeping the sprite.
+        let r: Resource = serde_json::from_str(&format!(
+            r#"{{{META_BASE}, "tags": [{{"facet": "numero", "value": "03"}}, 7,
+                {{"facet": "durata"}}, {{"facet": "", "value": "x"}}],
+              "storyboard": {{"url": "u", "frames": 15, "cols": 5, "rows": 3,
+                "frame_width": 320, "frame_height": 180, "timestamps": [1, 2]}}}}"#
+        ))
+        .unwrap();
+        assert_eq!(r.tags.len(), 1);
+        assert_eq!(r.tags[0].value, "03");
+        let sb = r.storyboard.expect("sprite kept");
+        assert!(sb.timestamps.is_empty());
+    }
+
+    /// The IPC/cache JSON carries every stored field (round-trip equality)
+    /// plus the computed `projection_date`, which deserialization ignores.
+    #[test]
+    fn test_resource_serialize_roundtrip_and_projection_date() {
+        let json = format!(
+            r#"{{{META_BASE}, "week_date": "2026-10-17", "thumbnail_url": "https://p/x.jpg",
+            "description": "d", "checksum": "abc", "optimized_video_url": "https://o/x.mp4",
+            "optimized_videos": [{{"url": "https://o/x.mp4", "label": "720p", "size_bytes": 9}}],
+            "supersedes_resource_id": 3, "duration_s": 298.4, "title_original": "T",
+            "storyboard": {{"url": "u", "frames": 15, "cols": 5, "rows": 3,
+                "frame_width": 320, "frame_height": 180, "timestamps": []}},
+            "tags": [{{"facet": "numero", "value": "03"}}]}}"#
+        );
+        let r: Resource = serde_json::from_str(&json).unwrap();
+        let value = serde_json::to_value(&r).unwrap();
+        assert_eq!(value["projection_date"], "2026-10-17");
+        let back: Resource = serde_json::from_value(value).unwrap();
+        assert_eq!(back, r);
+    }
+
+    /// `projection_date` follows `week()`: the Saturday of `week_date`'s ISO
+    /// week, else of `created_at`'s UTC ISO week (Sunday late evening and
+    /// Monday just after midnight stay in their own ISO week).
+    #[test]
+    fn test_projection_date_same_rule_as_week() {
+        let parse = |extra: &str| -> Resource {
+            serde_json::from_str(&format!(
+                r#"{{"id": 1, "category": "x", "title": "t", "download_url": "u",
+                "file_type": null, "is_active": true, {extra}}}"#
+            ))
+            .unwrap()
+        };
+        let sat = |y, m, d| NaiveDate::from_ymd_opt(y, m, d);
+        let cases = [
+            (r#""created_at": "2026-10-16T08:00:00Z""#, sat(2026, 10, 17)),
+            (r#""created_at": "2026-10-18T23:30:00Z""#, sat(2026, 10, 17)),
+            (r#""created_at": "2026-10-12T00:10:00Z""#, sat(2026, 10, 17)),
+            (r#""created_at": "2026-10-17T12:00:00Z""#, sat(2026, 10, 17)),
+            (
+                r#""created_at": "2026-10-16T08:00:00Z", "week_date": "2026-10-10""#,
+                sat(2026, 10, 10),
+            ),
+            // Year boundary: ISO 2026-W53 Saturday is 2027-01-02.
+            (r#""created_at": "2026-12-31T10:00:00Z""#, sat(2027, 1, 2)),
+        ];
+        for (extra, expected) in cases {
+            let r = parse(extra);
+            assert_eq!(r.projection_date(), expected, "{extra}");
+            let week = r.week();
+            let p = r.projection_date().unwrap();
+            assert_eq!(WeekIdentifier::from_naive_date(p), week, "{extra}");
+        }
+    }
+
+    /// A registry entry written before `category` existed still loads.
+    #[test]
+    fn test_downloaded_file_missing_category_deserializes_to_none() {
+        let json = r#"{
+            "resource_id": 1,
+            "week": {"year": 2026, "week_number": 42},
+            "local_path": "/data/W42-2026-10-17/a.mp4",
+            "downloaded_at": "2026-10-16T10:00:00Z",
+            "source_url": "https://example.com/a.mp4",
+            "is_superseded": false
+        }"#;
+        let entry: DownloadedFile = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.category, None);
     }
 
     /// A settings.json written before the `theme` field existed must

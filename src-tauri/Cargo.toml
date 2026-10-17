@@ -1,6 +1,6 @@
 [package]
 name = "church-helper-desktop"
-version = "0.2.0"
+version = "0.4.0"
 description = "Scarica e organizza automaticamente i materiali settimanali della chiesa"
 authors = ["Simone Flavio Paris"]
 edition = "2021"
@@ -54,6 +54,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.11"
 hex = "0.4.3"
 urlencoding = "2"
+# Anonymous install id sent to our update endpoint (X-Install-Id)
+uuid = { version = "1", features = ["v4"] }
+# Critical-release check (current_version < min_supported)
+semver = "1"
 
 [dev-dependencies]
 tempfile = "3"

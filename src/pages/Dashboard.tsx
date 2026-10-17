@@ -9,15 +9,18 @@ import { errorMessage } from "../lib/utils";
 import { useI18n } from "../lib/i18n";
 import { Resource } from "../types";
 import { ResourceDetail } from "../components/features/resource/ResourceDetail";
-import { ResourceCard } from "../components/features/resource/ResourceCard";
+import { ResourceGrid } from "../components/features/resource/ResourceGrid";
 import { ResourcesFoundCard } from "../components/features/resource/ResourcesFoundCard";
 import { DownloadsModal } from "../components/features/resource/DownloadsModal";
 import { StaleWeekBanner } from "../components/features/dashboard/StaleWeekBanner";
+import { NextWeekSection } from "../components/features/dashboard/NextWeekSection";
 
 export default function Dashboard() {
     const { t } = useI18n();
     const status = useAppStore(s => s.status);
     const resources = useAppStore(s => s.resources);
+    const nextWeekResources = useAppStore(s => s.nextWeekResources);
+    const downloadNextWeek = useAppStore(s => s.config?.download_next_week ?? false);
     const isLoading = useAppStore(s => s.isLoading);
     const error = useAppStore(s => s.error);
     const summary = useAppStore(s => s.summary);
@@ -66,7 +69,9 @@ export default function Dashboard() {
 
             {/* Status Cards */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                <div className="lg:col-span-2">
+                {/* Full row from md up: in the two-column layout (800-1023px)
+                    a single column is too narrow for the three counters. */}
+                <div className="md:col-span-2">
                     <ResourcesFoundCard
                         summary={summary}
                         onClick={() => setShowDownloads(true)}
@@ -120,22 +125,18 @@ export default function Dashboard() {
             {/* Resources List */}
             <div className="space-y-4">
                 <h3 className="text-xl font-semibold">{t('dashboard.weeklyMaterial')}</h3>
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                    {resources.length === 0 ? (
-                        <div className="col-span-full text-center py-10 border rounded-lg bg-card text-muted-foreground">
-                            {t('dashboard.noResourcesFound')}
-                        </div>
-                    ) : (
-                        resources.map((resource) => (
-                            <ResourceCard
-                                key={resource.id}
-                                resource={resource}
-                                onClick={() => setSelectedResource(resource)}
-                            />
-                        ))
-                    )}
-                </div>
+                <ResourceGrid
+                    resources={resources}
+                    emptyMessage={t('dashboard.noResourcesFound')}
+                    onSelect={setSelectedResource}
+                />
             </div>
+
+            <NextWeekSection
+                resources={nextWeekResources}
+                autoDownloadEnabled={downloadNextWeek}
+                onSelect={setSelectedResource}
+            />
 
             {selectedResource && (
                 <ResourceDetail

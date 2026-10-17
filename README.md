@@ -199,6 +199,23 @@ npm run tauri build
 # Output in: src-tauri/target/release/bundle/
 ```
 
+#### Build locali e versione
+
+Gli script `scripts/build/linux.sh` (Docker) e `scripts/build/windows.ps1` non usano la versione di
+`tauri.conf.json` — la CI la scrive dal tag solo sulle release, quindi in locale è vecchia e
+l'updater proporrebbe di installare una release più vecchia sopra la build locale. La versione
+viene invece derivata da git e passata al compilatore senza modificare file tracciati:
+`X.Y.Z` se `HEAD` è esattamente su un tag stabile `vX.Y.Z`, altrimenti `X.(Y+1).0-dev.N`
+(`N` = commit dall'ultimo tag stabile; gli `-rcN` sono ignorati), ad es. `v0.3.0` + 3 commit →
+`0.4.0-dev.3`. Così l'updater offre solo release stabili **più nuove** (la vera `0.4.0` quando
+verrà pubblicata). `VERSION=X.Y.Z[-pre] scripts/build/linux.sh debug` forza un valore; lo script
+stampa la versione usata. Self-test della derivazione: `scripts/build/version.test.sh`.
+
+`linux.sh` tiene l'intera `CARGO_HOME` del container in `~/.cache/church-helper-builds/cargo-home-<arch>`
+(niente riscaricamento dei crate; i lock della package cache sono condivisi, quindi due build
+concorrenti della stessa arch si serializzano invece di estrarre a metà gli stessi crate).
+Self-test degli argomenti docker (con stub, senza docker): `scripts/build/linux.test.sh`.
+
 ### Puntare l'app a uno stub API locale (solo dev)
 
 Solo nelle build di debug (`tauri dev` / `build` / `test`, **mai** in release) il backend legge la
@@ -215,6 +232,17 @@ CHURCH_HELPER_API_BASE=http://localhost:8787 npm run tauri dev
 ```
 
 Senza questa variabile non cambia nulla: il desktop usa `API_BASE_URL` (produzione) come sempre.
+
+**Immagini (poster/storyboard) con lo stub.** La CSP del desktop (`src-tauri/tauri.conf.json`,
+`img-src 'self' https: data:`) vale anche in `tauri dev` e ammette solo immagini `https:`. Lo stub
+invece costruisce ogni URL di file/immagine come `http://<host>/files/...`, quindi la webview li
+blocca: contro lo stub poster e storyboard mostrano **sempre il segnaposto** (si vede solo la
+miniatura YouTube, che è `https`). È il comportamento atteso, non un bug, e la CSP non va allargata:
+
+- con lo stub si verifica il ripiego sul segnaposto e tutto il resto della UI dei metadati;
+- il rendering delle immagini vere si verifica con una build di debug contro un'API servita in
+  `https` (ad es. senza `CHURCH_HELPER_API_BASE`, cioè la produzione). Un proxy TLS davanti allo
+  stub da solo non basta, perché gli URL che lo stub restituisce restano `http://`.
 
 ### Log e troubleshooting
 
