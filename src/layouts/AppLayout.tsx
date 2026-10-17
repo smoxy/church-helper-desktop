@@ -92,7 +92,7 @@ export default function AppLayout() {
                                     rel="noopener noreferrer"
                                     className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-card text-foreground hover:bg-muted hover:text-primary transition-all font-semibold text-xs border border-border"
                                 >
-                                    <RinoovaLogo className="h-4" />
+                                    <RinoovaLogo className="h-4" alt="" />
                                     {t('layout.footer.sponsoredBy')}
                                 </a>
                             </div>

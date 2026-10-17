@@ -503,7 +503,7 @@ export default function Settings() {
                     </div>
 
                     <div className="flex items-center gap-4 rounded-lg border bg-card/50 p-4 mt-4">
-                        <img src={rinoovaIcon} alt="Rinoova" className="h-10 w-auto shrink-0" />
+                        <img src={rinoovaIcon} alt="" className="h-10 w-auto shrink-0" />
                         <div className="space-y-1">
                             <p className="text-foreground">
                                 {t('settings.systemInfo.rinoovaBlurb')}

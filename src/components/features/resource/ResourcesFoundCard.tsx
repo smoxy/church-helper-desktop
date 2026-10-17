@@ -72,19 +72,23 @@ export function ResourcesFoundCard({
                 <FileText className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
             </CardHeader>
             <CardContent>
-                <div className="flex items-center justify-between w-full">
+                {/* Wraps instead of clipping when the card is narrow. Each
+                    divider is the left border of the counter after it; the
+                    inner row is shifted left by border + padding and the outer
+                    box clips that strip, so the counter that starts a line
+                    never shows a divider and no line ends with one. */}
+                <div className="overflow-hidden">
+                <div className="-ml-[13px] flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
                     {/* Total Found */}
-                    <div className="flex flex-col">
+                    <div className="flex flex-col border-l border-border/60 pl-3">
                         <div className="flex items-baseline gap-1">
                             <span className="text-2xl font-black text-foreground tracking-tighter">{summary.total}</span>
                             <span className="text-[10px] font-bold text-muted-foreground uppercase opacity-70">{t('resourcesFoundCard.found')}</span>
                         </div>
                     </div>
 
-                    <div className="h-8 w-px bg-border/60"></div>
-
                     {/* Successfully Downloaded */}
-                    <div className="flex flex-col">
+                    <div className="flex flex-col border-l border-border/60 pl-3">
                         <div className="flex items-baseline gap-1">
                             <div className="flex items-center gap-1.5">
                                 <span className={`text-2xl font-black tracking-tighter ${summary.downloaded === summary.total && summary.total > 0 ? 'text-green-600' : 'text-green-600'}`}>
@@ -96,10 +100,8 @@ export function ResourcesFoundCard({
                         </div>
                     </div>
 
-                    <div className="h-8 w-px bg-border/60"></div>
-
                     {/* Currently Downloading / Active */}
-                    <div className="flex flex-col">
+                    <div className="flex flex-col border-l border-border/60 pl-3">
                         <div className="flex items-baseline gap-1">
                             <div className="flex items-center gap-1.5">
                                 <span className={`text-2xl font-black tracking-tighter ${summary.active > 0 ? 'text-blue-600' : 'text-foreground opacity-40'}`}>
@@ -114,6 +116,7 @@ export function ResourcesFoundCard({
                             <span className="text-[10px] font-bold text-muted-foreground uppercase opacity-70">{t('resourcesFoundCard.downloading')}</span>
                         </div>
                     </div>
+                </div>
                 </div>
             </CardContent>
 

@@ -1,38 +1,24 @@
 import type {Resource} from '../types';
 import type {Lang} from './i18n';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 /**
- * The Saturday the resource is projected on, as a UTC-midnight Date.
- *
- * Owner decision: the date shown for a resource is its `week_date` (the
- * projection Saturday sent by the server), never the ingest date
- * (`created_at`). When `week_date` is null (older servers), fall back to the
- * Saturday of the ISO week of `created_at` in UTC — the same week the backend
- * derives in `Resource::week()` (src-tauri/src/models.rs), so the date shown
- * always belongs to the week the file is filed under. Returns null only for
- * an unparsable `created_at`.
+ * The projection Saturday as a UTC-midnight Date, parsed from the backend's
+ * `projection_date` ("YYYY-MM-DD"). The rule that picks the Saturday
+ * (`week_date`, else the Saturday of `created_at`'s ISO week) lives only in
+ * Rust (`Resource::projection_date`, src-tauri/src/models.rs); this module
+ * only parses and formats it. Null when the field is absent or malformed.
  */
-export function projectionSaturday(resource: Resource): Date|null {
-  if (resource.week_date) {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(resource.week_date);
-    if (m) {
-      return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-    }
-  }
-  const created = new Date(resource.created_at);
-  if (Number.isNaN(created.getTime())) return null;
-  const day = Date.UTC(
-      created.getUTCFullYear(), created.getUTCMonth(), created.getUTCDate());
-  // ISO weekday with Monday = 0 … Sunday = 6; Saturday is index 5.
-  const isoWeekday = (created.getUTCDay() + 6) % 7;
-  return new Date(day + (5 - isoWeekday) * DAY_MS);
+function projectionSaturday(resource: Resource): Date|null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(resource.projection_date ?? '');
+  if (!m) return null;
+  const date =
+      new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 /**
  * The projection Saturday as an ISO calendar date ("2026-10-17"), for the
- * `dateTime` attribute of `<time>`; also covers the created_at fallback.
+ * `dateTime` attribute of `<time>`.
  */
 export function projectionIsoDate(resource: Resource): string|null {
   const date = projectionSaturday(resource);

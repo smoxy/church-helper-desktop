@@ -1,9 +1,12 @@
+import { useRef, useState, type PointerEvent } from 'react';
 import { Resource } from '../../../types';
 import { useResource } from '../../../hooks/useResource';
 import { useI18n } from '../../../lib/i18n';
 import { formatProjectionDate, projectionIsoDate } from '../../../lib/projectionDate';
 import { Card } from '../../ui/card';
 import { ResourceMedia } from './ResourceMedia';
+import { ResourceTags } from './ResourceTags';
+import { frameIndexAt } from '../../../lib/mediaMeta';
 import { FileHeadphone, FilePlay, FileText, MonitorPlay, Check, Download, LoaderCircle, Zap, Clock } from "lucide-react";
 
 interface ResourceCardProps {
@@ -28,8 +31,25 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
     const shortDate = formatProjectionDate(resource, lang, 'short');
     const isoDate = projectionIsoDate(resource);
 
+    // Hover scrub: the stretched button covers the media, so the card maps
+    // the pointer position onto the media box itself. Mouse/pen only (touch
+    // never scrubs); state changes only when the frame under it changes.
+    const mediaRef = useRef<HTMLDivElement>(null);
+    const [hoverFrame, setHoverFrame] = useState<number | null>(null);
+    const storyboard = resource.storyboard ?? null;
+    const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
+        const box = mediaRef.current?.getBoundingClientRect();
+        if (!storyboard || !box || box.width <= 0 || e.pointerType === "touch") return;
+        const inside = e.clientY >= box.top && e.clientY <= box.bottom;
+        setHoverFrame(inside ? frameIndexAt((e.clientX - box.left) / box.width, storyboard.frames) : null);
+    };
+
     return (
-        <Card className="flex h-full min-w-0 flex-col overflow-hidden cursor-pointer hover:border-primary/50 transition-colors group relative">
+        <Card
+            className="flex h-full min-w-0 flex-col overflow-hidden cursor-pointer hover:border-primary/50 transition-colors group relative"
+            onPointerMove={storyboard ? onPointerMove : undefined}
+            onPointerLeave={storyboard ? () => setHoverFrame(null) : undefined}
+        >
             {/* Stretched button: makes the whole card clickable/keyboard-focusable
                 as a real <button>, kept as a SIBLING (not ancestor) of the
                 download-status button below so no interactive element is
@@ -49,28 +69,33 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
             {/* Always-present 16:9 media area; status badges live on it, so
                 they never overlap the title below. */}
             <ResourceMedia
+                ref={mediaRef}
                 imageUrl={resource.thumbnail_url}
-                alt={resource.title}
+                storyboard={storyboard}
+                durationSeconds={resource.duration_s}
+                activeFrame={hoverFrame}
                 category={resource.category}
                 categoryLabel={category}
                 showCategoryChip
             >
                 <div className="absolute top-2 right-2 z-20 flex gap-1">
                     {resource.optimized_video_url && (
-                        <div className="bg-green-600 text-white p-1.5 rounded-full shadow-xs" title={t('resourceCard.optimizedAvailable')}>
-                            <Zap className="h-3 w-3" />
+                        <div role="img" aria-label={t('resourceCard.optimizedAvailable')} className="bg-green-600 text-white p-1.5 rounded-full shadow-xs" title={t('resourceCard.optimizedAvailable')}>
+                            <Zap className="h-3 w-3" aria-hidden="true" />
                         </div>
                     )}
                     {isDownloading ? (
-                        <div className="bg-muted text-muted-foreground p-1.5 rounded-full shadow-xs" title={t('resourceCard.downloading')}>
-                            <LoaderCircle className="h-3 w-3 animate-spin" />
+                        <div role="img" aria-label={t('resourceCard.downloading')} className="bg-muted text-muted-foreground p-1.5 rounded-full shadow-xs" title={t('resourceCard.downloading')}>
+                            <LoaderCircle className="h-3 w-3 animate-spin" aria-hidden="true" />
                         </div>
                     ) : isPending ? (
                         <div
+                            role="img"
+                            aria-label={queuePosition ? t('resourceCard.queuedAt', { position: queuePosition }) : t('resourceCard.queued')}
                             className="bg-amber-600 text-white p-1.5 rounded-full shadow-xs"
                             title={queuePosition ? t('resourceCard.queuedAt', { position: queuePosition }) : t('resourceCard.queued')}
                         >
-                            <Clock className="h-3 w-3" />
+                            <Clock className="h-3 w-3" aria-hidden="true" />
                         </div>
                     ) : isDownloaded ? (
                         <button
@@ -80,10 +105,10 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
                             title={t('resourceCard.openInFolder')}
                             aria-label={t('resourceCard.openInFolder')}
                         >
-                            <Check className="h-3 w-3" />
+                            <Check className="h-3 w-3" aria-hidden="true" />
                         </button>
                     ) : (
-                        <div className="bg-black/70 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" title={t('resourceCard.clickToView')}>
+                        <div aria-hidden="true" className="bg-black/70 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" title={t('resourceCard.clickToView')}>
                             <Download className="h-3 w-3" />
                         </div>
                     )}
@@ -103,6 +128,7 @@ export function ResourceCard({ resource, onClick }: ResourceCardProps) {
                         {resource.description}
                     </p>
                 )}
+                <ResourceTags tags={resource.tags} limit={2} />
                 <div className="mt-auto flex items-center gap-2 text-xs text-muted-foreground">
                     {getFileIcon(resource.file_type, isYoutube)}
                     {shortDate && (
