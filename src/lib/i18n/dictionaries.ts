@@ -33,6 +33,10 @@ const en = {
   'dashboard.toast.refreshSuccess': 'Week Material updated',
   'dashboard.toast.refreshError': 'Refresh failed: {error}',
   'dashboard.toast.genericError': 'Error: {error}',
+  'dashboard.nextWeek.title': 'Next Week',
+  'dashboard.nextWeek.autoOn': 'Downloaded automatically for your auto-download categories.',
+  'dashboard.nextWeek.autoOff': 'Automatic download is off: open a resource to download it, or enable "Download next week too" in Settings.',
+  'dashboard.nextWeek.empty': "Next week's material hasn't been published yet.",
 
   // --- src/pages/Settings.tsx ---
   'settings.loading': 'Loading settings…',
@@ -61,6 +65,8 @@ const en = {
   'settings.automation.modeQueue': 'Queue (Sequential)',
   'settings.automation.modeParallel': 'Parallel (4x)',
   'settings.automation.downloadStrategyHint': 'Queue downloads one file at a time. Parallel downloads up to 4 files simultaneously.',
+  'settings.automation.downloadNextWeek': 'Download next week too',
+  'settings.automation.downloadNextWeekHint': "As soon as it's published, also download next week's material for your auto-download categories.",
   'settings.automation.preferOptimized': 'Prefer Optimized Videos',
   'settings.automation.preferOptimizedHint': 'The optimized file has the same perceived quality but is up to 10 times smaller. Every optimized resource is made possible thanks to the work of volunteers.',
   'settings.automation.pollingInterval': 'Polling Interval',
@@ -91,6 +97,9 @@ const en = {
   'settings.toast.preferOptimizedOn': 'Optimized videos preferred',
   'settings.toast.preferOptimizedOff': 'Original videos preferred',
   'settings.toast.preferOptimizedError': 'Failed to update preference: {error}',
+  'settings.toast.nextWeekOn': 'Next week will be downloaded too',
+  'settings.toast.nextWeekOff': 'Only the current week will be downloaded',
+  'settings.toast.nextWeekError': 'Failed to update the next-week setting: {error}',
   'settings.toast.intervalRange': 'Polling interval must be between 1 and 1440 minutes',
   'settings.toast.intervalUpdated': 'Polling interval updated',
   'settings.toast.intervalError': 'Failed to update interval: {error}',
@@ -114,9 +123,30 @@ const en = {
   'resourceCard.openInFolder': 'Open in folder',
   'resourceCard.clickToView': 'Click to view',
 
+  // --- src/components/features/resource/ResourceMedia.tsx ---
+  'resourceMedia.noPreview': 'No preview',
+  'resourceMedia.placeholderAria': 'No preview available: {category}',
+  'resourceMedia.duration': 'Duration {duration}',
+  'resourceMedia.storyboardAria': 'Video preview: {title}. Use the left and right arrow keys to browse the frames.',
+  'resourceMedia.frame': 'Frame {index} of {total}',
+  'resourceMedia.frameAt': 'Frame {index} of {total}, at {time}',
+
+  // --- src/components/features/resource/ResourceTags.tsx (shared metadata
+  // contract: tag facets shown as chips) ---
+  'tags.listAria': 'Tags',
+  'tags.facet.numero': 'Number',
+  'tags.facet.trimestre': 'Quarter',
+  'tags.facet.durata': 'Duration',
+  'tags.value.numero': 'No. {n}',
+  'tags.value.trimestre': 'Q{q} {year}',
+  'tags.value.durata': '{duration}',
+
+  // --- src/lib/i18n/index.ts (categoryLabel): display names of category
+  // keys; a category without an entry is shown as its raw key ---
+  'category.decime': 'Tithes & offerings',
+
   // --- src/components/features/resource/ResourceDetail.tsx ---
   'resourceDetail.download': 'Download',
-  'resourceDetail.noThumbnail': 'No Thumbnail',
   'resourceDetail.retryHint': 'File corrupted. Click to retry.',
   'resourceDetail.queuedAtPosition': 'Queued (position {position})',
   'resourceDetail.queued': 'Queued',
@@ -135,8 +165,9 @@ const en = {
   'resourceDetail.autoDownloadTooltipPrefix': 'Automatically download future resources in the ',
   'resourceDetail.autoDownloadTooltipSuffix': ' category.',
   'resourceDetail.date': 'Date',
+  'resourceDetail.tags': 'Tags',
   'resourceDetail.description': 'Description',
-  'resourceDetail.noDescription': 'No description available.',
+  'resourceDetail.noDescription': 'Description not available',
   'resourceDetail.close': 'Close',
 
   // --- src/components/features/resource/OptimizedVideoPicker.tsx ---
@@ -269,6 +300,10 @@ const it: Record<TKey, string> = {
   'dashboard.toast.refreshSuccess': 'Materiale settimanale aggiornato',
   'dashboard.toast.refreshError': 'Aggiornamento fallito: {error}',
   'dashboard.toast.genericError': 'Errore: {error}',
+  'dashboard.nextWeek.title': 'Settimana Successiva',
+  'dashboard.nextWeek.autoOn': 'Scaricato automaticamente per le categorie con download automatico.',
+  'dashboard.nextWeek.autoOff': 'Download automatico disattivato: apri una risorsa per scaricarla, oppure attiva "Scarica anche la settimana successiva" nelle Impostazioni.',
+  'dashboard.nextWeek.empty': 'Il materiale della settimana successiva non è ancora stato pubblicato.',
 
   // --- src/pages/Settings.tsx ---
   'settings.loading': 'Caricamento impostazioni…',
@@ -297,6 +332,8 @@ const it: Record<TKey, string> = {
   'settings.automation.modeQueue': 'Coda (Sequenziale)',
   'settings.automation.modeParallel': 'Parallelo (4x)',
   'settings.automation.downloadStrategyHint': 'La coda scarica un file alla volta. Il parallelo scarica fino a 4 file contemporaneamente.',
+  'settings.automation.downloadNextWeek': 'Scarica anche la settimana successiva',
+  'settings.automation.downloadNextWeekHint': 'Appena viene pubblicato, scarica anche il materiale della settimana successiva per le categorie con download automatico.',
   'settings.automation.preferOptimized': 'Preferisci Video Ottimizzati',
   'settings.automation.preferOptimizedHint': 'Il file ottimizzato ha la stessa qualità percepita ma pesa fino a 10 volte di meno. Ogni risorsa ottimizzata è resa possibile grazie al lavoro dei volontari.',
   'settings.automation.pollingInterval': 'Intervallo di Controllo',
@@ -327,6 +364,9 @@ const it: Record<TKey, string> = {
   'settings.toast.preferOptimizedOn': 'Video ottimizzati preferiti',
   'settings.toast.preferOptimizedOff': 'Video originali preferiti',
   'settings.toast.preferOptimizedError': 'Impossibile aggiornare la preferenza: {error}',
+  'settings.toast.nextWeekOn': 'Verrà scaricata anche la settimana successiva',
+  'settings.toast.nextWeekOff': 'Verrà scaricata solo la settimana corrente',
+  'settings.toast.nextWeekError': 'Impossibile aggiornare l’opzione settimana successiva: {error}',
   'settings.toast.intervalRange': 'L’intervallo di controllo deve essere tra 1 e 1440 minuti',
   'settings.toast.intervalUpdated': 'Intervallo di controllo aggiornato',
   'settings.toast.intervalError': 'Impossibile aggiornare l’intervallo: {error}',
@@ -350,9 +390,28 @@ const it: Record<TKey, string> = {
   'resourceCard.openInFolder': 'Apri nella cartella',
   'resourceCard.clickToView': 'Clicca per visualizzare',
 
+  // --- src/components/features/resource/ResourceMedia.tsx ---
+  'resourceMedia.noPreview': 'Nessuna anteprima',
+  'resourceMedia.placeholderAria': 'Anteprima non disponibile: {category}',
+  'resourceMedia.duration': 'Durata {duration}',
+  'resourceMedia.storyboardAria': 'Anteprima del video: {title}. Usa le frecce sinistra e destra per scorrere i fotogrammi.',
+  'resourceMedia.frame': 'Fotogramma {index} di {total}',
+  'resourceMedia.frameAt': 'Fotogramma {index} di {total}, a {time}',
+
+  // --- src/components/features/resource/ResourceTags.tsx ---
+  'tags.listAria': 'Etichette',
+  'tags.facet.numero': 'Numero',
+  'tags.facet.trimestre': 'Trimestre',
+  'tags.facet.durata': 'Durata',
+  'tags.value.numero': 'N. {n}',
+  'tags.value.trimestre': '{q}° trimestre {year}',
+  'tags.value.durata': '{duration}',
+
+  // --- src/lib/i18n/index.ts (categoryLabel) ---
+  'category.decime': 'Decime e offerte',
+
   // --- src/components/features/resource/ResourceDetail.tsx ---
   'resourceDetail.download': 'Download',
-  'resourceDetail.noThumbnail': 'Nessuna Anteprima',
   'resourceDetail.retryHint': 'File corrotto. Clicca per riprovare.',
   'resourceDetail.queuedAtPosition': 'In coda (posizione {position})',
   'resourceDetail.queued': 'In coda',
@@ -371,8 +430,9 @@ const it: Record<TKey, string> = {
   'resourceDetail.autoDownloadTooltipPrefix': 'Scarica automaticamente le future risorse della categoria ',
   'resourceDetail.autoDownloadTooltipSuffix': '.',
   'resourceDetail.date': 'Data',
+  'resourceDetail.tags': 'Etichette',
   'resourceDetail.description': 'Descrizione',
-  'resourceDetail.noDescription': 'Nessuna descrizione disponibile.',
+  'resourceDetail.noDescription': 'Descrizione non disponibile',
   'resourceDetail.close': 'Chiudi',
 
   // --- src/components/features/resource/OptimizedVideoPicker.tsx ---

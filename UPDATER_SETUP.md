@@ -1,21 +1,69 @@
-# Setup dell'auto-update (passo manuale richiesto)
+# Auto-update: setup e funzionamento
 
-Questo repo ha il meccanismo di auto-update (`tauri-plugin-updater`) già cablato nel codice e nella
-CI (`.github/workflows/build.yml`), ma **non è ancora operativo**: manca la coppia di chiavi di
-firma, che va generata da una persona e non deve mai essere generata o committata da un agente
-automatico. Finché questo setup non è completato:
+L'auto-update (`tauri-plugin-updater`) è **operativo dalla v0.3.0**: la coppia di chiavi di firma
+esiste, i secrets `TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` sono configurati
+in CI e `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` è la **chiave pubblica reale**
+(non più il placeholder). Ogni release stabile pubblica installer firmati (`.msi`, `.exe` nsis,
+`.deb`), i relativi `.sig` e un `latest.json`.
 
-- il codice compila ed esegue normalmente;
-- gli installer (`.msi`, `.exe` nsis, `.deb`) continuano a essere pubblicati su ogni release, come
-  prima di questa modifica;
-- l'app, ad ogni avvio, prova comunque a controllare aggiornamenti (`check_for_updates` in
-  `src-tauri/src/lib.rs`) ma il check fallisce silenziosamente (loggato come `warn`, mai un crash)
-  perché l'endpoint non pubblica ancora un `latest.json` valido;
-- la CI stampa un warning ben visibile (`::warning::...`) in ogni release finché i secrets non
-  sono configurati, e disabilita automaticamente la generazione degli artefatti di update firmati
-  per quella build (l'installer normale viene comunque pubblicato).
+Le sezioni 1-3 più sotto restano come riferimento storico/di rotazione della chiave: non vanno
+rieseguite per una release normale.
 
-Questo documento è la checklist per completare il setup.
+## Come funziona il check (dalla v0.4.0)
+
+Codice: `src-tauri/src/services/updater.rs`.
+
+- **Due sorgenti, fallback costruito a mano:**
+  - **Updater A (primario)**: il nostro endpoint
+    `{api_base_url()}/api/desktop/update/{{target}}/{{arch}}/{{current_version}}`
+    (contratto D, servito da mail-parser-service), con l'header anonimo `X-Install-Id`
+    (UUID v4, vedi `PRIVACY.md`) e timeout di 30 secondi.
+  - **Updater B (fallback)**: il `latest.json` di GitHub configurato in
+    `plugins.updater.endpoints` di `tauri.conf.json`, interrogato **senza** header: l'id di
+    installazione non arriva mai a GitHub (e viene tolto anche dalla richiesta di download
+    dell'installer).
+  - B viene interrogato **solo** se A fallisce: rete assente/timeout, `503` o qualunque altro
+    non-2xx, corpo non decodificabile. Un `200` con la stessa versione installata e un `204`
+    (hold deliberato: pin uguale all'installata o ultima release bloccata) **non** fanno
+    ricadere su GitHub: farlo scavalcherebbe pin e blocchi.
+  - Pin e blocco valgono quindi in modo best-effort: se il nostro endpoint non è raggiungibile
+    il client vede comunque l'ultima stabile di GitHub.
+  - I client v0.3.x conoscono solo GitHub: ricevono la v0.4.0 da lì, poi passano al nostro
+    endpoint.
+- **Quando:** un check ~10 secondi dopo l'avvio e poi ogni `update_check_interval_hours`
+  (default 6, campo di `AppConfig`). Mai due check in parallelo; se ci sono download in coda o
+  attivi il check viene rinviato di 15 minuti.
+- **Consenso:** l'aggiornamento viene scaricato in background e installato **solo** dopo
+  conferma esplicita nel dialog ("Installa e riavvia" / "Più tardi"). Nessuna installazione
+  silenziosa, mai.
+- **"Più tardi":** la versione rifiutata non viene riproposta, **a meno che** la release sia
+  critica: `critical: true` nel manifest del nostro endpoint, oppure versione installata
+  `< min_supported`. In quel caso il dialog ("Aggiornamento importante") viene riproposto a ogni
+  check, sempre chiedendo il consenso.
+- **Test in locale (build debug):** con `CHURCH_HELPER_API_BASE` impostato, Updater A punta a
+  `api_base_url()` (es. l'api-stub) invece di saltare il check; gli scenari 200/204/503 dello
+  stub esercitano l'intera tabella di decisione (sul 503 si vede il fallback verso GitHub).
+
+## Release candidate: cosa ricevono i tester
+
+La CI scrive nei file di versione di una `vX.Y.Z-rcN` **solo** `X.Y.Z` (WiX/MSI non accetta il
+prerelease nel `ProductVersion`, vedi `.github/workflows/build.yml`). Conseguenze:
+
+- chi ha installato una `vX.Y.Z-rcN` risulta già alla versione `X.Y.Z`: **non riceve la stabile
+  `vX.Y.Z`** (stessa versione, il client non la considera più nuova). Riceverà la successiva
+  (`X.Y.Z+1` o superiore); se serve la build stabile esatta va installata a mano;
+- le rc sono pubblicate come *prerelease* su GitHub, quindi `releases/latest/download/latest.json`
+  non le serve mai;
+- **il pin su una rc è vietato** (`pinned_version` della policy admin rifiuta i `-rc`): il
+  manifest di una rc annuncia `X.Y.Z` e sarebbe indistinguibile dalla stabile.
+
+## Linux `.deb`: password di amministratore
+
+Su Linux l'aggiornamento di un `.deb` installato dal package manager richiede i privilegi di
+root: dopo il consenso nel dialog dell'app compare la **richiesta di password di polkit**
+(`pkexec`). Annullarla fa fallire l'installazione (dialog "Aggiornamento non riuscito"); non
+essendo un "Più tardi", l'aggiornamento viene riproposto al check successivo. Per un update
+senza password servirebbe un bundle AppImage (vedi "Limite noto" più sotto).
 
 ## 1. Generare la coppia di chiavi
 
@@ -49,10 +97,11 @@ crea questi due secrets (nomi esatti, case-sensitive — sono già referenziati 
 | `TAURI_SIGNING_PRIVATE_KEY` | Contenuto del file `~/.tauri/church-helper-desktop.key` (l'intero blocco, non solo una riga) |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | La password scelta al punto 1 |
 
-Questi due secrets NON esistono ancora nel repo: finché non li crei, vale il comportamento
-descritto in cima a questo file (build sempre verde, ma senza artefatti di update firmati).
+Questi due secrets sono configurati dalla v0.3.0. Se mancassero (es. fork), la build resta verde
+ma senza artefatti di update firmati: la CI stampa un `::warning::` e disattiva
+`createUpdaterArtifacts` per quella build.
 
-## 3. Sostituire il placeholder della chiave pubblica
+## 3. Sostituire il placeholder della chiave pubblica (già fatto per la v0.3.0)
 
 In `src-tauri/tauri.conf.json` c'è:
 
@@ -95,6 +144,10 @@ l'auto-update funziona per le successive).
    cancellazione della Release da GitHub).
 
 ## Limite noto: `.deb` su Linux (da decidere)
+
+> Aggiornamento 2026-10: in pratica l'update in-place del `.deb` funziona passando da `pkexec`
+> (richiesta password di amministratore, vedi sopra). Il testo seguente resta come contesto per
+> l'eventuale passaggio ad AppImage.
 
 Il plugin updater ufficiale ha supporto limitato per l'installazione in-place su `.deb`: il
 meccanismo di self-update funziona in modo affidabile soprattutto per bundle `appimage` (che si

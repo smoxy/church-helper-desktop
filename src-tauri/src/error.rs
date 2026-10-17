@@ -68,6 +68,12 @@ pub enum DownloadError {
     #[error("Invalid or unsafe filename resolved from download source")]
     InvalidFilename,
 
+    /// The server answered with a non-2xx status: the body is an error page,
+    /// never file content, so it must not be written/renamed to the final
+    /// file (`services::download::check_download_status`).
+    #[error("Download failed: server answered HTTP {0}")]
+    HttpStatus(u16),
+
     #[error("Download paused")]
     Paused,
 
@@ -169,6 +175,7 @@ impl From<AppError> for CommandError {
                 DownloadError::WriteError { .. } => "write-error",
                 DownloadError::ShortcutCreationFailed(_) => "shortcut-creation-failed",
                 DownloadError::InvalidFilename => "invalid-filename",
+                DownloadError::HttpStatus(_) => "http-status-error",
                 DownloadError::Paused => "download-paused",
                 DownloadError::Cancelled => "download-cancelled",
             },

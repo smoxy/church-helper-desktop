@@ -28,7 +28,7 @@ const LANGUAGE_OPTIONS: { value: LanguageSetting; labelKey: TKey }[] = [
 
 
 export default function Settings() {
-    const { t } = useI18n();
+    const { t, categoryLabel } = useI18n();
     const {
         config,
         resources,
@@ -108,7 +108,7 @@ export default function Settings() {
 
         try {
             await updateConfig({ auto_download_categories: newCats });
-            addToast(t(checked ? 'settings.toast.autoDownloadEnabled' : 'settings.toast.autoDownloadDisabled', { category }), "success");
+            addToast(t(checked ? 'settings.toast.autoDownloadEnabled' : 'settings.toast.autoDownloadDisabled', { category: categoryLabel(category) }), "success");
         } catch (e) {
             addToast(t('settings.toast.autoDownloadUpdateError', { error: errorMessage(e) }), "error");
             // Revert to config state on error
@@ -159,6 +159,16 @@ export default function Settings() {
         } catch (e) {
             addToast(t('settings.toast.preferOptimizedError', { error: errorMessage(e) }), "error");
             if (config) setLocalPreferOptimized(config.prefer_optimized);
+        }
+    };
+
+    const toggleDownloadNextWeek = async (checked: boolean) => {
+        if (!config || checked === config.download_next_week) return;
+        try {
+            await updateConfig({ download_next_week: checked });
+            addToast(t(checked ? 'settings.toast.nextWeekOn' : 'settings.toast.nextWeekOff'), "success");
+        } catch (e) {
+            addToast(t('settings.toast.nextWeekError', { error: errorMessage(e) }), "error");
         }
     };
 
@@ -309,8 +319,8 @@ export default function Settings() {
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                             {availableCategories.map(cat => (
                                 <div key={cat} className="flex items-center justify-between space-x-4 border p-3 rounded-lg bg-card/50">
-                                    <label htmlFor={`switch-${cat}`} className="text-sm font-medium capitalize cursor-pointer flex-1">
-                                        {cat}
+                                    <label htmlFor={`switch-${cat}`} className="text-sm font-medium first-letter:uppercase cursor-pointer flex-1">
+                                        {categoryLabel(cat)}
                                     </label>
                                     <Switch
                                         id={`switch-${cat}`}
@@ -387,6 +397,19 @@ export default function Settings() {
                         <p className="text-xs text-muted-foreground">
                             {t('settings.automation.downloadStrategyHint')}
                         </p>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-4 pt-4 border-t">
+                        <div className="space-y-0.5">
+                            <label className="text-base font-medium">{t('settings.automation.downloadNextWeek')}</label>
+                            <p className="text-sm text-muted-foreground">
+                                {t('settings.automation.downloadNextWeekHint')}
+                            </p>
+                        </div>
+                        <Switch
+                            checked={config.download_next_week}
+                            onCheckedChange={toggleDownloadNextWeek}
+                        />
                     </div>
 
                     <div className="flex items-center justify-between gap-4 pt-4 border-t">
@@ -480,7 +503,7 @@ export default function Settings() {
                     </div>
 
                     <div className="flex items-center gap-4 rounded-lg border bg-card/50 p-4 mt-4">
-                        <img src={rinoovaIcon} alt="Rinoova" className="h-10 w-auto shrink-0" />
+                        <img src={rinoovaIcon} alt="" className="h-10 w-auto shrink-0" />
                         <div className="space-y-1">
                             <p className="text-foreground">
                                 {t('settings.systemInfo.rinoovaBlurb')}
