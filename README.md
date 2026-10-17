@@ -211,6 +211,11 @@ viene invece derivata da git e passata al compilatore senza modificare file trac
 verrà pubblicata). `VERSION=X.Y.Z[-pre] scripts/build/linux.sh debug` forza un valore; lo script
 stampa la versione usata. Self-test della derivazione: `scripts/build/version.test.sh`.
 
+`linux.sh` tiene l'intera `CARGO_HOME` del container in `~/.cache/church-helper-builds/cargo-home-<arch>`
+(niente riscaricamento dei crate; i lock della package cache sono condivisi, quindi due build
+concorrenti della stessa arch si serializzano invece di estrarre a metà gli stessi crate).
+Self-test degli argomenti docker (con stub, senza docker): `scripts/build/linux.test.sh`.
+
 ### Puntare l'app a uno stub API locale (solo dev)
 
 Solo nelle build di debug (`tauri dev` / `build` / `test`, **mai** in release) il backend legge la
