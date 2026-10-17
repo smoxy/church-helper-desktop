@@ -1,8 +1,9 @@
 # Auto-update: setup e funzionamento
 
 L'auto-update (`tauri-plugin-updater`) è **operativo dalla v0.3.0**: la coppia di chiavi di firma
-esiste, i secrets `TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` sono configurati
-in CI e `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` è la **chiave pubblica reale**
+esiste, il secret `TAURI_SIGNING_PRIVATE_KEY` è configurato in CI (la chiave in uso funziona
+senza password: `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` è opzionale e oggi **non** esiste, vedi punto 2) e
+`plugins.updater.pubkey` in `src-tauri/tauri.conf.json` è la **chiave pubblica reale**
 (non più il placeholder). Ogni release stabile pubblica installer firmati (`.msi`, `.exe` nsis,
 `.deb`), i relativi `.sig` e un `latest.json`. Dalla v0.4.1 la release include anche macOS (un
 `.dmg` universal e l'archivio `.app.tar.gz` dell'updater): vedi la sezione "macOS" più sotto.
@@ -99,9 +100,10 @@ sui loro valori):
 | Solo alcuni secrets presenti | ad-hoc, con un `::warning::` che elenca quelli mancanti | no |
 
 Le build non-tag (`workflow_dispatch` su un branch) sono sempre ad-hoc e non pubblicano nulla.
-Attenzione: quegli step di prova non ricevono `TAURI_SIGNING_PRIVATE_KEY` mentre
-`createUpdaterArtifacts` è `true`, quindi (come già per Windows e Linux) è probabile che la run
-finisca in errore dopo aver prodotto `.app` e `.dmg`: non è un difetto specifico di macOS.
+Non ricevono `TAURI_SIGNING_PRIVATE_KEY`, quindi lo step "Disable updater artifacts (test build)"
+spegne `createUpdaterArtifacts` (in tutti e tre i job): la run deve finire **verde** con `.app` e
+`.dmg`, senza `.app.tar.gz` né `.sig`. Una run di prova rossa è un errore vero (bundling, firma,
+DMG), non un limite noto.
 
 **Senza i secrets Apple** l'app è firmata ad-hoc e non notarizzata: la build riesce e l'auto-update
 funziona (la firma dell'updater è minisign, indipendente da quella Apple), ma **Gatekeeper blocca il
@@ -148,7 +150,16 @@ di `tauri.conf.json` solo per la variante firmata; quella ad-hoc non riceve mai 
 - Build locale su un Mac: `npm run tauri build -- --target universal-apple-darwin --bundles app,dmg`
   (servono i target Rust `aarch64-apple-darwin` e `x86_64-apple-darwin`), oppure
   `npm run tauri build -- --bundles app,dmg` per la sola architettura del Mac. In locale la firma è
-  quella ad-hoc di `tauri.conf.json`.
+  quella ad-hoc di `tauri.conf.json`. Come su Windows e Linux, senza `TAURI_SIGNING_PRIVATE_KEY`
+  il comando produce `.app` e `.dmg` ma termina con errore ("A public key has been found, but no
+  private key"), perché `createUpdaterArtifacts` è `true`: aggiungere
+  `--config '{"bundle":{"createUpdaterArtifacts":false}}'` oppure esportare una chiave usa-e-getta
+  (`npx tauri signer generate`, mai quella vera).
+- App Nap: l'app vive nascosta (chiusura = nascondi, avvio al login nascosto) e `src-tauri/Info.plist`
+  chiede a macOS di escluderla da App Nap (`LSAppNapIsDisabled`, `NSAppSleepDisabled`). Da
+  verificare al primo avvio su un Mac reale: con la finestra nascosta la colonna "App Nap" di
+  Monitoraggio Attività deve restare "No". Se non basta, l'alternativa è tenere un'attività
+  `NSProcessInfo.beginActivity` mentre ci sono download in coda.
 - Il canale A (mail-parser) accetta `darwin` solo dopo il rilascio della relativa modifica del
   servizio; finché non c'è risponde `422` e il client ricade su GitHub, che ha già le voci
   `darwin-*` (nei log compare un warning a ogni check, innocuo). Vedi `adr-0011` e
@@ -186,8 +197,12 @@ crea questi due secrets (nomi esatti, case-sensitive — sono già referenziati 
 | `TAURI_SIGNING_PRIVATE_KEY` | Contenuto del file `~/.tauri/church-helper-desktop.key` (l'intero blocco, non solo una riga) |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | La password scelta al punto 1 |
 
-Questi due secrets sono configurati dalla v0.3.0. Se mancassero (es. fork), la build resta verde
-ma senza artefatti di update firmati: la CI stampa un `::warning::` e disattiva
+Stato reale: nel repo è configurato **solo** `TAURI_SIGNING_PRIVATE_KEY`; la chiave in uso funziona
+senza password e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` non esiste: il workflow lo passa vuoto (la
+v0.4.0 è stata firmata così, con i `.sig` di tutti gli installer). Non va creato ora: con una
+password che non corrisponde alla chiave la firma fallirebbe su tutti e tre i job. Serve solo se si
+ruota la chiave scegliendone una con password. Se mancasse `TAURI_SIGNING_PRIVATE_KEY` (es. fork),
+la build resta verde ma senza artefatti di update firmati: la CI stampa un `::warning::` e disattiva
 `createUpdaterArtifacts` per quella build.
 
 ## 3. Sostituire il placeholder della chiave pubblica (già fatto per la v0.3.0)

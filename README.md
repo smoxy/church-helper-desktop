@@ -247,6 +247,12 @@ Output in `src-tauri/target/universal-apple-darwin/release/bundle/` (build unive
 release su CI (job `release-macos` di `build.yml`) e l'eventuale firma Developer ID sono descritte
 in [`UPDATER_SETUP.md`](UPDATER_SETUP.md).
 
+Come per le build locali su Windows e Linux, `createUpdaterArtifacts` è attivo in `tauri.conf.json`:
+senza `TAURI_SIGNING_PRIVATE_KEY` il comando crea `.app` e `.dmg` ma poi termina con errore ("A public
+key has been found, but no private key"). Per una build locale pulita aggiungere
+`--config '{"bundle":{"createUpdaterArtifacts":false}}'` ai comandi sopra, oppure esportare una
+chiave usa-e-getta generata con `npx tauri signer generate` (mai la chiave vera delle release).
+
 #### Build locali e versione
 
 Gli script `scripts/build/linux.sh` (Docker) e `scripts/build/windows.ps1` non usano la versione di

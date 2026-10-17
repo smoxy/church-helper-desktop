@@ -59,7 +59,6 @@ jobs:
         # into shell code.
         env:
           HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
-          HAS_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
         run: |
           if [ "$HAS_SIGNING_KEY" != "true" ]; then
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY non configurato nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
@@ -155,7 +154,6 @@ jobs:
         # into shell code.
         env:
           HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
-          HAS_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
         run: |
           if [ "$HAS_SIGNING_KEY" != "true" ]; then
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY non configurato nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
@@ -264,7 +262,6 @@ jobs:
         # into shell code.
         env:
           HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
-          HAS_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
         run: |
           if [ "$HAS_SIGNING_KEY" != "true" ]; then
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY non configurato nei secrets del repository: questa release NON includera' artefatti di auto-update firmati (nessun .sig, nessuna voce in latest.json). Vedi UPDATER_SETUP.md per completare il setup. La build degli installer procede comunque normalmente."
