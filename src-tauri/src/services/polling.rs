@@ -359,9 +359,12 @@ pub(crate) fn union_resources(latest: &[Resource], next: &[Resource]) -> Vec<Res
 }
 
 /// Drop file-size cache entries whose URL changed for the same resource id
-/// (errata) or no longer belongs to any offered resource. `old_all`/`new_all`
-/// are the `latest ∪ next` snapshots before/after this poll, so next-week
-/// sizes survive. Returns how many entries were removed.
+/// (errata), whose URL is now offered under a new resource id that replaced
+/// another one (an ETag supersede keeps the same `download_url` with a new
+/// id and `supersedes_resource_id`, so the cached size is the old file's),
+/// or that no longer belong to any offered resource. `old_all`/`new_all` are
+/// the `latest ∪ next` snapshots before/after this poll, so next-week sizes
+/// survive. Returns how many entries were removed.
 pub(crate) fn invalidate_size_cache(
     cache: &mut std::collections::HashMap<String, u64>,
     old_all: &[Resource],
@@ -380,6 +383,22 @@ pub(crate) fn invalidate_size_cache(
             if *old_url != new_resource.download_url && cache.remove(*old_url).is_some() {
                 // Same resource ID but URL changed (errata corrige)
                 tracing::debug!("Invalidated cache for changed URL: {}", old_url);
+                removed += 1;
+            }
+        } else {
+            // New id: if its URL belonged to a different id before this poll
+            // (supersede with an unchanged URL, explicit via
+            // `supersedes_resource_id` or not), the cached size is stale.
+            let url = new_resource.download_url.as_str();
+            let replaces_other_id = old_all
+                .iter()
+                .any(|old| old.id != new_resource.id && old.download_url == url);
+            if replaces_other_id && cache.remove(url).is_some() {
+                tracing::debug!(
+                    "Invalidated cache for URL taken over by new resource {}: {}",
+                    new_resource.id,
+                    url
+                );
                 removed += 1;
             }
         }
@@ -846,5 +865,46 @@ mod tests {
         assert!(cache.contains_key("https://x/next"), "next-week size kept");
         assert!(!cache.contains_key("https://x/gone"));
         assert!(!cache.contains_key("https://x/old-2"));
+    }
+
+    /// An ETag supersede yields a new id with the same `download_url`: the
+    /// URL-keyed size belongs to the old file and must be dropped, whether or
+    /// not the old id is still listed. Unrelated new ids (e.g. a next-week
+    /// resource after a restart, when only `latest` is in the old snapshot)
+    /// keep their cached size.
+    #[test]
+    fn size_cache_dropped_when_new_id_takes_over_same_url() {
+        let mut superseding: Resource = res(5, "https://x/same");
+        superseding.supersedes_resource_id = Some(2);
+
+        let mut cache = std::collections::HashMap::new();
+        cache.insert("https://x/same".to_string(), 10);
+        cache.insert("https://x/next".to_string(), 20);
+        cache.insert("https://x/also".to_string(), 30);
+
+        let old_all = vec![res(2, "https://x/same"), res(3, "https://x/also")];
+        // Implicit takeover too: id 7 replaces 3 on the same URL, no field.
+        let new_all = vec![
+            superseding,
+            res(7, "https://x/also"),
+            res(9, "https://x/next"),
+        ];
+
+        let removed = invalidate_size_cache(&mut cache, &old_all, &new_all);
+        assert_eq!(removed, 2);
+        assert!(!cache.contains_key("https://x/same"));
+        assert!(!cache.contains_key("https://x/also"));
+        assert!(
+            cache.contains_key("https://x/next"),
+            "unrelated new id kept"
+        );
+
+        // Next poll: same ids, nothing more to drop (re-fetched size survives).
+        cache.insert("https://x/same".to_string(), 11);
+        let mut again: Resource = res(5, "https://x/same");
+        again.supersedes_resource_id = Some(2);
+        let removed = invalidate_size_cache(&mut cache, &new_all, &[again]);
+        assert_eq!(removed, 1, "only the no-longer-offered URL goes");
+        assert_eq!(cache.get("https://x/same"), Some(&11));
     }
 }
