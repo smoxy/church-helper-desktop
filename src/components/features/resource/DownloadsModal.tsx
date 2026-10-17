@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useShallow } from "zustand/react/shallow";
-import { useAppStore } from "../../../stores/appStore";
+import { findKnownResource, useAppStore } from "../../../stores/appStore";
 import { useToastStore } from "../../../stores/toastStore";
 import { errorMessage } from "../../../lib/utils";
 import { useI18n } from "../../../lib/i18n";
@@ -43,12 +43,14 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
     const {
         activeDownloads,
         resources,
+        nextWeekResources,
         pauseDownload,
         resumeDownload,
         cancelDownload
     } = useAppStore(useShallow(s => ({
         activeDownloads: s.activeDownloads,
         resources: s.resources,
+        nextWeekResources: s.nextWeekResources,
         pauseDownload: s.pauseDownload,
         resumeDownload: s.resumeDownload,
         cancelDownload: s.cancelDownload,
@@ -147,8 +149,13 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
 
     if (!open) return null;
 
+    // Only rows the modal can render (current or next week), so the empty
+    // state matches what is actually shown.
+    const isKnown = (idStr: string) =>
+        findKnownResource({ resources, nextWeekResources }, parseInt(idStr)) !== undefined;
+
     const activeList = Object.entries(activeDownloads)
-        .filter(([_, d]) => d.status !== 'completed' && d.status !== 'error')
+        .filter(([idStr, d]) => d.status !== 'completed' && d.status !== 'error' && isKnown(idStr))
         .sort((a, b) => {
             // Sort by status (downloading first), then queue position
             if (a[1].status === 'downloading' && b[1].status !== 'downloading') return -1;
@@ -157,7 +164,7 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
         });
 
     const completedList = Object.entries(activeDownloads)
-        .filter(([_, d]) => d.status === 'completed')
+        .filter(([idStr, d]) => d.status === 'completed' && isKnown(idStr))
         .sort((a, b) => (b[1].startTime || 0) - (a[1].startTime || 0)); // Newest first
 
     return (
@@ -196,7 +203,7 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
 
                         {activeList.map(([idStr, download]) => {
                             const id = parseInt(idStr);
-                            const resource = resources.find(r => r.id === id);
+                            const resource = findKnownResource({ resources, nextWeekResources }, id);
                             const stats = downloadStats[id] || { speed: 0, eta: 0 };
 
                             if (!resource) return null;
@@ -270,7 +277,7 @@ export function DownloadsModal({ open, onClose }: DownloadsModalProps) {
                             <div className="grid gap-2">
                                 {completedList.map(([idStr, _download]) => {
                                     const id = parseInt(idStr);
-                                    const resource = resources.find(r => r.id === id);
+                                    const resource = findKnownResource({ resources, nextWeekResources }, id);
                                     if (!resource) return null;
 
                                     return (

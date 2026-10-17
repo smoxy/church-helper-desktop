@@ -88,7 +88,7 @@ const STATUS_AFFECTING_CONFIG_FIELDS =
         ['prefer_optimized', 'work_directory', 'auto_download_categories']);
 
 // A resource id the UI can actually display: current week or next week.
-function findKnownResource(
+export function findKnownResource(
     state: Pick<AppState, 'resources'|'nextWeekResources'>,
     id: number): Resource|undefined {
   return state.resources.find(r => r.id === id) ??
