@@ -36,6 +36,10 @@ echo "== versione stampata nel binario: $APP_VERSION"
 IMAGE="chd-tauri-build:$ARCH"
 CACHE="$HOME/.cache/church-helper-builds/target-$ARCH"   # mai /tmp: è tmpfs (RAM)
 mkdir -p "$CACHE"
+# Registry/git di cargo persistenti (CARGO_HOME dell'immagine rust: /usr/local/cargo):
+# senza, ogni build riscarica tutti i crate (rete a consumo).
+CARGO_HOME_CACHE="$HOME/.cache/church-helper-builds/cargo-home-$ARCH"
+mkdir -p "$CARGO_HOME_CACHE/registry" "$CARGO_HOME_CACHE/git"
 
 echo "== frontend (host): npm ci se serve + vite build"
 [ -d node_modules ] || npm ci
@@ -49,6 +53,8 @@ echo "== cargo build $MODE ($ARCH)"
 docker run --rm --platform "$PLATFORM" \
   -e TAURI_CONFIG="{\"version\":\"$APP_VERSION\"}" \
   -v "$PWD":/app -w /app/src-tauri -v "$CACHE":/app/src-tauri/target \
+  -v "$CARGO_HOME_CACHE/registry":/usr/local/cargo/registry \
+  -v "$CARGO_HOME_CACHE/git":/usr/local/cargo/git \
   "$IMAGE" cargo build $FLAGS
 
 SUFFIX=""; [ "$MODE" = debug ] && SUFFIX="-debug"
