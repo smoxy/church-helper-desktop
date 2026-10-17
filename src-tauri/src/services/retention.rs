@@ -196,7 +196,7 @@ impl FileRetentionService {
                         // Best-effort per week: one week that can't be trashed
                         // (permissions, locked file, ...) must not abort the
                         // whole pass and starve the remaining weeks.
-                        match trash::delete(&week_path) {
+                        match move_to_trash(&week_path) {
                             Ok(()) => {
                                 tracing::info!(
                                     "Retention: moved archived week {} to trash (archived {}, older than {} day(s))",
@@ -400,6 +400,26 @@ impl FileRetentionService {
         }
 
         Ok(archived_weeks)
+    }
+}
+
+/// Move `path` to the system trash.
+///
+/// macOS: the `trash` crate defaults to asking Finder through `osascript`,
+/// which needs the user to grant Automation (Apple Events) permission and
+/// fails silently without it; `NSFileManager` needs no extra permission, so
+/// it is used instead.
+fn move_to_trash(path: &Path) -> Result<(), trash::Error> {
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        let mut context = trash::TrashContext::default();
+        context.set_delete_method(DeleteMethod::NsFileManager);
+        context.delete(path)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        trash::delete(path)
     }
 }
 

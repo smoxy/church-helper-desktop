@@ -452,8 +452,33 @@ pub fn run() {
             commands::open_work_directory,
             commands::get_savings_stats,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // macOS: after the window was hidden to the tray, a click on the
+            // Dock icon (or relaunching the app from Finder/Spotlight) must
+            // bring the main window back. AppKit reports it as `Reopen`; the
+            // variant only exists on macOS, hence the cfg.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = event
+            {
+                if !has_visible_windows {
+                    // A minimized window also reports "no visible windows" and
+                    // `show` alone would not restore it.
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.unminimize();
+                    }
+                    show_main_window(app);
+                }
+            }
+
+            // Windows/Linux: no app-level event to handle.
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
 
 /// Best-effort backup of the settings store whose persisted `config` failed

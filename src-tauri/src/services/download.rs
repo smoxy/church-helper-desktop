@@ -560,9 +560,20 @@ fn create_macos_webloc_shortcut(name: &str, url: &str) -> (String, String) {
     <string>{}</string>
 </dict>
 </plist>"#,
-        url
+        xml_escape(url)
     );
     (filename, content)
+}
+
+/// Escape the characters that are not allowed raw in XML text. A `.webloc` is
+/// a plist, so a URL like `watch?v=abc&list=xyz` would otherwise yield an
+/// invalid file that macOS refuses to open. Compiled for tests too so the
+/// escaping is covered on every platform.
+#[cfg(any(target_os = "macos", test))]
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Create a Linux .desktop shortcut
@@ -979,6 +990,26 @@ mod tests {
         assert!(content.contains("Type=Link"));
         assert!(content.contains("Name=Test Video"));
         assert!(content.contains("URL=https://youtube.com/watch?v=abc123"));
+    }
+
+    #[test]
+    fn test_xml_escape_handles_url_query_separators() {
+        assert_eq!(
+            xml_escape("https://youtube.com/watch?v=abc&list=x<y>"),
+            "https://youtube.com/watch?v=abc&amp;list=x&lt;y&gt;"
+        );
+        assert_eq!(xml_escape("https://youtu.be/abc"), "https://youtu.be/abc");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_macos_webloc_shortcut_format() {
+        let (filename, content) =
+            create_macos_webloc_shortcut("Test Video", "https://youtube.com/watch?v=a&list=b");
+
+        assert_eq!(filename, "Test Video.webloc");
+        assert!(content.contains("<key>URL</key>"));
+        assert!(content.contains("<string>https://youtube.com/watch?v=a&amp;list=b</string>"));
     }
 
     #[test]
